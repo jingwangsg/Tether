@@ -56,17 +56,37 @@ class GhosttyTerminalView: NSView {
         cfg.userdata = Unmanaged.passUnretained(self).toOpaque()
         cfg.scale_factor = Double(window?.backingScaleFactor ?? 1.0)
 
-        if let cwd = cwd, !cwd.isEmpty {
-            cwd.withCString { cfg.working_directory = $0 }
+        let isSSH = command?.hasPrefix("ssh ") ?? false
+        // For SSH sessions cwd is a remote path — deliver via initial_input, not working_directory
+        let effectiveCwd: String? = isSSH ? nil : cwd
+        let initialInput: String? = (isSSH && !(cwd ?? "").isEmpty)
+            ? "cd '\((cwd ?? "").replacingOccurrences(of: "'", with: "'\\''"))'\n"
+            : nil
+
+        // Nest withCString closures so all C pointers are alive through ghostty_surface_new
+        surface = withOptCString(command) { cmdPtr in
+            cfg.command = cmdPtr
+            return withOptCString(effectiveCwd) { cwdPtr in
+                cfg.working_directory = cwdPtr
+                return withOptCString(initialInput) { inputPtr in
+                    cfg.initial_input = inputPtr
+                    return ghostty_surface_new(app, &cfg)
+                }
+            }
         }
 
-        guard let s = ghostty_surface_new(app, &cfg) else {
+        guard let s = surface else {
             print("[GhosttyTerminalView] ghostty_surface_new failed"); return
         }
-        surface = s
         ghostty_surface_set_size(s, UInt32(bounds.width), UInt32(bounds.height))
         startDisplayLink()
         observeNotifications()
+    }
+
+    /// Calls body(ptr) with a C string pointer for s, or body(nil) when s is nil/empty.
+    private func withOptCString<T>(_ s: String?, body: (UnsafePointer<CChar>?) -> T) -> T {
+        guard let s, !s.isEmpty else { return body(nil) }
+        return s.withCString(body)
     }
 
     private func startDisplayLink() {
