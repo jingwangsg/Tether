@@ -85,7 +85,7 @@ class GhosttyPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFactory {
             result(nil)
 
         case "sendKey":
-            // TODO: implement key routing when ghostty_surface_key API is finalized
+            // Keys are now handled at the AppKit level (NSView.keyDown:)
             result(nil)
 
         case "setActive":

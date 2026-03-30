@@ -4,11 +4,9 @@ import 'package:flutter/services.dart';
 
 /// Renders a Ghostty terminal surface inside a Flutter PlatformView (macOS).
 ///
-/// Keyboard input:
-///   - Printable chars → MethodChannel sendText
-///   - Special keys → MethodChannel sendKey (key name + modifiers)
-/// Resize is automatic: AppKitView propagates frame changes to Swift which
-/// calls ghostty_surface_set_size().
+/// Keyboard input is handled entirely at the AppKit level (Swift side):
+///   mouseDown: → first responder → keyDown: / NSTextInputClient.insertText:
+/// This widget only handles paste (via sendText MethodChannel).
 ///
 /// EventChannel receives:
 ///   {type: "title", value: "..."} → onTitleChanged
@@ -101,11 +99,7 @@ class GhosttyTerminalViewState extends State<GhosttyTerminalView> {
 
   @override
   Widget build(BuildContext context) {
-    return Focus(
-      autofocus: widget.isActive,
-      onKeyEvent: _handleKeyEvent,
-      child: _buildPlatformView(),
-    );
+    return _buildPlatformView();
   }
 
   Widget _buildPlatformView() {
@@ -130,82 +124,4 @@ class GhosttyTerminalViewState extends State<GhosttyTerminalView> {
     );
   }
 
-  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-      return KeyEventResult.ignored;
-    }
-
-    final hw = HardwareKeyboard.instance;
-    final ctrl = hw.isControlPressed;
-    final shift = hw.isShiftPressed;
-    final alt = hw.isAltPressed;
-    final meta = hw.isMetaPressed;
-
-    // Let Cmd+C/V/X be handled by the system / PasteService
-    if (meta) return KeyEventResult.ignored;
-
-    final key = event.logicalKey;
-
-    // Printable character (no ctrl)
-    if (!ctrl && !alt) {
-      final char = key.keyLabel;
-      if (char.length == 1) {
-        sendText(char);
-        return KeyEventResult.handled;
-      }
-    }
-
-    // Ctrl+letter → control character
-    if (ctrl && !alt) {
-      final char = key.keyLabel;
-      if (char.length == 1) {
-        final code = char.toUpperCase().codeUnitAt(0) - 64;
-        if (code >= 1 && code <= 26) {
-          sendText(String.fromCharCode(code));
-          return KeyEventResult.handled;
-        }
-      }
-    }
-
-    // Special keys (arrows, function keys, etc.)
-    final specialKeys = <LogicalKeyboardKey, String>{
-      LogicalKeyboardKey.arrowUp: 'up',
-      LogicalKeyboardKey.arrowDown: 'down',
-      LogicalKeyboardKey.arrowLeft: 'left',
-      LogicalKeyboardKey.arrowRight: 'right',
-      LogicalKeyboardKey.home: 'home',
-      LogicalKeyboardKey.end: 'end',
-      LogicalKeyboardKey.pageUp: 'page_up',
-      LogicalKeyboardKey.pageDown: 'page_down',
-      LogicalKeyboardKey.backspace: 'backspace',
-      LogicalKeyboardKey.delete: 'delete',
-      LogicalKeyboardKey.insert: 'insert',
-      LogicalKeyboardKey.enter: 'enter',
-      LogicalKeyboardKey.tab: 'tab',
-      LogicalKeyboardKey.escape: 'escape',
-      LogicalKeyboardKey.f1: 'f1',
-      LogicalKeyboardKey.f2: 'f2',
-      LogicalKeyboardKey.f3: 'f3',
-      LogicalKeyboardKey.f4: 'f4',
-      LogicalKeyboardKey.f5: 'f5',
-      LogicalKeyboardKey.f6: 'f6',
-      LogicalKeyboardKey.f7: 'f7',
-      LogicalKeyboardKey.f8: 'f8',
-      LogicalKeyboardKey.f9: 'f9',
-      LogicalKeyboardKey.f10: 'f10',
-      LogicalKeyboardKey.f11: 'f11',
-      LogicalKeyboardKey.f12: 'f12',
-    };
-
-    if (specialKeys.containsKey(key)) {
-      final mods = <String>[];
-      if (shift) mods.add('shift');
-      if (ctrl) mods.add('ctrl');
-      if (alt) mods.add('alt');
-      sendKey(specialKeys[key]!, modifiers: mods.join(','));
-      return KeyEventResult.handled;
-    }
-
-    return KeyEventResult.ignored;
-  }
 }

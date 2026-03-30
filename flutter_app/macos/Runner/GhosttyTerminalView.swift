@@ -3,7 +3,14 @@ import FlutterMacOS
 import CoreVideo
 
 /// NSView embedding a ghostty_surface_t (PTY + Metal renderer).
-/// Ghostty v1.3.1 API.
+///
+/// Keyboard input is handled entirely at the AppKit level (NOT via Flutter):
+///   - mouseDown: → become first responder so AppKit delivers keyDown to us
+///   - keyDown: → special keys (arrows, backspace, etc.) via ghostty_surface_key()
+///   - NSTextInputClient.insertText: → printable chars via ghostty_surface_text()
+///
+/// This mirrors Demo 3's approach and bypasses Flutter's keyboard system,
+/// which does not reliably deliver events when a PlatformView has AppKit focus.
 class GhosttyTerminalView: NSView {
     private let sessionId: String
     private let command: String?
@@ -15,6 +22,10 @@ class GhosttyTerminalView: NSView {
 
     private var titleObserver: NSObjectProtocol?
     private var exitObserver: NSObjectProtocol?
+
+    // Accumulates text from NSTextInputClient.insertText() during a keyDown call.
+    // nil = not inside a keyDown; [] = inside keyDown but no text yet.
+    private var keyTextAccumulator: [String]? = nil
 
     init(sessionId: String, command: String?, cwd: String?, eventSink: FlutterEventSink? = nil) {
         self.sessionId = sessionId
@@ -45,7 +56,6 @@ class GhosttyTerminalView: NSView {
         cfg.userdata = Unmanaged.passUnretained(self).toOpaque()
         cfg.scale_factor = Double(window?.backingScaleFactor ?? 1.0)
 
-        // Working directory
         if let cwd = cwd, !cwd.isEmpty {
             cwd.withCString { cfg.working_directory = $0 }
         }
@@ -88,7 +98,6 @@ class GhosttyTerminalView: NSView {
             forName: .ghosttyChildExited, object: nil, queue: .main
         ) { [weak self] note in
             guard let self else { return }
-            // Either surface-specific or global close
             if let surfacePtr = note.userInfo?["surface"] as? OpaquePointer {
                 guard OpaquePointer(self.surface) == surfacePtr else { return }
             }
@@ -101,7 +110,103 @@ class GhosttyTerminalView: NSView {
         surface.map { ghostty_surface_set_size($0, UInt32(newSize.width), UInt32(newSize.height)) }
     }
 
-    // MARK: - Input
+    // MARK: - AppKit keyboard handling
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        window?.makeFirstResponder(self)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard let s = surface else { return }
+        let action: ghostty_input_action_e = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
+        keyTextAccumulator = []
+        defer { keyTextAccumulator = nil }
+        self.interpretKeyEvents([event])
+
+        if let list = keyTextAccumulator, !list.isEmpty {
+            for text in list {
+                _ = sendKeyEvent(s, action: action, event: event, text: text)
+            }
+        } else {
+            _ = sendKeyEvent(s, action: action, event: event, text: ghosttyCharacters(event))
+        }
+    }
+
+    override func keyUp(with event: NSEvent) {
+        guard let s = surface else { return }
+        _ = sendKeyEvent(s, action: GHOSTTY_ACTION_RELEASE, event: event, text: nil)
+    }
+
+    override func doCommand(by selector: Selector) {
+        // Prevent NSBeep for unhandled commands (e.g. arrow keys, escape)
+    }
+
+    private func sendKeyEvent(_ s: ghostty_surface_t,
+                              action: ghostty_input_action_e,
+                              event: NSEvent,
+                              text: String?) -> Bool {
+        var ev = ghostty_input_key_s()
+        ev.action = action
+        ev.keycode = UInt32(event.keyCode)
+        ev.mods = modsFromEvent(event)
+        // consumed_mods: everything except control and command (per Ghostty source)
+        let flags = event.modifierFlags
+        var consumedRaw: UInt32 = 0
+        if flags.contains(.shift)  { consumedRaw |= GHOSTTY_MODS_SHIFT.rawValue }
+        if flags.contains(.option) { consumedRaw |= GHOSTTY_MODS_ALT.rawValue }
+        ev.consumed_mods = ghostty_input_mods_e(rawValue: consumedRaw)
+        // unshifted_codepoint: char with no modifiers applied
+        if #available(macOS 10.15, *) {
+            if let chars = event.characters(byApplyingModifiers: []),
+               let cp = chars.unicodeScalars.first {
+                ev.unshifted_codepoint = cp.value
+            }
+        }
+        ev.composing = false
+
+        // Only attach text if first byte >= 0x20 (non-control, non-PUA)
+        if let t = text, !t.isEmpty,
+           let first = t.utf8.first, first >= 0x20 {
+            return t.withCString { ptr in
+                ev.text = ptr
+                return ghostty_surface_key(s, ev)
+            }
+        } else {
+            ev.text = nil
+            return ghostty_surface_key(s, ev)
+        }
+    }
+
+    /// Equivalent of Ghostty's NSEvent.ghosttyCharacters — returns text for printable keys.
+    /// Returns nil for PUA function keys (arrows, F-keys). Returns stripped text for control chars.
+    private func ghosttyCharacters(_ event: NSEvent) -> String? {
+        guard let characters = event.characters else { return nil }
+        if characters.count == 1, let scalar = characters.unicodeScalars.first {
+            if scalar.value < 0x20 {
+                if #available(macOS 10.15, *) {
+                    return event.characters(byApplyingModifiers: event.modifierFlags.subtracting(.control))
+                }
+                return nil
+            }
+            if scalar.value >= 0xF700 && scalar.value <= 0xF8FF { return nil }
+        }
+        return characters
+    }
+
+    private func modsFromEvent(_ event: NSEvent) -> ghostty_input_mods_e {
+        let flags = event.modifierFlags
+        var raw: UInt32 = 0
+        if flags.contains(.shift)   { raw |= GHOSTTY_MODS_SHIFT.rawValue }
+        if flags.contains(.control) { raw |= GHOSTTY_MODS_CTRL.rawValue }
+        if flags.contains(.option)  { raw |= GHOSTTY_MODS_ALT.rawValue }
+        if flags.contains(.command) { raw |= GHOSTTY_MODS_SUPER.rawValue }
+        return ghostty_input_mods_e(rawValue: raw)
+    }
+
+    // MARK: - MethodChannel input (paste from Flutter PasteService)
 
     func sendText(_ text: String) {
         guard let s = surface else { return }
@@ -129,4 +234,33 @@ class GhosttyTerminalView: NSView {
         exitObserver.map  { NotificationCenter.default.removeObserver($0) }
         surface.map { ghostty_surface_free($0) }
     }
+}
+
+// MARK: - NSTextInputClient (printable characters + IME)
+extension GhosttyTerminalView: NSTextInputClient {
+    func insertText(_ string: Any, replacementRange: NSRange) {
+        let chars: String
+        if let attr = string as? NSAttributedString { chars = attr.string }
+        else if let str = string as? String { chars = str }
+        else { return }
+
+        // If called during keyDown, accumulate for key event
+        if keyTextAccumulator != nil {
+            keyTextAccumulator!.append(chars)
+            return
+        }
+        // Otherwise: direct programmatic insertion (paste, IME)
+        guard let s = surface else { return }
+        ghostty_surface_text(s, chars, UInt(chars.utf8.count))
+    }
+
+    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {}
+    func unmarkText() {}
+    func selectedRange() -> NSRange { .init(location: NSNotFound, length: 0) }
+    func markedRange() -> NSRange { .init(location: NSNotFound, length: 0) }
+    func hasMarkedText() -> Bool { false }
+    func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
+    func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
+    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect { .zero }
+    func characterIndex(for point: NSPoint) -> Int { 0 }
 }
