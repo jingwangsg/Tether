@@ -794,6 +794,173 @@ async fn test_update_group_clear_ssh_host() {
     cleanup_state(&state);
 }
 
+// --- Group cascade delete ---
+
+#[tokio::test]
+async fn test_delete_group_cascades_child_groups() {
+    let state = test_state();
+    let app = test_router(state.clone());
+
+    // Create parent
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/groups")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::json!({"name": "parent"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let parent: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let parent_id = parent["id"].as_str().unwrap();
+
+    // Create child under parent
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/groups")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"name": "child", "parent_id": parent_id}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Delete parent
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/groups/{}", parent_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Both parent and child should be gone
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/groups")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let groups: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert!(
+        groups.is_empty(),
+        "deleting parent should cascade to child groups"
+    );
+
+    cleanup_state(&state);
+}
+
+#[tokio::test]
+async fn test_delete_group_cascades_sessions() {
+    let state = test_state();
+    let app = test_router(state.clone());
+
+    // Create group
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/groups")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::json!({"name": "g"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let group: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let gid = group["id"].as_str().unwrap();
+
+    // Create two local sessions in that group
+    for name in &["s1", "s2"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions?local=true")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"group_id": gid, "name": name}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    // Verify sessions exist
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let sessions: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(sessions.len(), 2);
+
+    // Delete the group
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/groups/{}", gid))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Sessions should also be gone
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let sessions: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert!(
+        sessions.is_empty(),
+        "deleting group should cascade to its sessions"
+    );
+
+    cleanup_state(&state);
+}
+
 #[tokio::test]
 async fn test_remote_completions_rejects_dangerous_chars() {
     let state = test_state();
