@@ -57,21 +57,28 @@ class GhosttyTerminalView: NSView {
         cfg.scale_factor = Double(window?.backingScaleFactor ?? 1.0)
 
         let isSSH = command?.hasPrefix("ssh ") ?? false
-        // For SSH sessions cwd is a remote path — deliver via initial_input, not working_directory
+        // For SSH + remote cwd: embed cd directly in the command string.
+        // Ghostty C API always runs cfg.command via /bin/bash -c "..." (embedded.zig:529-535),
+        // so shell quoting is fully respected — no initial_input needed, cd is invisible.
+        // Format mirrors tether-server's resolve_ssh_command.
+        let effectiveCommand: String?
+        if isSSH, let cwd, !cwd.isEmpty {
+            let escapedCwd = cwd
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            effectiveCommand = "\(command!) -t \"cd \(escapedCwd) && exec \\$SHELL -l\""
+        } else {
+            effectiveCommand = command
+        }
+        // working_directory is local-only; SSH sessions use a remote cwd
         let effectiveCwd: String? = isSSH ? nil : cwd
-        let initialInput: String? = (isSSH && !(cwd ?? "").isEmpty)
-            ? "cd '\((cwd ?? "").replacingOccurrences(of: "'", with: "'\\''"))'\n"
-            : nil
 
         // Nest withCString closures so all C pointers are alive through ghostty_surface_new
-        surface = withOptCString(command) { cmdPtr in
+        surface = withOptCString(effectiveCommand) { cmdPtr in
             cfg.command = cmdPtr
             return withOptCString(effectiveCwd) { cwdPtr in
                 cfg.working_directory = cwdPtr
-                return withOptCString(initialInput) { inputPtr in
-                    cfg.initial_input = inputPtr
-                    return ghostty_surface_new(app, &cfg)
-                }
+                return ghostty_surface_new(app, &cfg)
             }
         }
 
