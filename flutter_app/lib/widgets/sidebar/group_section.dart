@@ -1,0 +1,556 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../models/group.dart';
+import '../../models/session.dart';
+import '../../providers/server_provider.dart';
+import '../../providers/session_provider.dart';
+import '../../providers/ui_provider.dart';
+import '../../utils/session_display.dart';
+import 'group_dialog.dart';
+
+class GroupSection extends ConsumerStatefulWidget {
+  final Group group;
+  final List<Group> allGroups;
+  final List<Session> allSessions;
+  final int depth;
+
+  const GroupSection({
+    super.key,
+    required this.group,
+    required this.allGroups,
+    required this.allSessions,
+    required this.depth,
+  });
+
+  @override
+  ConsumerState<GroupSection> createState() => _GroupSectionState();
+}
+
+class _GroupSectionState extends ConsumerState<GroupSection> {
+  bool _expanded = true;
+
+  @override
+  Widget build(BuildContext context) {
+    final childGroups = widget.allGroups
+        .where((g) => g.parentId == widget.group.id)
+        .toList()
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+
+    final sessions = widget.allSessions
+        .where((s) => s.groupId == widget.group.id)
+        .toList()
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildGroupHeader(sessions),
+        if (_expanded) ...[
+          for (final childGroup in childGroups)
+            GroupSection(
+              group: childGroup,
+              allGroups: widget.allGroups,
+              allSessions: widget.allSessions,
+              depth: widget.depth + 1,
+            ),
+          for (final session in sessions)
+            _buildSessionTile(session),
+          _buildEndDropZone(),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildGroupHeader(List<Session> sessions) {
+    return DragTarget<Session>(
+      onWillAcceptWithDetails: (_) => true,
+      onAcceptWithDetails: (details) {
+        _handleSessionDropOnGroup(details.data);
+      },
+      builder: (context, candidateData, rejectedData) {
+        final isDropTarget = candidateData.isNotEmpty;
+        return GestureDetector(
+          onSecondaryTapDown: (details) => _showGroupContextMenu(details.globalPosition),
+          child: InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Container(
+              decoration: isDropTarget
+                  ? BoxDecoration(
+                      color: Colors.blue.withValues(alpha: 0.1),
+                      border: Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+                    )
+                  : null,
+              padding: EdgeInsets.only(
+                left: 8.0 + widget.depth * 16.0,
+                right: 8,
+                top: 6,
+                bottom: 6,
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    _expanded ? Icons.expand_more : Icons.chevron_right,
+                    size: 16,
+                    color: Colors.white38,
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    _expanded ? Icons.folder_open : Icons.folder,
+                    size: 16,
+                    color: Colors.white54,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      widget.group.name,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    '${sessions.length}',
+                    style: const TextStyle(color: Colors.white24, fontSize: 11),
+                  ),
+                  const SizedBox(width: 4),
+                  _buildAddButton(),
+                  _buildGroupMenuButton(),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildAddButton() {
+    return SizedBox(
+      width: 24,
+      height: 24,
+      child: IconButton(
+        icon: const Icon(Icons.add, size: 14),
+        color: Colors.white38,
+        padding: EdgeInsets.zero,
+        tooltip: 'New Session',
+        onPressed: () => _createSession(),
+      ),
+    );
+  }
+
+  Widget _buildGroupMenuButton() {
+    return SizedBox(
+      width: 24,
+      height: 24,
+      child: PopupMenuButton<String>(
+        icon: const Icon(Icons.more_vert, size: 14),
+        iconColor: Colors.white38,
+        padding: EdgeInsets.zero,
+        tooltip: 'Group Options',
+        iconSize: 14,
+        itemBuilder: (_) => [
+          const PopupMenuItem(value: 'edit', child: Text('Edit Group')),
+          const PopupMenuItem(value: 'rename', child: Text('Rename Group')),
+          const PopupMenuItem(value: 'new_session', child: Text('New Session')),
+          const PopupMenuItem(
+            value: 'delete',
+            child: Text('Delete Group', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+        onSelected: (value) {
+          switch (value) {
+            case 'edit':
+              showDialog(
+                context: context,
+                builder: (_) => GroupDialog(group: widget.group),
+              );
+            case 'rename':
+              _showRenameGroupDialog(context);
+            case 'new_session':
+              _createSession();
+            case 'delete':
+              ref.read(serverProvider.notifier).deleteGroup(widget.group.id);
+          }
+        },
+      ),
+    );
+  }
+
+  Widget _buildSessionTile(Session session) {
+    final activeId = ref.watch(sessionProvider).activeSessionId;
+    final isActive = session.id == activeId;
+    final display = getDisplayInfo(session, widget.allSessions);
+
+    final tile = GestureDetector(
+      onSecondaryTapDown: (details) => _showSessionContextMenu(session, details.globalPosition),
+      child: InkWell(
+        onTap: () {
+          ref.read(sessionProvider.notifier).openTab(session.id);
+          if (ref.read(uiProvider).isMobile) {
+            ref.read(uiProvider.notifier).setSidebarOpen(false);
+          }
+        },
+        child: Container(
+          padding: EdgeInsets.only(
+            left: 28.0 + widget.depth * 16.0,
+            right: 8,
+            top: 6,
+            bottom: 6,
+          ),
+          color: isActive ? Colors.white.withValues(alpha: 0.08) : null,
+          child: Row(
+            children: [
+              display.iconAsset != null
+                  ? Image.asset(display.iconAsset!, width: 14, height: 14)
+                  : Icon(display.icon, size: 14, color: display.iconColor),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      display.displayName,
+                      style: TextStyle(
+                        color: isActive ? Colors.white : Colors.white60,
+                        fontSize: 13,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (display.subtitle != null)
+                      Text(
+                        display.subtitle!,
+                        style: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 11,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                  ],
+                ),
+              ),
+              _buildSessionMenuButton(session),
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: IconButton(
+                  icon: const Icon(Icons.close, size: 14),
+                  color: Colors.white38,
+                  padding: EdgeInsets.zero,
+                  tooltip: 'Delete Session',
+                  onPressed: () {
+                    ref.read(serverProvider.notifier).deleteSession(session.id);
+                    ref.read(sessionProvider.notifier).closeTab(session.id);
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    return DragTarget<Session>(
+      onWillAcceptWithDetails: (details) => details.data.id != session.id,
+      onAcceptWithDetails: (details) {
+        _handleSessionDrop(details.data, session);
+      },
+      builder: (context, candidateData, rejectedData) {
+        final isDropTarget = candidateData.isNotEmpty;
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isDropTarget)
+              Container(height: 2, color: Colors.blue),
+            LongPressDraggable<Session>(
+              data: session,
+              feedback: Material(
+                elevation: 4,
+                color: const Color(0xFF2D2D2D),
+                borderRadius: BorderRadius.circular(4),
+                child: SizedBox(
+                  width: 220,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        display.iconAsset != null
+                            ? Image.asset(display.iconAsset!, width: 14, height: 14)
+                            : Icon(display.icon, size: 14, color: display.iconColor),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            display.displayName,
+                            style: const TextStyle(color: Colors.white70, fontSize: 13),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              childWhenDragging: Opacity(opacity: 0.3, child: tile),
+              child: tile,
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildSessionMenuButton(Session session) {
+    return SizedBox(
+      width: 24,
+      height: 24,
+      child: PopupMenuButton<String>(
+        icon: const Icon(Icons.more_vert, size: 14),
+        iconColor: Colors.white38,
+        padding: EdgeInsets.zero,
+        tooltip: 'Session Options',
+        iconSize: 14,
+        itemBuilder: (_) => [
+          const PopupMenuItem(value: 'rename', child: Row(
+            children: [
+              Text('Rename Session'),
+              Spacer(),
+              Text('⌘R', style: TextStyle(fontSize: 12, color: Colors.white38)),
+            ],
+          )),
+          const PopupMenuItem(
+            value: 'delete',
+            child: Text('Delete Session', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+        onSelected: (value) {
+          switch (value) {
+            case 'rename':
+              _showRenameSessionDialog(session);
+            case 'delete':
+              ref.read(serverProvider.notifier).deleteSession(session.id);
+              ref.read(sessionProvider.notifier).closeTab(session.id);
+          }
+        },
+      ),
+    );
+  }
+
+  Widget _buildEndDropZone() {
+    return DragTarget<Session>(
+      onWillAcceptWithDetails: (_) => true,
+      onAcceptWithDetails: (details) {
+        _handleSessionDropOnGroup(details.data);
+      },
+      builder: (context, candidateData, rejectedData) {
+        final isDropTarget = candidateData.isNotEmpty;
+        return Container(
+          height: isDropTarget ? 24 : 4,
+          color: isDropTarget ? Colors.blue.withValues(alpha: 0.15) : Colors.transparent,
+          child: isDropTarget
+              ? Center(
+                  child: Container(height: 2, color: Colors.blue),
+                )
+              : null,
+        );
+      },
+    );
+  }
+
+  void _handleSessionDrop(Session dragged, Session target) {
+    final targetGroupId = target.groupId;
+    final sessions = widget.allSessions
+        .where((s) => s.groupId == targetGroupId)
+        .toList()
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+
+    sessions.removeWhere((s) => s.id == dragged.id);
+    final targetIdx = sessions.indexWhere((s) => s.id == target.id);
+    if (targetIdx >= 0) {
+      sessions.insert(targetIdx, dragged);
+    } else {
+      sessions.add(dragged);
+    }
+
+    final items = <Map<String, dynamic>>[];
+    for (int i = 0; i < sessions.length; i++) {
+      items.add({
+        'id': sessions[i].id,
+        'sort_order': i,
+        'group_id': targetGroupId,
+      });
+    }
+    ref.read(serverProvider.notifier).reorderSessions(items);
+  }
+
+  void _handleSessionDropOnGroup(Session dragged) {
+    final groupId = widget.group.id;
+    final sessions = widget.allSessions
+        .where((s) => s.groupId == groupId)
+        .toList()
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+
+    sessions.removeWhere((s) => s.id == dragged.id);
+    sessions.add(dragged);
+
+    final items = <Map<String, dynamic>>[];
+    for (int i = 0; i < sessions.length; i++) {
+      items.add({
+        'id': sessions[i].id,
+        'sort_order': i,
+        'group_id': groupId,
+      });
+    }
+    ref.read(serverProvider.notifier).reorderSessions(items);
+  }
+
+  void _createSession() async {
+    final group = widget.group;
+    final command = group.sshHost != null ? 'ssh ${group.sshHost}' : null;
+    final session = await ref.read(serverProvider.notifier).createSession(
+      groupId: group.id,
+      command: command,
+      cwd: group.defaultCwd,
+    );
+    ref.read(sessionProvider.notifier).openTab(session.id);
+    if (ref.read(uiProvider).isMobile) {
+      ref.read(uiProvider.notifier).setSidebarOpen(false);
+    }
+  }
+
+  void _showGroupContextMenu(Offset position) {
+    final rect = RelativeRect.fromLTRB(position.dx, position.dy, position.dx, position.dy);
+    showMenu<String>(
+      context: context,
+      position: rect,
+      items: [
+        const PopupMenuItem(value: 'edit', child: Text('Edit Group')),
+        const PopupMenuItem(value: 'rename', child: Text('Rename Group')),
+        const PopupMenuItem(value: 'new_session', child: Text('New Session')),
+        const PopupMenuItem(
+          value: 'delete',
+          child: Text('Delete Group', style: TextStyle(color: Colors.red)),
+        ),
+      ],
+    ).then((value) {
+      if (value == null) return;
+      switch (value) {
+        case 'edit':
+          showDialog(
+            context: context,
+            builder: (_) => GroupDialog(group: widget.group),
+          );
+        case 'rename':
+          _showRenameGroupDialog(context);
+        case 'new_session':
+          _createSession();
+        case 'delete':
+          ref.read(serverProvider.notifier).deleteGroup(widget.group.id);
+      }
+    });
+  }
+
+  void _showRenameGroupDialog(BuildContext context) {
+    final controller = TextEditingController(text: widget.group.name);
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        void doRename() {
+          final name = controller.text.trim();
+          if (name.isNotEmpty) {
+            ref.read(serverProvider.notifier).updateGroup(
+              widget.group.id,
+              name: name,
+            );
+            Navigator.pop(ctx);
+          }
+        }
+        return AlertDialog(
+          title: const Text('Rename Group'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            onSubmitted: (_) => doRename(),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: doRename,
+              child: const Text('Rename'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showSessionContextMenu(Session session, Offset position) {
+    final rect = RelativeRect.fromLTRB(position.dx, position.dy, position.dx, position.dy);
+    showMenu<String>(
+      context: context,
+      position: rect,
+      items: [
+        const PopupMenuItem(value: 'rename', child: Row(
+          children: [
+            Text('Rename Session'),
+            Spacer(),
+            Text('⌘R', style: TextStyle(fontSize: 12, color: Colors.white38)),
+          ],
+        )),
+        const PopupMenuItem(
+          value: 'delete',
+          child: Text('Delete Session', style: TextStyle(color: Colors.red)),
+        ),
+      ],
+    ).then((value) {
+      if (value == null) return;
+      switch (value) {
+        case 'rename':
+          _showRenameSessionDialog(session);
+        case 'delete':
+          ref.read(serverProvider.notifier).deleteSession(session.id);
+          ref.read(sessionProvider.notifier).closeTab(session.id);
+      }
+    });
+  }
+
+  void _showRenameSessionDialog(Session session) {
+    final controller = TextEditingController(text: session.name);
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        void doRename() {
+          final name = controller.text.trim();
+          if (name.isNotEmpty) {
+            ref.read(serverProvider.notifier).updateSession(session.id, name: name);
+            Navigator.pop(ctx);
+          }
+        }
+        return AlertDialog(
+          title: const Text('Rename Session'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            onSubmitted: (_) => doRename(),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: doRename,
+              child: const Text('Rename'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}

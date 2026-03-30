@@ -1,0 +1,9 @@
+#include "../../Flutter/Flutter-Release.xcconfig"
+#include "Warnings.xcconfig"
+
+ARCHS = arm64
+EXCLUDED_ARCHS = x86_64
+SWIFT_OBJC_BRIDGING_HEADER = Runner/Runner-Bridging-Header.h
+LIBRARY_SEARCH_PATHS = $(inherited) $(SRCROOT)/Runner/ghostty
+HEADER_SEARCH_PATHS = $(inherited) $(SRCROOT)/Runner
+OTHER_LDFLAGS = $(inherited) -lghostty -lc++ -framework Metal -framework IOKit -framework CoreVideo -framework IOSurface -rpath @loader_path/../Frameworks
