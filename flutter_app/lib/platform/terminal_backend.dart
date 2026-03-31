@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 /// Android (future) uses TermuxBackend or XtermBackend.
 abstract class TerminalBackend {
   Widget createTerminalWidget({
+    Key? key,
     required String sessionId,
     String? command,
     String? cwd,

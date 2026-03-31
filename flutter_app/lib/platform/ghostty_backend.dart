@@ -12,6 +12,7 @@ class GhosttyBackend implements TerminalBackend {
 
   @override
   Widget createTerminalWidget({
+    Key? key,
     required String sessionId,
     String? command,
     String? cwd,
@@ -20,6 +21,7 @@ class GhosttyBackend implements TerminalBackend {
     void Function(String? title)? onTitleChanged,
   }) {
     return GhosttyTerminalView(
+      key: key,
       sessionId: sessionId,
       command: command,
       cwd: cwd,

@@ -11,7 +11,7 @@ import '../../platform/paste_service.dart';
 import '../../platform/volume_keys.dart';
 import '../../platform/terminal_backend.dart';
 import '../../utils/session_display.dart';
-import 'ghostty_terminal_view.dart';
+import 'xterm_terminal_view.dart';
 import 'mobile_key_bar.dart';
 
 class TerminalArea extends ConsumerStatefulWidget {
@@ -24,7 +24,7 @@ class TerminalArea extends ConsumerStatefulWidget {
 }
 
 class _TerminalAreaState extends ConsumerState<TerminalArea> {
-  final Map<String, GlobalKey<GhosttyTerminalViewState>> _terminalKeys = {};
+  final Map<String, GlobalKey<XtermTerminalViewState>> _terminalKeys = {};
   final VolumeKeyService _volumeKeys = VolumeKeyService();
   final PasteService _pasteService = PasteService();
   Set<String> _lastValidSessionIds = {};
@@ -115,14 +115,15 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
                         .where((s) => s.id == tab.sessionId)
                         .firstOrNull;
 
-                    _terminalKeys.putIfAbsent(
+                    final terminalKey = _terminalKeys.putIfAbsent(
                       tab.sessionId,
-                      () => GlobalKey<GhosttyTerminalViewState>(),
+                      () => GlobalKey<XtermTerminalViewState>(),
                     );
 
                     return Offstage(
                       offstage: !isActive,
                       child: widget.backend.createTerminalWidget(
+                        key: terminalKey,
                         sessionId: tab.sessionId,
                         command: session?.shell,
                         cwd: session?.cwd,

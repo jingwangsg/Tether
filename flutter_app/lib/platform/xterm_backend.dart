@@ -1,7 +1,10 @@
 import 'package:flutter/widgets.dart';
 import 'terminal_backend.dart';
+import '../widgets/terminal/xterm_terminal_view.dart';
 
-/// Stub backend for Android/fallback. Not yet implemented.
+/// WebSocket backend: connects to server-managed PTY via WebSocket.
+/// PTY lifecycle is tied to the server process, not the Flutter app —
+/// sessions survive frontend restarts as long as the server keeps running.
 class XtermBackend implements TerminalBackend {
   @override
   bool get isLocalPty => false;
@@ -11,13 +14,20 @@ class XtermBackend implements TerminalBackend {
 
   @override
   Widget createTerminalWidget({
+    Key? key,
     required String sessionId,
-    String? command,
-    String? cwd,
+    String? command,  // ignored: server already knows the shell from DB
+    String? cwd,      // ignored: server already knows the cwd from DB
     required bool isActive,
     VoidCallback? onSessionExited,
     void Function(String? title)? onTitleChanged,
   }) {
-    throw UnimplementedError('XtermBackend is not implemented for this platform');
+    return XtermTerminalView(
+      key: key,
+      sessionId: sessionId,
+      isActive: isActive,
+      onSessionExited: onSessionExited,
+      onTitleChanged: onTitleChanged,
+    );
   }
 }

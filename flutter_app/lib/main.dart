@@ -1,7 +1,5 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'platform/ghostty_backend.dart';
 import 'platform/xterm_backend.dart';
 import 'screens/home_screen.dart';
 
@@ -14,7 +12,7 @@ class TetherGhosttyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final backend = Platform.isMacOS ? GhosttyBackend() : XtermBackend();
+    final backend = XtermBackend();
 
     return MaterialApp(
       title: 'Tether',

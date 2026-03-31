@@ -169,7 +169,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
       name: name,
       command: command,
       cwd: cwd,
-      local: true,
+      local: false,
     );
     await refresh();
     return session;
