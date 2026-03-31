@@ -45,6 +45,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   // Foreground change debounce
   Timer? _foregroundDebounce;
 
+  // Tool state (running/waiting) detected from output activity
+  Timer? _toolStateTimer;
+
   @override
   void initState() {
     super.initState();
@@ -94,6 +97,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       switch (msg) {
         case OutputMessage():
           _writeToTerminal(msg.data);
+          _onToolOutput();
         case ScrollbackMessage():
           _writeToTerminal(msg.data);
         case SessionEventMessage():
@@ -102,6 +106,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
             widget.onSessionExited?.call();
           }
         case ForegroundChangedMessage():
+          if (msg.process == null) {
+            _toolStateTimer?.cancel();
+            _toolStateTimer = null;
+          }
           _foregroundDebounce?.cancel();
           _foregroundDebounce = Timer(const Duration(milliseconds: 100), () {
             ref.read(serverProvider.notifier).updateForegroundProcess(
@@ -118,6 +126,34 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
           break;
         case ErrorMessage():
           break;
+      }
+    });
+  }
+
+  /// Update toolState based on terminal output activity.
+  /// Called on every OutputMessage — if a known tool (claude/codex) is the
+  /// foreground process, marks it "running" immediately and schedules a
+  /// transition to "waiting" after 350ms of output silence.
+  void _onToolOutput() {
+    final sessions = ref.read(serverProvider).sessions;
+    final session = sessions.where((s) => s.id == widget.sessionId).firstOrNull;
+    final process = session?.foregroundProcess;
+    if (process != 'claude' && process != 'codex') return;
+
+    if (session?.toolState != 'running') {
+      ref.read(serverProvider.notifier).updateForegroundProcess(
+        widget.sessionId, process, toolState: 'running',
+      );
+    }
+
+    _toolStateTimer?.cancel();
+    _toolStateTimer = Timer(const Duration(milliseconds: 350), () {
+      final s = ref.read(serverProvider)
+          .sessions.where((s) => s.id == widget.sessionId).firstOrNull;
+      if (s?.foregroundProcess == process) {
+        ref.read(serverProvider.notifier).updateForegroundProcess(
+          widget.sessionId, process, toolState: 'waiting',
+        );
       }
     });
   }
@@ -249,6 +285,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   @override
   void dispose() {
     _foregroundDebounce?.cancel();
+    _toolStateTimer?.cancel();
     _msgSub?.cancel();
     _ws?.dispose();
     _terminalController.dispose();
