@@ -91,7 +91,14 @@ class GhosttyApp {
         // Flutter SharedPreferences stores values in UserDefaults with the "flutter." prefix.
         // These reflect settings saved in the previous session; changes take effect after restart.
         let defaults = UserDefaults.standard
-        let fontFamily = defaults.string(forKey: "flutter.terminal_font_family") ?? "MesloLGSNF"
+        // Map settings dialog keys → actual CoreText font family names
+        let fontKey = defaults.string(forKey: "flutter.terminal_font_family") ?? "MesloLGSNF"
+        let fontFamilyMap: [String: String] = [
+            "MesloLGSNF":     "MesloLGS NF",
+            "JetBrainsMono":  "JetBrains Mono",
+            "monospace":      "monospace",
+        ]
+        let fontFamily = fontFamilyMap[fontKey] ?? fontKey
         let fontSizeRaw = defaults.double(forKey: "flutter.terminal_font_size")
         let fontSize = fontSizeRaw > 0 ? fontSizeRaw : 14.0
         let snippet = "font-family = \"\(fontFamily)\"\nfont-size = \(fontSize)\n"

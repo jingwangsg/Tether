@@ -125,7 +125,19 @@ class GhosttyTerminalView: NSView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        surface.map { ghostty_surface_set_size($0, UInt32(newSize.width), UInt32(newSize.height)) }
+        guard let s = surface, newSize.width > 0, newSize.height > 0 else { return }
+        ghostty_surface_set_size(s, UInt32(newSize.width), UInt32(newSize.height))
+        ghostty_surface_draw(s)
+    }
+
+    // layout() is called by AppKit after the layout pass completes — bounds are final here.
+    // This catches the case where setFrameSize fires before the surface exists (surface is nil
+    // → setFrameSize is a no-op), so the surface gets its first correct size from layout().
+    override func layout() {
+        super.layout()
+        guard let s = surface, bounds.width > 0, bounds.height > 0 else { return }
+        ghostty_surface_set_size(s, UInt32(bounds.width), UInt32(bounds.height))
+        ghostty_surface_draw(s)
     }
 
     // MARK: - AppKit keyboard handling
