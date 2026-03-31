@@ -15,7 +15,7 @@ pub fn resolve_ssh_command(
     if ssh_host.is_some() && shell.starts_with("ssh ") {
         let shell_with_keepalive = shell.replacen(
             "ssh ",
-            "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ",
+            "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay ",
             1,
         );
         let ssh_cmd = if cwd != "~" && !cwd.is_empty() {

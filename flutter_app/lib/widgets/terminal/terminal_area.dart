@@ -46,6 +46,8 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
     // paste mode correctly. Falls back to PasteTextIntent (Actions widget below)
     // if the native channel has no active handler.
     _pasteService.onPaste = (text) {
+      // If a text field (e.g. rename dialog) has focus, it handles paste itself.
+      if (FocusManager.instance.primaryFocus?.context?.widget is EditableText) return;
       final activeId = ref.read(sessionProvider).activeSessionId;
       if (activeId == null) return;
       _terminalKeys[activeId]?.currentState?.paste(text);

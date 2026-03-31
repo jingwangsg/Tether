@@ -133,7 +133,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   void _scheduleFlush() {
     if (_writeScheduled) return;
     _writeScheduled = true;
-    Timer(const Duration(milliseconds: 16), _flushWrites);
+    Timer.run(_flushWrites);
   }
 
   void _flushWrites() {

@@ -65,6 +65,18 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AppState) {
 
     let session_for_input = session.clone();
 
+    // Dedicated PTY writer: one long-lived blocking task drains the channel so the
+    // WS receive loop never blocks waiting for a PTY write to complete.
+    let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let input_writer_session = session_for_input.clone();
+    tokio::task::spawn_blocking(move || {
+        while let Some(data) = input_rx.blocking_recv() {
+            if input_writer_session.write_input(&data).is_err() {
+                break;
+            }
+        }
+    });
+
     // Channel for control messages (pong) from receive loop → send task
     let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
@@ -140,13 +152,7 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AppState) {
                     match client_msg {
                         ClientMessage::Input { data } => {
                             if let Ok(decoded) = b64.decode(&data) {
-                                let session = session_for_input.clone();
-                                if let Err(e) = tokio::task::spawn_blocking(move || {
-                                    session.write_input(&decoded)
-                                }).await {
-                                    tracing::warn!("PTY write task failed: {}", e);
-                                    break;
-                                }
+                                let _ = input_tx.send(decoded);
                             }
                         }
                         ClientMessage::Resize { cols, rows } => {
