@@ -62,6 +62,7 @@ fn test_state() -> AppState {
             db,
             shutdown_tx,
             fg_tx,
+            remote_manager: tether_server::remote::manager::RemoteManager::new(),
         }),
     }
 }

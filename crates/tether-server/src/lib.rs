@@ -3,6 +3,7 @@ pub mod auth;
 pub mod config;
 pub mod persistence;
 pub mod pty;
+pub mod remote;
 pub mod server;
 pub mod ssh_config;
 pub mod state;

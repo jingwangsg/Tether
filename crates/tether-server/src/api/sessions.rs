@@ -2,7 +2,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use base64::Engine;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::persistence::store::SessionRow;
@@ -14,6 +14,19 @@ pub struct CreateSessionRequest {
     pub name: Option<String>,
     pub command: Option<String>,
     pub cwd: Option<String>,
+    /// Optional explicit session ID; used internally when local server creates a
+    /// session on a remote tether-server so both sides share the same UUID.
+    pub id: Option<Uuid>,
+}
+
+/// Body sent from local tether-server → remote tether-server when proxying session creation.
+#[derive(Serialize)]
+struct RemoteCreateRequest {
+    pub group_id: String,
+    pub name: Option<String>,
+    pub command: Option<String>,
+    pub cwd: Option<String>,
+    pub id: Option<Uuid>,
 }
 
 /// Query params for POST /api/sessions
@@ -105,9 +118,14 @@ pub async fn create_session(
         return Ok((StatusCode::CREATED, Json(response_row)));
     }
 
+    // Check if this group uses a remote SSH host
+    if let Ok(Some(ssh_host)) = state.inner.db.get_group_ssh_host(&group_id.to_string()) {
+        return create_remote_session(&state, group_id, req, &ssh_host).await;
+    }
+
     // Normal path: spawn PTY session
     let session = state
-        .create_session(group_id, req.name, req.command, req.cwd)
+        .create_session(group_id, req.name, req.command, req.cwd, req.id)
         .map_err(|e| {
             tracing::error!("Failed to create session: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
@@ -163,6 +181,17 @@ pub async fn delete_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> StatusCode {
+    // Proxy to remote if this is a remote session
+    if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&id) {
+        if let Some(port) = state.inner.remote_manager.get_tunnel_port(&ssh_host) {
+            let url = format!("http://127.0.0.1:{}/api/sessions/{}", port, id);
+            let _ = reqwest::Client::new().delete(&url).send().await;
+        }
+        // Always remove local DB record regardless of remote result
+        state.inner.db.delete_session(&id).ok();
+        return StatusCode::OK;
+    }
+
     match Uuid::parse_str(&id) {
         Ok(uuid) => match state.kill_session(uuid) {
             Ok(_) => StatusCode::OK,
@@ -188,6 +217,26 @@ pub async fn get_scrollback(
     Path(id): Path<String>,
     Query(query): Query<ScrollbackQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Proxy to remote if this is a remote session
+    if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&id) {
+        if let Some(port) = state.inner.remote_manager.get_tunnel_port(&ssh_host) {
+            let url = format!(
+                "http://127.0.0.1:{}/api/sessions/{}/scrollback?offset={}&limit={}",
+                port, id, query.offset, query.limit
+            );
+            let resp = reqwest::Client::new()
+                .get(&url)
+                .send()
+                .await
+                .map_err(|_| StatusCode::BAD_GATEWAY)?
+                .json::<serde_json::Value>()
+                .await
+                .map_err(|_| StatusCode::BAD_GATEWAY)?;
+            return Ok(Json(resp));
+        }
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     let uuid = Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
     let session = state
         .get_session(uuid)
@@ -206,4 +255,82 @@ pub async fn get_scrollback(
         "offset": query.offset,
         "length": data.len(),
     })))
+}
+
+/// Forward session creation to the remote tether-server via the SSH tunnel.
+async fn create_remote_session(
+    state: &AppState,
+    group_id: Uuid,
+    req: CreateSessionRequest,
+    ssh_host: &str,
+) -> Result<(StatusCode, Json<SessionRow>), StatusCode> {
+    let port = state
+        .inner
+        .remote_manager
+        .get_tunnel_port(ssh_host)
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    // Use the group that was created on the remote server, not the local group ID
+    let remote_group_id = state
+        .inner
+        .remote_manager
+        .get_remote_group_id(ssh_host)
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    // Allocate the UUID here so both local DB and remote use the same ID
+    let id = req.id.unwrap_or_else(Uuid::new_v4);
+
+    // Strip transport SSH commands: "ssh <host>" was used locally to reach this
+    // remote, but we are already on the remote — let it run its default shell.
+    let remote_command = req.command.as_deref()
+        .filter(|cmd| !cmd.trim_start().starts_with("ssh "))
+        .map(|s| s.to_string());
+
+    let body = RemoteCreateRequest {
+        group_id: remote_group_id,
+        name: req.name.clone(),
+        command: remote_command,
+        cwd: req.cwd.clone(),
+        id: Some(id),
+    };
+
+    let http_resp = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{}/api/sessions", port))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!("Remote session POST failed: {}", e);
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    if !http_resp.status().is_success() {
+        let remote_status = http_resp.status();
+        let body_text = http_resp.text().await.unwrap_or_default();
+        tracing::error!("Remote server returned {}: {}", remote_status, body_text);
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+
+    let remote_row: SessionRow = http_resp.json().await.map_err(|e| {
+        tracing::error!("Failed to parse remote session response: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    // Store metadata in local DB so we can route future requests
+    state
+        .inner
+        .db
+        .create_session(
+            &id.to_string(),
+            &group_id.to_string(),
+            &remote_row.name,
+            &remote_row.shell,
+            &remote_row.cwd,
+        )
+        .map_err(|e| {
+            tracing::error!("Failed to store remote session in local DB: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok((StatusCode::CREATED, Json(remote_row)))
 }

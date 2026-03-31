@@ -49,7 +49,7 @@ fn ssh_with_home_cwd_skips_cd() {
     let (shell, cwd) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~");
 
     // When cwd is ~, no cd wrapper needed (but keepalive is still injected)
-    assert_eq!(shell, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 devbox", "should be ssh command with keepalive");
+    assert_eq!(shell, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox", "should be ssh command with keepalive");
     let home = shellexpand::tilde("~").to_string();
     assert_eq!(cwd, home);
 }
@@ -58,7 +58,7 @@ fn ssh_with_home_cwd_skips_cd() {
 fn ssh_with_empty_cwd_skips_cd() {
     let (shell, cwd) = resolve_ssh_command(Some("devbox"), "ssh devbox", "");
 
-    assert_eq!(shell, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 devbox", "empty cwd should skip cd");
+    assert_eq!(shell, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox", "empty cwd should skip cd");
     let home = shellexpand::tilde("~").to_string();
     assert_eq!(cwd, home);
 }
@@ -184,10 +184,10 @@ fn transformation_returns_different_values_than_originals() {
 fn full_command_format_is_correct() {
     let (shell, _) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~/work");
 
-    // Expected: ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 devbox -t "cd ~/work && exec \$SHELL -l"
+    // Expected: ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox -t "cd ~/work && exec \$SHELL -l"
     assert_eq!(
         shell,
-        r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 devbox -t "cd ~/work && exec \$SHELL -l""#,
+        r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox -t "cd ~/work && exec \$SHELL -l""#,
         "full command format should match exactly"
     );
 }
@@ -198,7 +198,7 @@ fn full_command_format_with_absolute_path() {
 
     assert_eq!(
         shell,
-        r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 prod -t "cd /var/app && exec \$SHELL -l""#,
+        r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay prod -t "cd /var/app && exec \$SHELL -l""#,
     );
 }
 
@@ -257,6 +257,7 @@ fn test_state() -> AppState {
             db,
             shutdown_tx,
             fg_tx,
+            remote_manager: tether_server::remote::manager::RemoteManager::new(),
         }),
     }
 }
@@ -280,7 +281,7 @@ async fn create_session_in_ssh_group_stores_originals_in_db() {
 
     // Use `true` (exits immediately) to test without hanging
     let session = state
-        .create_session(group_id, None, Some("true".to_string()), None)
+        .create_session(group_id, None, Some("true".to_string()), None, None)
         .unwrap();
 
     // `true` doesn't start with "ssh ", so no transformation
@@ -306,7 +307,7 @@ async fn create_local_session_uses_group_cwd() {
     let group_id = uuid::Uuid::parse_str(&group.id).unwrap();
 
     let session = state
-        .create_session(group_id, None, Some("true".to_string()), None)
+        .create_session(group_id, None, Some("true".to_string()), None, None)
         .unwrap();
 
     let db_sessions = state.inner.db.list_sessions().unwrap();

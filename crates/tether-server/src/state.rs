@@ -1,6 +1,7 @@
 use crate::config::ServerConfig;
 use crate::persistence::Store;
 use crate::pty::session::{PtySession, SessionForeground};
+use crate::remote::manager::RemoteManager;
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -19,6 +20,7 @@ pub struct AppStateInner {
     pub shutdown_tx: broadcast::Sender<()>,
     /// Broadcast foreground process changes per session
     pub fg_tx: broadcast::Sender<(Uuid, SessionForeground)>,
+    pub remote_manager: RemoteManager,
 }
 
 impl AppState {
@@ -40,6 +42,7 @@ impl AppState {
                 db,
                 shutdown_tx,
                 fg_tx,
+                remote_manager: RemoteManager::new(),
             }),
         })
     }

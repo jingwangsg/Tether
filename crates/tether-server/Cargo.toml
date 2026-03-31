@@ -47,6 +47,12 @@ dashmap = "6"
 anyhow = "1"
 shellexpand = "3"
 
+# HTTP proxy to tunnel port (rustls avoids openssl-sys cross-compile issues)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# WS client proxy
+tokio-tungstenite = "0.24"
+
 [dev-dependencies]
 http-body-util = "0.1"
 tempfile = "3"

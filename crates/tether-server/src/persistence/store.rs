@@ -280,6 +280,21 @@ impl Store {
         Ok(row)
     }
 
+    /// Return the `ssh_host` field of a group directly (avoids constructing a full GroupRow).
+    pub fn get_group_ssh_host(&self, group_id: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT ssh_host FROM groups WHERE id = ?1",
+            params![group_id],
+            |row| row.get::<_, Option<String>>(0),
+        );
+        match result {
+            Ok(v) => Ok(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     // --- Sessions ---
 
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionRow>> {
@@ -376,6 +391,24 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    /// Return the `ssh_host` of the group that owns this session, if any.
+    /// Returns `None` when the session is local (group has no ssh_host).
+    pub fn get_session_ssh_host(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT g.ssh_host FROM sessions s \
+             JOIN groups g ON s.group_id = g.id \
+             WHERE s.id = ?1",
+            params![session_id],
+            |row| row.get::<_, Option<String>>(0),
+        );
+        match result {
+            Ok(v) => Ok(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn delete_all_sessions(&self) -> anyhow::Result<()> {
@@ -854,5 +887,59 @@ mod tests {
         // Root should survive
         assert!(store.get_group(&root.id).unwrap().is_some());
         assert!(store.list_sessions().unwrap().is_empty());
+    }
+
+    // --- Remote SSH helpers ---
+
+    #[test]
+    fn get_group_ssh_host_none_for_local_group() {
+        let store = new_store();
+        let g = store.create_group("local", "~", None, None).unwrap();
+        let result = store.get_group_ssh_host(&g.id).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn get_group_ssh_host_returns_value() {
+        let store = new_store();
+        let g = store
+            .create_group("remote", "~", None, Some("user@host"))
+            .unwrap();
+        let result = store.get_group_ssh_host(&g.id).unwrap();
+        assert_eq!(result, Some("user@host".to_string()));
+    }
+
+    #[test]
+    fn get_group_ssh_host_nonexistent_group() {
+        let store = new_store();
+        let result = store.get_group_ssh_host("no-such-id").unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn get_session_ssh_host_none_for_local_session() {
+        let store = new_store();
+        let g = store.create_group("local", "~", None, None).unwrap();
+        store.create_session("s1", &g.id, "sess", "/bin/sh", "~").unwrap();
+        let result = store.get_session_ssh_host("s1").unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn get_session_ssh_host_returns_value_for_ssh_group() {
+        let store = new_store();
+        let g = store
+            .create_group("remote", "~", None, Some("myhost"))
+            .unwrap();
+        store.create_session("s2", &g.id, "sess", "ssh myhost", "~").unwrap();
+        let result = store.get_session_ssh_host("s2").unwrap();
+        assert_eq!(result, Some("myhost".to_string()));
+    }
+
+    #[test]
+    fn get_session_ssh_host_nonexistent_session() {
+        let store = new_store();
+        let result = store.get_session_ssh_host("no-such-session").unwrap();
+        assert_eq!(result, None);
     }
 }

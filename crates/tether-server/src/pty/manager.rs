@@ -37,6 +37,7 @@ impl AppState {
         name: Option<String>,
         command: Option<String>,
         cwd_override: Option<String>,
+        id_override: Option<Uuid>,
     ) -> anyhow::Result<Arc<PtySession>> {
         let inner = &self.inner;
         let group = inner
@@ -44,7 +45,7 @@ impl AppState {
             .get_group(&group_id.to_string())?
             .ok_or_else(|| anyhow::anyhow!("Group not found"))?;
 
-        let id = Uuid::new_v4();
+        let id = id_override.unwrap_or_else(Uuid::new_v4);
         let shell = command
             .filter(|c| !c.is_empty())
             .unwrap_or_else(|| inner.config.resolve_shell());

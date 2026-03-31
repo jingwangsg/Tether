@@ -8,7 +8,7 @@ use axum::Router;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
-pub async fn run(state: AppState) -> anyhow::Result<()> {
+pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
     // Delete all sessions on startup (PTY processes can't survive a restart)
     state.inner.db.delete_all_sessions()?;
     // Clean up scrollback dirs
@@ -41,6 +41,7 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
         .route("/api/completions", get(api::completions::complete_path))
         .route("/api/completions/remote", get(api::completions::complete_remote_path))
         .route("/api/ssh/hosts", get(api::ssh::list_ssh_hosts))
+        .route("/api/remote/hosts", get(api::remote::list_remote_hosts))
         .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
 
     let app = Router::new()
@@ -60,6 +61,13 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
         state.clone(),
     ));
 
+    // Start remote SSH host scanner (disabled when running as a remote daemon)
+    if !no_ssh_scan {
+        tokio::spawn(crate::remote::manager::run_scanner(
+            state.inner.remote_manager.clone(),
+        ));
+    }
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     // Graceful shutdown
@@ -68,7 +76,20 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
+            #[cfg(unix)]
+            {
+                let mut sigterm = tokio::signal::unix::signal(
+                    tokio::signal::unix::SignalKind::terminate(),
+                )
+                .unwrap();
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = sigterm.recv() => {}
+                }
+            }
+            #[cfg(not(unix))]
             tokio::signal::ctrl_c().await.ok();
+
             tracing::info!("Shutting down...");
             let _ = shutdown_tx.send(());
 
