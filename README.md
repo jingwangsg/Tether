@@ -234,20 +234,6 @@ tether_ghostty/
 | Font rendering | CoreText + Ghostty's custom rasterizer |
 | Build toolchain | Zig 0.13 (for libghostty), Cargo (server), Flutter (app) |
 
-## Comparison with Tether
-
-| | Tether | tether_ghostty |
-|---|---|---|
-| Terminal renderer | xterm.dart (Dart/Canvas) | libghostty (Zig/Metal) |
-| PTY owner | tether-server (Rust) | libghostty (in-process) |
-| Rendering API | Flutter Canvas | Metal (CAMetalLayer) |
-| Transport | WebSocket + REST | REST only (metadata) |
-| Platform | macOS + Android | macOS (Apple Silicon) |
-| Font rendering | xterm.dart font stack | Ghostty's CoreText pipeline |
-| Scrollback | SQLite (hybrid RAM/disk) | libghostty PageList |
-
-The sidebar, providers, REST client, group/session models, and home layout are shared code — `tether_ghostty` is a drop-in rendering upgrade for the macOS target.
-
 ## License
 
 MIT

@@ -25,6 +25,11 @@ class GhosttyTerminalView: NSView {
     // nil = not inside a keyDown; [] = inside keyDown but no text yet.
     private var keyTextAccumulator: [String]? = nil
 
+    // IME composing state: true while there is marked (pre-edit) text.
+    // When composing, individual keyDown events must NOT be forwarded to the
+    // terminal — only the final insertText: commit should be sent.
+    private var isComposing = false
+
     init(sessionId: String, command: String?, cwd: String?, eventSink: FlutterEventSink? = nil) {
         self.sessionId = sessionId
         self.command = command
@@ -140,10 +145,13 @@ class GhosttyTerminalView: NSView {
         self.interpretKeyEvents([event])
 
         if let list = keyTextAccumulator, !list.isEmpty {
+            isComposing = false  // IME committed
             for text in list {
                 _ = sendKeyEvent(s, action: action, event: event, text: text)
             }
-        } else {
+        } else if !isComposing {
+            // Skip while IME has marked text — individual key presses are
+            // buffered by the IME and will be delivered via insertText: on commit.
             _ = sendKeyEvent(s, action: action, event: event, text: ghosttyCharacters(event))
         }
     }
@@ -263,11 +271,17 @@ extension GhosttyTerminalView: NSTextInputClient {
         ghostty_surface_text(s, chars, UInt(chars.utf8.count))
     }
 
-    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {}
-    func unmarkText() {}
+    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        let str: String
+        if let attr = string as? NSAttributedString { str = attr.string }
+        else if let s = string as? String { str = s }
+        else { return }
+        isComposing = !str.isEmpty
+    }
+    func unmarkText() { isComposing = false }
     func selectedRange() -> NSRange { .init(location: NSNotFound, length: 0) }
     func markedRange() -> NSRange { .init(location: NSNotFound, length: 0) }
-    func hasMarkedText() -> Bool { false }
+    func hasMarkedText() -> Bool { isComposing }
     func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
     func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
     func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect { .zero }

@@ -27,6 +27,9 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
   final VolumeKeyService _volumeKeys = VolumeKeyService();
   final PasteService _pasteService = PasteService();
   Set<String> _lastValidSessionIds = {};
+  // OSC title per session — used for tab display only, NOT persisted to server.
+  // The stored session.name stays as session-<hash> unless the user renames it.
+  final Map<String, String> _sessionTitles = {};
 
   @override
   void initState() {
@@ -94,6 +97,7 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
               _TerminalTabBar(
                 openTabs: openTabs,
                 activeId: activeId,
+                sessionTitles: _sessionTitles,
               ),
             Expanded(
               child: ClipRect(
@@ -128,10 +132,9 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
                               .replaceAll(RegExp(r'[\uDB80-\uDBFF][\uDC00-\uDFFF]'), '') // supplementary PUA surrogates
                               .trim();
                           if (clean.isEmpty) return;
-                          ref.read(serverProvider.notifier).updateSession(
-                            tab.sessionId,
-                            name: clean,
-                          );
+                          // Store locally for tab display only — do NOT persist to server.
+                          // session.name stays as session-<hash> unless user renames explicitly.
+                          setState(() { _sessionTitles[tab.sessionId] = clean; });
                         },
                       ),
                     );
@@ -194,10 +197,12 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
 class _TerminalTabBar extends ConsumerWidget {
   final List<OpenTab> openTabs;
   final String? activeId;
+  final Map<String, String> sessionTitles;
 
   const _TerminalTabBar({
     required this.openTabs,
     required this.activeId,
+    required this.sessionTitles,
   });
 
   @override
@@ -236,6 +241,10 @@ class _TerminalTabBar extends ConsumerWidget {
             }
 
             final display = getDisplayInfo(session, sessions);
+            // OSC title takes precedence for tab display; subtitle shows stored name
+            final oscTitle = sessionTitles[tab.sessionId];
+            final tabDisplayName = oscTitle ?? display.displayName;
+            final tabSubtitle = oscTitle != null ? session.name : display.subtitle;
 
             return ReorderableDelayedDragStartListener(
               key: ValueKey(tab.sessionId),
@@ -275,15 +284,15 @@ class _TerminalTabBar extends ConsumerWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            display.displayName,
+                            tabDisplayName,
                             style: TextStyle(
                               color: isActive ? Colors.white : Colors.white54,
                               fontSize: 12,
                             ),
                           ),
-                          if (display.subtitle != null)
+                          if (tabSubtitle != null)
                             Text(
-                              display.subtitle!,
+                              tabSubtitle,
                               style: TextStyle(
                                 color: isActive ? Colors.white38 : Colors.white24,
                                 fontSize: 10,
