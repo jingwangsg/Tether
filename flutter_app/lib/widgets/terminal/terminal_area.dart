@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -30,6 +31,10 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
   // OSC title per session — used for tab display only, NOT persisted to server.
   // The stored session.name stays as session-<hash> unless the user renames it.
   final Map<String, String> _sessionTitles = {};
+  // Debounce timers for clearing foregroundProcess.
+  // Claude Code sends various non-"claude" titles during normal operation;
+  // we wait 3 seconds before clearing so transient titles don't flicker the icon.
+  final Map<String, Timer> _clearDebounceTimers = {};
 
   @override
   void initState() {
@@ -53,6 +58,7 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
 
   @override
   void dispose() {
+    for (final t in _clearDebounceTimers.values) t.cancel();
     _pasteService.dispose();
     _volumeKeys.dispose();
     super.dispose();
@@ -122,6 +128,7 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
                         cwd: session?.cwd,
                         isActive: isActive,
                         onSessionExited: () {
+                          _clearDebounceTimers.remove(tab.sessionId)?.cancel();
                           ref.read(sessionProvider.notifier).closeTab(tab.sessionId);
                         },
                         onTitleChanged: (title) {
@@ -145,14 +152,26 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
                               .sessions.where((s) => s.id == tab.sessionId).firstOrNull?.foregroundProcess;
 
                           if (detectedProcess != null) {
+                            // Tool confirmed — cancel any pending clear
+                            _clearDebounceTimers.remove(tab.sessionId)?.cancel();
                             if (detectedProcess != currentProcess) {
                               ref.read(serverProvider.notifier)
                                   .updateForegroundProcess(tab.sessionId, detectedProcess, null);
                             }
                           } else if (currentProcess != null) {
-                            // Non-tool, non-empty title → tool exited, shell reclaimed the title
-                            ref.read(serverProvider.notifier)
-                                .updateForegroundProcess(tab.sessionId, null, null);
+                            // Non-tool title while process is active — debounce before clearing.
+                            // Claude Code sends various non-"claude" titles during normal operation;
+                            // only clear if no tool title comes back within 3 seconds.
+                            if (!_clearDebounceTimers.containsKey(tab.sessionId)) {
+                              _clearDebounceTimers[tab.sessionId] = Timer(
+                                const Duration(seconds: 3),
+                                () {
+                                  _clearDebounceTimers.remove(tab.sessionId);
+                                  ref.read(serverProvider.notifier)
+                                      .updateForegroundProcess(tab.sessionId, null, null);
+                                },
+                              );
+                            }
                           }
 
                           // Store locally for tab display when no process is active
