@@ -1,6 +1,5 @@
 import AppKit
 import FlutterMacOS
-import CoreVideo
 
 /// NSView embedding a ghostty_surface_t (PTY + Metal renderer).
 ///
@@ -17,7 +16,6 @@ class GhosttyTerminalView: NSView {
     private let cwd: String?
 
     private(set) var surface: ghostty_surface_t?
-    private var displayLink: CVDisplayLink?
     var eventSink: FlutterEventSink?
 
     private var titleObserver: NSObjectProtocol?
@@ -86,7 +84,8 @@ class GhosttyTerminalView: NSView {
             print("[GhosttyTerminalView] ghostty_surface_new failed"); return
         }
         ghostty_surface_set_size(s, UInt32(bounds.width), UInt32(bounds.height))
-        startDisplayLink()
+        GhosttyApp.shared.registerSurface(s)
+        ghostty_surface_draw(s)  // render initial frame
         observeNotifications()
     }
 
@@ -94,19 +93,6 @@ class GhosttyTerminalView: NSView {
     private func withOptCString<T>(_ s: String?, body: (UnsafePointer<CChar>?) -> T) -> T {
         guard let s, !s.isEmpty else { return body(nil) }
         return s.withCString(body)
-    }
-
-    private func startDisplayLink() {
-        CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)
-        guard let dl = displayLink else { return }
-        let cb: CVDisplayLinkOutputCallback = { _, _, _, _, _, ctx in
-            guard let ctx = ctx else { return kCVReturnSuccess }
-            let view = Unmanaged<GhosttyTerminalView>.fromOpaque(ctx).takeUnretainedValue()
-            DispatchQueue.main.async { view.surface.map { ghostty_surface_draw($0) } }
-            return kCVReturnSuccess
-        }
-        CVDisplayLinkSetOutputCallback(dl, cb, Unmanaged.passUnretained(self).toOpaque())
-        CVDisplayLinkStart(dl)
     }
 
     private func observeNotifications() {
@@ -241,12 +227,8 @@ class GhosttyTerminalView: NSView {
     }
 
     func setActive(_ active: Bool) {
-        guard let dl = displayLink else { return }
-        if active {
-            if !CVDisplayLinkIsRunning(dl) { CVDisplayLinkStart(dl) }
-        } else {
-            if CVDisplayLinkIsRunning(dl) { CVDisplayLinkStop(dl) }
-        }
+        guard let s = surface else { return }
+        GhosttyApp.shared.setSurfaceDrawable(s, drawable: active)
     }
 
     func setEventSink(_ sink: FlutterEventSink?) {
@@ -256,9 +238,9 @@ class GhosttyTerminalView: NSView {
     // MARK: - Cleanup
 
     deinit {
-        displayLink.map { CVDisplayLinkStop($0) }
         titleObserver.map { NotificationCenter.default.removeObserver($0) }
         exitObserver.map  { NotificationCenter.default.removeObserver($0) }
+        surface.map { GhosttyApp.shared.unregisterSurface($0) }
         surface.map { ghostty_surface_free($0) }
     }
 }

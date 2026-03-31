@@ -2,17 +2,79 @@ import Foundation
 import AppKit
 
 /// Singleton wrapper around ghostty_app_t (Ghostty v1.3.1 API).
+///
+/// Rendering model: libghostty calls wakeup_cb from any thread when it has
+/// work to do. We coalesce rapid wakeups into a single main-thread dispatch
+/// that calls ghostty_app_tick() then redraws all registered drawable surfaces.
+/// No CVDisplayLink is used — rendering is entirely event-driven.
 class GhosttyApp {
     static let shared = GhosttyApp()
 
     private(set) var app: ghostty_app_t?
 
+    // Surfaces that should be redrawn on wakeup (active/visible only)
+    private var drawableSurfaces: Set<ghostty_surface_t> = []
+    private let surfaceLock = NSLock()
+
+    // Coalescing: prevents main-queue buildup under rapid wakeup bursts
+    private let pendingLock = NSLock()
+    private var wakeupPending = false
+
     private init() {}
+
+    // MARK: - Surface registration
+
+    func registerSurface(_ s: ghostty_surface_t) {
+        surfaceLock.lock()
+        defer { surfaceLock.unlock() }
+        drawableSurfaces.insert(s)
+    }
+
+    func unregisterSurface(_ s: ghostty_surface_t) {
+        surfaceLock.lock()
+        defer { surfaceLock.unlock() }
+        drawableSurfaces.remove(s)
+    }
+
+    /// Called by GhosttyTerminalView.setActive(_:) to pause/resume draws for offstage tabs.
+    func setSurfaceDrawable(_ s: ghostty_surface_t, drawable: Bool) {
+        surfaceLock.lock()
+        defer { surfaceLock.unlock() }
+        if drawable { drawableSurfaces.insert(s) }
+        else        { drawableSurfaces.remove(s) }
+    }
+
+    // MARK: - Wakeup (called from any thread by libghostty)
+
+    func scheduleWakeup() {
+        // Coalesce: if a dispatch is already pending, skip — it will tick and draw
+        pendingLock.lock()
+        let schedule = !wakeupPending
+        wakeupPending = true
+        pendingLock.unlock()
+        guard schedule else { return }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingLock.lock()
+            self.wakeupPending = false
+            self.pendingLock.unlock()
+
+            guard let app = self.app else { return }
+            ghostty_app_tick(app)
+
+            self.surfaceLock.lock()
+            let surfaces = Array(self.drawableSurfaces)
+            self.surfaceLock.unlock()
+            for s in surfaces { ghostty_surface_draw(s) }
+        }
+    }
+
+    // MARK: - Setup
 
     func setup() {
         guard app == nil else { return }
 
-        // ghostty_init(argc, argv) — pass real command-line args
         let initResult = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
         guard initResult == GHOSTTY_SUCCESS else {
             print("[GhosttyApp] ghostty_init failed: \(initResult)")
@@ -29,10 +91,9 @@ class GhosttyApp {
         var rtCfg = ghostty_runtime_config_s(
             userdata: Unmanaged.passUnretained(self).toOpaque(),
             supports_selection_clipboard: false,
-            wakeup_cb: { _ in
-                DispatchQueue.main.async {
-                    NotificationCenter.default.post(name: .ghosttyWakeup, object: nil)
-                }
+            wakeup_cb: { ptr in
+                guard let ptr else { return }
+                Unmanaged<GhosttyApp>.fromOpaque(ptr).takeUnretainedValue().scheduleWakeup()
             },
             action_cb: { app, target, action in
                 DispatchQueue.main.async {
@@ -42,19 +103,13 @@ class GhosttyApp {
             },
             read_clipboard_cb: { _, loc, state in
                 guard loc == GHOSTTY_CLIPBOARD_STANDARD else { return false }
-                guard let str = NSPasteboard.general.string(forType: .string) else { return false }
-                // We need a surface to complete the request — surface comes from target in action_cb.
-                // For now, read is handled passively via state pointer.
-                // TODO: Route through surface from calling context
+                guard NSPasteboard.general.string(forType: .string) != nil else { return false }
                 return false
             },
-            confirm_read_clipboard_cb: { _, str, state, request in
-                // No confirmation UI — just complete it
-            },
+            confirm_read_clipboard_cb: { _, str, state, request in },
             write_clipboard_cb: { _, loc, content, len, confirm in
                 guard loc == GHOSTTY_CLIPBOARD_STANDARD else { return }
                 guard let content = content, len > 0 else { return }
-                // First text/plain item
                 for i in 0..<len {
                     let item = content[i]
                     guard let mime = item.mime, String(cString: mime) == "text/plain" else { continue }
@@ -67,10 +122,7 @@ class GhosttyApp {
             },
             close_surface_cb: { _, processAlive in
                 DispatchQueue.main.async {
-                    NotificationCenter.default.post(
-                        name: .ghosttyChildExited,
-                        object: nil
-                    )
+                    NotificationCenter.default.post(name: .ghosttyChildExited, object: nil)
                 }
             }
         )
@@ -120,7 +172,6 @@ class GhosttyApp {
 }
 
 extension Notification.Name {
-    static let ghosttyWakeup      = Notification.Name("GhosttyWakeup")
     static let ghosttyTitleChanged = Notification.Name("GhosttyTitleChanged")
     static let ghosttyChildExited  = Notification.Name("GhosttyChildExited")
 }
