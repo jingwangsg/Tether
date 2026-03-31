@@ -35,6 +35,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   WebSocketService? _ws;
   StreamSubscription? _msgSub;
   bool _isPaused = false;
+  bool _sessionExited = false;
   final List<Uint8List> _pauseBuffer = [];
 
   // Write batching — flush every 16ms
@@ -74,7 +75,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
 
   void _connect() {
     final serverState = ref.read(serverProvider);
-    if (!serverState.isConnected || serverState.config == null) return;
+    if (!serverState.isConnected || serverState.config == null) {
+      _writeToTerminal(utf8.encode('\r\n\x1b[31m[server not connected]\x1b[0m\r\n'));
+      return;
+    }
 
     final config = serverState.config!;
     final wsScheme = config.useTls ? 'wss' : 'ws';
@@ -94,6 +98,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
           _writeToTerminal(msg.data);
         case SessionEventMessage():
           if (msg.event == 'exited') {
+            _sessionExited = true;
             widget.onSessionExited?.call();
           }
         case ForegroundChangedMessage():
@@ -106,7 +111,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
             );
           });
         case ConnectionStateMessage():
-          if (!msg.connected) {
+          if (!msg.connected && !_sessionExited) {
             _writeToTerminal(utf8.encode('\r\n\x1b[33m[reconnecting...]\x1b[0m\r\n'));
           }
         case PongMessage():

@@ -44,7 +44,7 @@ class ConnectionStateMessage extends ServerMessage {
 /// Manages a WebSocket connection to a single terminal session.
 /// Supports auto-reconnect with exponential backoff.
 class WebSocketService {
-  final String url;
+  final String _url;
   WebSocketChannel? _channel;
   final _messageController = StreamController<ServerMessage>.broadcast();
   Timer? _pingTimer;
@@ -54,7 +54,7 @@ class WebSocketService {
   int _reconnectAttempts = 0;
   static const _maxReconnectDelay = Duration(seconds: 30);
 
-  WebSocketService(this.url);
+  WebSocketService(this._url);
 
   Stream<ServerMessage> get messages => _messageController.stream;
   bool get isConnected => _channel != null;
@@ -64,7 +64,7 @@ class WebSocketService {
     _reconnectTimer?.cancel();
 
     try {
-      _channel = WebSocketChannel.connect(Uri.parse(url));
+      _channel = WebSocketChannel.connect(Uri.parse(_url));
     } catch (e) {
       _scheduleReconnect();
       return;

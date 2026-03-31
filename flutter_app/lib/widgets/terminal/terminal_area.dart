@@ -81,6 +81,11 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
     final openIds = openTabs.map((t) => t.sessionId).toSet();
     _terminalKeys.removeWhere((id, _) => !openIds.contains(id));
     _sessionTitles.removeWhere((id, _) => !openIds.contains(id));
+    _clearDebounceTimers.removeWhere((id, timer) {
+      if (openIds.contains(id)) return false;
+      timer.cancel();
+      return true;
+    });
 
     Widget content;
     if (openTabs.isEmpty) {
