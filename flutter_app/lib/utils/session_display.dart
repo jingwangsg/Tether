@@ -22,8 +22,7 @@ SessionDisplayInfo getDisplayInfo(Session session, List<Session> allSessions) {
 
   if (process == null) {
     final subtitle = _cwdBasename(session.cwd);
-    final branch = session.gitBranch;
-    final displayName = branch != null ? '${session.name} ($branch)' : session.name;
+    final displayName = session.name;
     return SessionDisplayInfo(
       displayName: displayName,
       icon: Icons.terminal,
@@ -38,8 +37,7 @@ SessionDisplayInfo getDisplayInfo(Session session, List<Session> allSessions) {
     _ => process,
   };
 
-  final branch = session.gitBranch;
-  final displayName = branch != null ? '$prettyName ($branch)' : prettyName;
+  final displayName = prettyName;
 
   final IconData icon;
   final Color iconColor;
