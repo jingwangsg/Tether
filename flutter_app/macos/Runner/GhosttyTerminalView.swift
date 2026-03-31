@@ -88,7 +88,10 @@ class GhosttyTerminalView: NSView {
         guard let s = surface else {
             print("[GhosttyTerminalView] ghostty_surface_new failed"); return
         }
-        ghostty_surface_set_size(s, UInt32(bounds.width), UInt32(bounds.height))
+        // ghostty_surface_set_size expects physical pixels, not logical points.
+        // convertToBacking() multiplies by backingScaleFactor (2× on Retina).
+        let scaledBounds = convertToBacking(bounds)
+        ghostty_surface_set_size(s, UInt32(scaledBounds.width), UInt32(scaledBounds.height))
         GhosttyApp.shared.registerSurface(s)
         ghostty_surface_draw(s)  // render initial frame
         observeNotifications()
@@ -126,19 +129,39 @@ class GhosttyTerminalView: NSView {
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         guard let s = surface, newSize.width > 0, newSize.height > 0 else { return }
-        ghostty_surface_set_size(s, UInt32(newSize.width), UInt32(newSize.height))
+        let scaled = convertToBacking(NSRect(origin: .zero, size: newSize))
+        ghostty_surface_set_size(s, UInt32(scaled.width), UInt32(scaled.height))
         ghostty_surface_draw(s)
     }
 
-    // layout() is called by AppKit after the layout pass completes — bounds are final here.
-    // This catches the case where setFrameSize fires before the surface exists (surface is nil
-    // → setFrameSize is a no-op), so the surface gets its first correct size from layout().
+    // layout() catches the case where setFrameSize fired before the surface existed.
     override func layout() {
         super.layout()
         guard let s = surface, bounds.width > 0, bounds.height > 0 else { return }
-        ghostty_surface_set_size(s, UInt32(bounds.width), UInt32(bounds.height))
+        let scaled = convertToBacking(bounds)
+        ghostty_surface_set_size(s, UInt32(scaled.width), UInt32(scaled.height))
         ghostty_surface_draw(s)
         inputContext?.invalidateCharacterCoordinates()
+    }
+
+    // Mirror Ghostty's viewDidChangeBackingProperties — keeps layer scale and
+    // surface DPI in sync when the window moves between displays.
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        if let window = window {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer?.contentsScale = window.backingScaleFactor
+            CATransaction.commit()
+        }
+        guard let s = surface else { return }
+        let fbFrame = convertToBacking(frame)
+        let xScale = frame.width  > 0 ? fbFrame.width  / frame.width  : 1
+        let yScale = frame.height > 0 ? fbFrame.height / frame.height : 1
+        ghostty_surface_set_content_scale(s, xScale, yScale)
+        let scaled = convertToBacking(bounds)
+        ghostty_surface_set_size(s, UInt32(scaled.width), UInt32(scaled.height))
+        ghostty_surface_draw(s)
     }
 
     // MARK: - AppKit keyboard handling
