@@ -102,6 +102,7 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
             Expanded(
               child: ClipRect(
                 child: Stack(
+                  fit: StackFit.expand,
                   children: openTabs.map((tab) {
                     final isActive = tab.sessionId == activeId;
                     final session = sessions

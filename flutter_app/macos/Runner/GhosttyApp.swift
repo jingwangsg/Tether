@@ -86,6 +86,21 @@ class GhosttyApp {
             return
         }
         ghostty_config_load_default_files(cfg)
+
+        // Wire font settings from the app's settings dialog.
+        // Flutter SharedPreferences stores values in UserDefaults with the "flutter." prefix.
+        // These reflect settings saved in the previous session; changes take effect after restart.
+        let defaults = UserDefaults.standard
+        let fontFamily = defaults.string(forKey: "flutter.terminal_font_family") ?? "MesloLGSNF"
+        let fontSizeRaw = defaults.double(forKey: "flutter.terminal_font_size")
+        let fontSize = fontSizeRaw > 0 ? fontSizeRaw : 14.0
+        let snippet = "font-family = \"\(fontFamily)\"\nfont-size = \(fontSize)\n"
+        let tempPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("tether_ghostty_font.conf")
+        if (try? snippet.write(toFile: tempPath, atomically: true, encoding: .utf8)) != nil {
+            tempPath.withCString { ghostty_config_load_file(cfg, $0) }
+        }
+
         ghostty_config_finalize(cfg)
 
         var rtCfg = ghostty_runtime_config_s(
