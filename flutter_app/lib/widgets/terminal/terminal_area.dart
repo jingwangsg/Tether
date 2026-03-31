@@ -120,12 +120,18 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
                           ref.read(sessionProvider.notifier).closeTab(tab.sessionId);
                         },
                         onTitleChanged: (title) {
-                          if (title != null) {
-                            ref.read(serverProvider.notifier).updateSession(
-                              tab.sessionId,
-                              name: title,
-                            );
-                          }
+                          if (title == null || title.isEmpty) return;
+                          // Strip control chars and Private Use Area (nerd font glyphs → renders as 〓)
+                          final clean = title
+                              .replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '')          // control chars
+                              .replaceAll(RegExp(r'[\uE000-\uF8FF]'), '')           // BMP PUA
+                              .replaceAll(RegExp(r'[\uDB80-\uDBFF][\uDC00-\uDFFF]'), '') // supplementary PUA surrogates
+                              .trim();
+                          if (clean.isEmpty) return;
+                          ref.read(serverProvider.notifier).updateSession(
+                            tab.sessionId,
+                            name: clean,
+                          );
                         },
                       ),
                     );
