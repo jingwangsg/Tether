@@ -106,7 +106,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
             );
           });
         case ConnectionStateMessage():
-          break;
+          if (!msg.connected) {
+            _writeToTerminal(utf8.encode('\r\n\x1b[33m[reconnecting...]\x1b[0m\r\n'));
+          }
         case PongMessage():
           break;
         case ErrorMessage():
@@ -132,7 +134,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
 
   void _flushWrites() {
     _writeScheduled = false;
-    if (_writeQueue.isEmpty) return;
+    if (!mounted || _writeQueue.isEmpty) return;
 
     int totalLen = 0;
     for (final chunk in _writeQueue) {

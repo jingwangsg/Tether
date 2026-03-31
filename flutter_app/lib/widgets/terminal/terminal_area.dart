@@ -41,6 +41,10 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
     super.initState();
     _volumeKeys.setEnabled(true);
 
+    // PasteService forwards native macOS Cmd+V events via dev.tether/paste channel.
+    // With xterm backend, paste() calls _terminal.paste() which handles bracketed
+    // paste mode correctly. Falls back to PasteTextIntent (Actions widget below)
+    // if the native channel has no active handler.
     _pasteService.onPaste = (text) {
       final activeId = ref.read(sessionProvider).activeSessionId;
       if (activeId == null) return;
@@ -72,6 +76,11 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
     final openTabs = sessState.openTabs;
     final activeId = sessState.activeSessionId;
     final sessions = ref.watch(serverProvider.select((s) => s.sessions));
+
+    // Prune maps for sessions that are no longer open to prevent unbounded growth.
+    final openIds = openTabs.map((t) => t.sessionId).toSet();
+    _terminalKeys.removeWhere((id, _) => !openIds.contains(id));
+    _sessionTitles.removeWhere((id, _) => !openIds.contains(id));
 
     Widget content;
     if (openTabs.isEmpty) {
