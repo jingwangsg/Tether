@@ -141,6 +141,16 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     _writeScheduled = false;
     if (!mounted || _writeQueue.isEmpty) return;
 
+    // Snapshot scroll state before writing. 20px fuzz handles floating-point
+    // imprecision at the bottom boundary (logical pixels).
+    var wasAtBottom = true;
+    var savedOffset = 0.0;
+    if (_scrollController.hasClients) {
+      final pos = _scrollController.position;
+      savedOffset = pos.pixels;
+      wasAtBottom = pos.pixels >= pos.maxScrollExtent - 20.0;
+    }
+
     int totalLen = 0;
     for (final chunk in _writeQueue) {
       totalLen += chunk.length;
@@ -154,6 +164,17 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     _writeQueue.clear();
 
     _terminal.write(utf8.decode(merged, allowMalformed: true));
+
+    if (!wasAtBottom) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _scrollController.hasClients) {
+          // Skip if the user is mid-fling — let the momentum continue uninterrupted.
+          if (_scrollController.position.isScrollingNotifier.value) return;
+          final maxExtent = _scrollController.position.maxScrollExtent;
+          _scrollController.jumpTo(savedOffset.clamp(0.0, maxExtent));
+        }
+      });
+    }
   }
 
   void _pause() {
