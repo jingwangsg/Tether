@@ -127,13 +127,34 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
                           if (title == null || title.isEmpty) return;
                           // Strip control chars and Private Use Area (nerd font glyphs → renders as 〓)
                           final clean = title
-                              .replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '')          // control chars
-                              .replaceAll(RegExp(r'[\uE000-\uF8FF]'), '')           // BMP PUA
-                              .replaceAll(RegExp(r'[\uDB80-\uDBFF][\uDC00-\uDFFF]'), '') // supplementary PUA surrogates
+                              .replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '')
+                              .replaceAll(RegExp(r'[\uE000-\uF8FF]'), '')
+                              .replaceAll(RegExp(r'[\uDB80-\uDBFF][\uDC00-\uDFFF]'), '')
                               .trim();
                           if (clean.isEmpty) return;
-                          // Store locally for tab display only — do NOT persist to server.
-                          // session.name stays as session-<hash> unless user renames explicitly.
+
+                          // Detect foreground tool from OSC title (mirrors Tether's sticky-OSC logic).
+                          // Empty titles are already filtered above — they won't clear an active process.
+                          final lower = clean.toLowerCase();
+                          String? detectedProcess;
+                          if (lower.contains('claude')) detectedProcess = 'claude';
+                          else if (lower.contains('codex')) detectedProcess = 'codex';
+
+                          final currentProcess = ref.read(serverProvider)
+                              .sessions.where((s) => s.id == tab.sessionId).firstOrNull?.foregroundProcess;
+
+                          if (detectedProcess != null) {
+                            if (detectedProcess != currentProcess) {
+                              ref.read(serverProvider.notifier)
+                                  .updateForegroundProcess(tab.sessionId, detectedProcess, null);
+                            }
+                          } else if (currentProcess != null) {
+                            // Non-tool, non-empty title → tool exited, shell reclaimed the title
+                            ref.read(serverProvider.notifier)
+                                .updateForegroundProcess(tab.sessionId, null, null);
+                          }
+
+                          // Store locally for tab display when no process is active
                           setState(() { _sessionTitles[tab.sessionId] = clean; });
                         },
                       ),
@@ -241,10 +262,12 @@ class _TerminalTabBar extends ConsumerWidget {
             }
 
             final display = getDisplayInfo(session, sessions);
-            // OSC title takes precedence for tab display; subtitle shows stored name
             final oscTitle = sessionTitles[tab.sessionId];
-            final tabDisplayName = oscTitle ?? display.displayName;
-            final tabSubtitle = oscTitle != null ? session.name : display.subtitle;
+            final hasProcess = session.foregroundProcess != null;
+            // When a process (claude/codex) is active: getDisplayInfo() already shows the right name+icon.
+            // When no process: use OSC title (directory) or session-<hash> as fallback.
+            final tabDisplayName = hasProcess ? display.displayName : (oscTitle ?? display.displayName);
+            final tabSubtitle = hasProcess ? session.name : (oscTitle != null ? session.name : display.subtitle);
 
             return ReorderableDelayedDragStartListener(
               key: ValueKey(tab.sessionId),
