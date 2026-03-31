@@ -38,9 +38,15 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   bool _sessionExited = false;
   final List<Uint8List> _pauseBuffer = [];
 
-  // Write batching — flush every 16ms
+  // Write batching — flush next microtask
   final List<Uint8List> _writeQueue = [];
   bool _writeScheduled = false;
+
+  // Stateful UTF-8 decoder — maintains state across flushes so multi-byte
+  // sequences split across WebSocket message boundaries are reassembled
+  // correctly instead of being replaced with U+FFFD.
+  final StreamController<List<int>> _bytesInput =
+      StreamController<List<int>>(sync: true);
 
   // Foreground change debounce
   Timer? _foregroundDebounce;
@@ -61,6 +67,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
       _ws?.sendResize(width, height);
     };
+    _bytesInput.stream
+        .transform(const Utf8Decoder(allowMalformed: true))
+        .listen((text) => _terminal.write(text));
     _connect();
   }
 
@@ -199,7 +208,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     }
     _writeQueue.clear();
 
-    _terminal.write(utf8.decode(merged, allowMalformed: true));
+    _bytesInput.add(merged);
 
     if (!wasAtBottom) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -288,6 +297,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     _toolStateTimer?.cancel();
     _msgSub?.cancel();
     _ws?.dispose();
+    _bytesInput.close();
     _terminalController.dispose();
     _scrollController.dispose();
     super.dispose();
