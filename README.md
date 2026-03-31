@@ -8,6 +8,8 @@
 
 <h1 align="center">
   <br>
+  <img src="flutter_app/macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_128.png" width="80" alt="Tether icon"/>
+  <br>
   Tether Ghostty
   <br>
 </h1>
@@ -21,6 +23,10 @@
   <a href="#quick-start">Quick Start</a> •
   <a href="#building-libghostty">Building libghostty</a> •
   <a href="#project-structure">Project Structure</a>
+</p>
+
+<p align="center">
+  <img src="docs/screenshot.png" alt="Tether Ghostty screenshot" width="780"/>
 </p>
 
 ---
