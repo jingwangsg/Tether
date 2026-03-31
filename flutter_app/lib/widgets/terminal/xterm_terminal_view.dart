@@ -103,10 +103,11 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
           }
         case ForegroundChangedMessage():
           _foregroundDebounce?.cancel();
-          _foregroundDebounce = Timer(const Duration(milliseconds: 500), () {
+          _foregroundDebounce = Timer(const Duration(milliseconds: 100), () {
             ref.read(serverProvider.notifier).updateForegroundProcess(
               widget.sessionId,
               msg.process,
+              toolState: msg.toolState,
             );
           });
         case ConnectionStateMessage():

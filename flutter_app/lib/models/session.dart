@@ -11,6 +11,7 @@ class Session {
   final String lastActive;
   final int sortOrder;
   final String? foregroundProcess;
+  final String? toolState; // "running", "waiting", or null
 
   Session({
     required this.id,
@@ -25,6 +26,7 @@ class Session {
     required this.lastActive,
     this.sortOrder = 0,
     this.foregroundProcess,
+    this.toolState,
   });
 
   factory Session.fromJson(Map<String, dynamic> json) {
@@ -50,6 +52,7 @@ class Session {
     bool? isAlive,
     int? sortOrder,
     String? foregroundProcess,
+    String? toolState,
     bool clearForeground = false,
   }) {
     return Session(
@@ -65,6 +68,7 @@ class Session {
       lastActive: lastActive,
       sortOrder: sortOrder ?? this.sortOrder,
       foregroundProcess: clearForeground ? null : (foregroundProcess ?? this.foregroundProcess),
+      toolState: clearForeground ? null : (toolState ?? this.toolState),
     );
   }
 }

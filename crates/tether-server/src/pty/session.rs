@@ -8,17 +8,27 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+/// Running state of an AI tool (claude/codex) inferred from terminal output activity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolState {
+    /// Tool is actively rendering (spinner / frequent writes in last 300ms).
+    Running,
+    /// Tool is idle in alternate screen, waiting for user input.
+    Waiting,
+}
+
 /// Transient foreground process info (not persisted).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionForeground {
     pub process: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_state: Option<ToolState>,
 }
 
 impl Default for SessionForeground {
     fn default() -> Self {
-        Self {
-            process: None,
-        }
+        Self { process: None, tool_state: None }
     }
 }
 
@@ -51,6 +61,8 @@ pub struct PtySession {
     output_detected_tool: Mutex<Option<String>>,
     /// Whether the terminal is currently in alternate screen mode.
     in_alternate_screen: std::sync::atomic::AtomicBool,
+    /// Timestamp of the last PTY output chunk (used for tool running/waiting detection).
+    last_output_time: Mutex<Option<std::time::Instant>>,
 }
 
 impl PtySession {
@@ -125,6 +137,7 @@ impl PtySession {
             sticky_osc_tool: Mutex::new(None),
             output_detected_tool: Mutex::new(None),
             in_alternate_screen: std::sync::atomic::AtomicBool::new(false),
+            last_output_time: Mutex::new(None),
         });
 
         // Spawn reader task
@@ -163,6 +176,7 @@ impl PtySession {
                     // Track alternate screen mode and detect tool signatures in output
                     Self::track_alternate_screen(&session, &buf[..n]);
                     Self::detect_tool_in_output(&session, &buf[..n]);
+                    *session.last_output_time.lock().unwrap() = Some(std::time::Instant::now());
                     let _ = tx.send(data);
                 }
                 Err(_) => break,
@@ -245,7 +259,28 @@ impl PtySession {
     /// then resolves the process name via `ps`.
     pub fn detect_foreground(&self) -> SessionForeground {
         let process = self.detect_foreground_process();
-        SessionForeground { process }
+        let tool_state = if Self::is_known_tool(process.as_deref()) {
+            self.compute_tool_state()
+        } else {
+            None
+        };
+        SessionForeground { process, tool_state }
+    }
+
+    /// Infer the running/waiting state of an AI tool from terminal output activity.
+    /// Only meaningful when a known tool is the foreground process.
+    pub fn compute_tool_state(&self) -> Option<ToolState> {
+        if !self.in_alternate_screen.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        let is_recent = self.last_output_time.lock().unwrap()
+            .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
+            .unwrap_or(false);
+        Some(if is_recent { ToolState::Running } else { ToolState::Waiting })
+    }
+
+    pub fn is_known_tool(process: Option<&str>) -> bool {
+        matches!(process, Some("claude") | Some("codex"))
     }
 
     fn detect_foreground_process(&self) -> Option<String> {

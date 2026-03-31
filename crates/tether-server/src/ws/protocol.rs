@@ -1,3 +1,4 @@
+use crate::pty::session::ToolState;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +34,8 @@ pub enum ServerMessage {
     #[serde(rename = "foreground_changed")]
     ForegroundChanged {
         process: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_state: Option<ToolState>,
     },
 }
 

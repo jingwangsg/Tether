@@ -195,11 +195,12 @@ class ServerNotifier extends StateNotifier<ServerState> {
     await refresh();
   }
 
-  void updateForegroundProcess(String sessionId, String? process) {
+  void updateForegroundProcess(String sessionId, String? process, {String? toolState}) {
     final sessions = state.sessions.map((s) {
       if (s.id == sessionId) {
         return s.copyWith(
           foregroundProcess: process,
+          toolState: toolState,
           clearForeground: process == null,
         );
       }

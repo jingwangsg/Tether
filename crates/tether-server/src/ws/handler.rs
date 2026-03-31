@@ -124,6 +124,7 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AppState) {
                         Ok((sid, fg)) if sid == session_id => {
                             let msg = ServerMessage::ForegroundChanged {
                                 process: fg.process,
+                                tool_state: fg.tool_state,
                             };
                             if let Ok(json) = serde_json::to_string(&msg) {
                                 if ws_sink.send(Message::Text(json.into())).await.is_err() {

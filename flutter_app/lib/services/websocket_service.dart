@@ -32,7 +32,8 @@ class ErrorMessage extends ServerMessage {
 
 class ForegroundChangedMessage extends ServerMessage {
   final String? process;
-  ForegroundChangedMessage(this.process);
+  final String? toolState;
+  ForegroundChangedMessage(this.process, this.toolState);
 }
 
 class ConnectionStateMessage extends ServerMessage {
@@ -136,6 +137,7 @@ class WebSocketService {
         case 'foreground_changed':
           _messageController.add(ForegroundChangedMessage(
             json['process'] as String?,
+            json['tool_state'] as String?,
           ));
         default:
           break;
