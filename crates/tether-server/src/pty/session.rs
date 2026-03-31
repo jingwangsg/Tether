@@ -12,14 +12,12 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionForeground {
     pub process: Option<String>,
-    pub git_branch: Option<String>,
 }
 
 impl Default for SessionForeground {
     fn default() -> Self {
         Self {
             process: None,
-            git_branch: None,
         }
     }
 }
@@ -45,10 +43,6 @@ pub struct PtySession {
     osc_title: Mutex<Option<String>>,
     /// Stateful OSC parser, used by reader_loop across chunks
     osc_parser: Mutex<OscParser>,
-    /// SSH host for remote git detection (None for local sessions)
-    ssh_host: Option<String>,
-    /// Remote working directory for SSH sessions
-    remote_cwd: Option<String>,
     /// Sticky OSC title: remembers the last tool name seen in an OSC title.
     /// Cleared only when a non-empty, non-tool title appears (shell reclaimed the title).
     sticky_osc_tool: Mutex<Option<String>>,
@@ -71,8 +65,6 @@ impl PtySession {
         scrollback_data_dir: &str,
         scrollback_memory_kb: usize,
         scrollback_disk_max_mb: usize,
-        ssh_host: Option<String>,
-        remote_cwd: Option<String>,
     ) -> anyhow::Result<Arc<Self>> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
@@ -128,8 +120,6 @@ impl PtySession {
             shell: shell.to_string(),
             pty_master_fd: Mutex::new(Some(pair.master)),
             foreground: Mutex::new(SessionForeground::default()),
-            ssh_host,
-            remote_cwd,
             osc_title: Mutex::new(None),
             osc_parser: Mutex::new(OscParser::new()),
             sticky_osc_tool: Mutex::new(None),
@@ -250,16 +240,12 @@ impl PtySession {
         self.foreground.lock().unwrap().clone()
     }
 
-    /// Detect the current foreground process and git branch.
+    /// Detect the current foreground process.
     /// Uses `MasterPty::process_group_leader()` (calls `tcgetpgrp` internally)
     /// then resolves the process name via `ps`.
     pub fn detect_foreground(&self) -> SessionForeground {
         let process = self.detect_foreground_process();
-        let git_branch = self.detect_git_branch();
-        SessionForeground {
-            process,
-            git_branch,
-        }
+        SessionForeground { process }
     }
 
     fn detect_foreground_process(&self) -> Option<String> {
@@ -400,44 +386,4 @@ impl PtySession {
         }
     }
 
-    fn detect_git_branch(&self) -> Option<String> {
-        if let Some(ref host) = self.ssh_host {
-            return self.detect_git_branch_remote(host);
-        }
-        let output = std::process::Command::new("git")
-            .args(["-C", &self.cwd, "rev-parse", "--abbrev-ref", "HEAD"])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if branch.is_empty() || branch == "HEAD" {
-            None
-        } else {
-            Some(branch)
-        }
-    }
-
-    fn detect_git_branch_remote(&self, host: &str) -> Option<String> {
-        let cwd = self.remote_cwd.as_deref().unwrap_or("~");
-        let output = std::process::Command::new("ssh")
-            .args([
-                "-o", "ConnectTimeout=3",
-                "-o", "BatchMode=yes",
-                host,
-                "git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD",
-            ])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if branch.is_empty() || branch == "HEAD" {
-            None
-        } else {
-            Some(branch)
-        }
-    }
 }

@@ -33,7 +33,6 @@ pub enum ServerMessage {
     #[serde(rename = "foreground_changed")]
     ForegroundChanged {
         process: Option<String>,
-        git_branch: Option<String>,
     },
 }
 

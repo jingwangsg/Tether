@@ -107,7 +107,6 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
             ref.read(serverProvider.notifier).updateForegroundProcess(
               widget.sessionId,
               msg.process,
-              msg.gitBranch,
             );
           });
         case ConnectionStateMessage():

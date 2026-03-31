@@ -36,8 +36,6 @@ fn spawn_session(script: &str, dir: &str) -> Arc<PtySession> {
         dir,
         64,
         1,
-        None,
-        None,
     )
     .unwrap()
 }
