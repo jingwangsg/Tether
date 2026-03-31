@@ -65,7 +65,7 @@ class GhosttyTerminalView: NSView {
         cfg.platform_tag = GHOSTTY_PLATFORM_MACOS
         cfg.platform.macos.nsview = Unmanaged.passUnretained(self).toOpaque()
         cfg.userdata = Unmanaged.passUnretained(self).toOpaque()
-        cfg.scale_factor = Double(window.backingScaleFactor)
+        cfg.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? window.backingScaleFactor)
 
         let isSSH = command?.hasPrefix("ssh ") ?? false
         // For SSH + remote cwd: embed cd directly in the command string.
@@ -146,6 +146,16 @@ class GhosttyTerminalView: NSView {
     override func layout() {
         super.layout()
         guard let s = surface, bounds.width > 0, bounds.height > 0 else { return }
+
+        // Update DPI before size — mirrors Ghostty's viewDidChangeBackingProperties pattern.
+        // Fixes the case where cfg.scale_factor was initialised from an offscreen helper
+        // window (backingScaleFactor=1.0); layout() fires after the view is in the real
+        // window, so convertToBacking() reflects the true display DPI.
+        if frame.width > 0 && frame.height > 0 {
+            let fbFrame = convertToBacking(frame)
+            ghostty_surface_set_content_scale(s, fbFrame.width / frame.width, fbFrame.height / frame.height)
+        }
+
         let scaled = convertToBacking(bounds)
         ghostty_surface_set_size(s, UInt32(scaled.width), UInt32(scaled.height))
         ghostty_surface_draw(s)
