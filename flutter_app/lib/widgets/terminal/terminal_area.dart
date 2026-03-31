@@ -171,7 +171,7 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
                             _clearDebounceTimers.remove(tab.sessionId)?.cancel();
                             if (detectedProcess != currentProcess) {
                               ref.read(serverProvider.notifier)
-                                  .updateForegroundProcess(tab.sessionId, detectedProcess, null);
+                                  .updateForegroundProcess(tab.sessionId, detectedProcess);
                             }
                           } else if (currentProcess != null) {
                             // Non-tool title while process is active — debounce before clearing.
@@ -183,7 +183,7 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
                                 () {
                                   _clearDebounceTimers.remove(tab.sessionId);
                                   ref.read(serverProvider.notifier)
-                                      .updateForegroundProcess(tab.sessionId, null, null);
+                                      .updateForegroundProcess(tab.sessionId, null);
                                 },
                               );
                             }
