@@ -111,6 +111,25 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  if (widget.group.sshHost != null && widget.group.sshHost!.isNotEmpty) ...[
+                    const SizedBox(width: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        widget.group.sshHost!,
+                        style: const TextStyle(
+                          color: Colors.lightBlueAccent,
+                          fontSize: 10,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                  ],
                   Text(
                     '${sessions.length}',
                     style: const TextStyle(color: Colors.white24, fontSize: 11),
