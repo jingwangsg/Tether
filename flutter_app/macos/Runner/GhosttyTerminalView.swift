@@ -49,15 +49,23 @@ class GhosttyTerminalView: NSView {
     }
 
     private func createSurface() {
-        guard let app = GhosttyApp.shared.app else {
-            print("[GhosttyTerminalView] GhosttyApp not ready"); return
+        guard let app = GhosttyApp.shared.app, let window = window else {
+            print("[GhosttyTerminalView] GhosttyApp not ready or no window"); return
         }
+
+        // Set contentsScale NOW, before ghostty draws its first frame.
+        // Without this the CALayer defaults to 1.0 and scales the 2× framebuffer
+        // down by 2×, making everything appear at half the intended visual size.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.contentsScale = window.backingScaleFactor
+        CATransaction.commit()
 
         var cfg = ghostty_surface_config_new()
         cfg.platform_tag = GHOSTTY_PLATFORM_MACOS
         cfg.platform.macos.nsview = Unmanaged.passUnretained(self).toOpaque()
         cfg.userdata = Unmanaged.passUnretained(self).toOpaque()
-        cfg.scale_factor = Double(window?.backingScaleFactor ?? 1.0)
+        cfg.scale_factor = Double(window.backingScaleFactor)
 
         let isSSH = command?.hasPrefix("ssh ") ?? false
         // For SSH + remote cwd: embed cd directly in the command string.
