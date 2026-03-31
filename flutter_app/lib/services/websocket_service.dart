@@ -32,8 +32,7 @@ class ErrorMessage extends ServerMessage {
 
 class ForegroundChangedMessage extends ServerMessage {
   final String? process;
-  final String? gitBranch;
-  ForegroundChangedMessage(this.process, this.gitBranch);
+  ForegroundChangedMessage(this.process);
 }
 
 class ConnectionStateMessage extends ServerMessage {
@@ -137,7 +136,6 @@ class WebSocketService {
         case 'foreground_changed':
           _messageController.add(ForegroundChangedMessage(
             json['process'] as String?,
-            json['git_branch'] as String?,
           ));
         default:
           break;

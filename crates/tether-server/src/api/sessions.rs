@@ -59,7 +59,6 @@ pub async fn list_sessions(
                 row.is_alive = session.is_alive();
                 let fg = session.get_foreground();
                 row.foreground_process = fg.process;
-                row.git_branch = fg.git_branch;
             }
         }
     }
@@ -126,7 +125,6 @@ pub async fn create_session(
         last_active: chrono::Utc::now().to_rfc3339(),
         is_alive: session.is_alive(),
         foreground_process: None,
-        git_branch: None,
     };
 
     Ok((StatusCode::CREATED, Json(row)))

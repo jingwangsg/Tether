@@ -195,13 +195,12 @@ class ServerNotifier extends StateNotifier<ServerState> {
     await refresh();
   }
 
-  void updateForegroundProcess(String sessionId, String? process, String? gitBranch) {
+  void updateForegroundProcess(String sessionId, String? process) {
     final sessions = state.sessions.map((s) {
       if (s.id == sessionId) {
         return s.copyWith(
           foregroundProcess: process,
-          gitBranch: gitBranch,
-          clearForeground: process == null && gitBranch == null,
+          clearForeground: process == null,
         );
       }
       return s;

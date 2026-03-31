@@ -34,9 +34,6 @@ pub struct SessionRow {
     /// Transient: detected foreground process (e.g. "claude", "codex")
     #[serde(skip_deserializing)]
     pub foreground_process: Option<String>,
-    /// Transient: detected git branch
-    #[serde(skip_deserializing)]
-    pub git_branch: Option<String>,
 }
 
 impl Store {
@@ -304,7 +301,6 @@ impl Store {
                     last_active: row.get(8)?,
                     is_alive: row.get::<_, i32>(9)? != 0,
                     foreground_process: None,
-                    git_branch: None,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -337,7 +333,6 @@ impl Store {
             last_active: now,
             is_alive: true,
             foreground_process: None,
-            git_branch: None,
         })
     }
 

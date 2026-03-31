@@ -30,8 +30,13 @@ fn ssh_with_remote_cwd_includes_cd() {
         shell
     );
     assert!(
-        shell.starts_with("ssh devbox"),
-        "should start with ssh command, got: {}",
+        shell.contains("devbox"),
+        "should contain host, got: {}",
+        shell
+    );
+    assert!(
+        shell.contains("ServerAliveInterval=30"),
+        "should contain keepalive option, got: {}",
         shell
     );
     // cwd should be local home, not the remote path
@@ -43,8 +48,8 @@ fn ssh_with_remote_cwd_includes_cd() {
 fn ssh_with_home_cwd_skips_cd() {
     let (shell, cwd) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~");
 
-    // When cwd is ~, no cd wrapper needed
-    assert_eq!(shell, "ssh devbox", "should be plain ssh command");
+    // When cwd is ~, no cd wrapper needed (but keepalive is still injected)
+    assert_eq!(shell, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 devbox", "should be ssh command with keepalive");
     let home = shellexpand::tilde("~").to_string();
     assert_eq!(cwd, home);
 }
@@ -53,7 +58,7 @@ fn ssh_with_home_cwd_skips_cd() {
 fn ssh_with_empty_cwd_skips_cd() {
     let (shell, cwd) = resolve_ssh_command(Some("devbox"), "ssh devbox", "");
 
-    assert_eq!(shell, "ssh devbox", "empty cwd should skip cd");
+    assert_eq!(shell, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 devbox", "empty cwd should skip cd");
     let home = shellexpand::tilde("~").to_string();
     assert_eq!(cwd, home);
 }
@@ -87,7 +92,7 @@ fn ssh_preserves_host_with_user() {
         resolve_ssh_command(Some("myhost"), "ssh user@myhost", "~/work");
 
     assert!(
-        shell.starts_with("ssh user@myhost"),
+        shell.contains("user@myhost"),
         "should preserve user@host, got: {}",
         shell
     );
@@ -100,7 +105,7 @@ fn ssh_preserves_host_with_port() {
         resolve_ssh_command(Some("myhost"), "ssh -p 2222 myhost", "~/work");
 
     assert!(
-        shell.starts_with("ssh -p 2222 myhost"),
+        shell.contains("-p 2222") && shell.contains("myhost"),
         "should preserve port flag, got: {}",
         shell
     );
@@ -179,10 +184,10 @@ fn transformation_returns_different_values_than_originals() {
 fn full_command_format_is_correct() {
     let (shell, _) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~/work");
 
-    // Expected: ssh devbox -t "cd ~/work && exec \$SHELL -l"
+    // Expected: ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 devbox -t "cd ~/work && exec \$SHELL -l"
     assert_eq!(
         shell,
-        r#"ssh devbox -t "cd ~/work && exec \$SHELL -l""#,
+        r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 devbox -t "cd ~/work && exec \$SHELL -l""#,
         "full command format should match exactly"
     );
 }
@@ -193,7 +198,7 @@ fn full_command_format_with_absolute_path() {
 
     assert_eq!(
         shell,
-        r#"ssh prod -t "cd /var/app && exec \$SHELL -l""#,
+        r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 prod -t "cd /var/app && exec \$SHELL -l""#,
     );
 }
 

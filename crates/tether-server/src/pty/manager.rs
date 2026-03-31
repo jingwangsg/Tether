@@ -13,10 +13,15 @@ pub fn resolve_ssh_command(
     cwd: &str,
 ) -> (String, String) {
     if ssh_host.is_some() && shell.starts_with("ssh ") {
+        let shell_with_keepalive = shell.replacen(
+            "ssh ",
+            "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ",
+            1,
+        );
         let ssh_cmd = if cwd != "~" && !cwd.is_empty() {
-            format!("{} -t \"cd {} && exec \\$SHELL -l\"", shell, cwd)
+            format!("{} -t \"cd {} && exec \\$SHELL -l\"", shell_with_keepalive, cwd)
         } else {
-            shell.to_string()
+            shell_with_keepalive
         };
         let local_cwd = shellexpand::tilde("~").to_string();
         (ssh_cmd, local_cwd)
@@ -50,14 +55,8 @@ impl AppState {
         let data_dir = inner.config.data_dir();
 
         // For SSH sessions: embed remote cwd into SSH command, use local home for process cwd
-        let is_ssh = group.ssh_host.is_some() && shell.starts_with("ssh ");
         let (effective_shell, effective_cwd) =
             resolve_ssh_command(group.ssh_host.as_deref(), &shell, &cwd);
-        let (ssh_host, remote_cwd) = if is_ssh {
-            (group.ssh_host.clone(), Some(cwd.clone()))
-        } else {
-            (None, None)
-        };
 
         let session = PtySession::spawn(
             id,
@@ -70,8 +69,6 @@ impl AppState {
             &data_dir,
             inner.config.terminal.scrollback_memory_kb,
             inner.config.terminal.scrollback_disk_max_mb,
-            ssh_host,
-            remote_cwd,
         )?;
 
         // Persist to DB

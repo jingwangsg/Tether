@@ -11,7 +11,6 @@ class Session {
   final String lastActive;
   final int sortOrder;
   final String? foregroundProcess;
-  final String? gitBranch;
 
   Session({
     required this.id,
@@ -26,7 +25,6 @@ class Session {
     required this.lastActive,
     this.sortOrder = 0,
     this.foregroundProcess,
-    this.gitBranch,
   });
 
   factory Session.fromJson(Map<String, dynamic> json) {
@@ -43,7 +41,6 @@ class Session {
       lastActive: json['last_active'] as String? ?? '',
       sortOrder: json['sort_order'] as int? ?? 0,
       foregroundProcess: json['foreground_process'] as String?,
-      gitBranch: json['git_branch'] as String?,
     );
   }
 
@@ -53,7 +50,6 @@ class Session {
     bool? isAlive,
     int? sortOrder,
     String? foregroundProcess,
-    String? gitBranch,
     bool clearForeground = false,
   }) {
     return Session(
@@ -69,7 +65,6 @@ class Session {
       lastActive: lastActive,
       sortOrder: sortOrder ?? this.sortOrder,
       foregroundProcess: clearForeground ? null : (foregroundProcess ?? this.foregroundProcess),
-      gitBranch: clearForeground ? null : (gitBranch ?? this.gitBranch),
     );
   }
 }
