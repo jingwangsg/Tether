@@ -138,6 +138,7 @@ class GhosttyTerminalView: NSView {
         guard let s = surface, bounds.width > 0, bounds.height > 0 else { return }
         ghostty_surface_set_size(s, UInt32(bounds.width), UInt32(bounds.height))
         ghostty_surface_draw(s)
+        inputContext?.invalidateCharacterCoordinates()
     }
 
     // MARK: - AppKit keyboard handling
@@ -296,6 +297,14 @@ extension GhosttyTerminalView: NSTextInputClient {
     func hasMarkedText() -> Bool { isComposing }
     func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
     func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
-    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect { .zero }
+    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        // Return the view's bottom-left corner in screen coordinates.
+        // This gives the IMK a valid mach port target for its candidate window,
+        // preventing the "error messaging the mach port for IMKCFRunLoopWakeUpReliable" log.
+        guard let window = window else { return .zero }
+        let localRect = NSRect(x: 0, y: 0, width: 0, height: 0)
+        let windowRect = convert(localRect, to: nil)
+        return window.convertToScreen(windowRect)
+    }
     func characterIndex(for point: NSPoint) -> Int { 0 }
 }
