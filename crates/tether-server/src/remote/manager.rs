@@ -18,6 +18,7 @@ use super::tunnel::Tunnel;
 pub enum RemoteStatus {
     Unreachable,
     Connecting,
+    #[allow(dead_code)]
     Deploying,
     Ready,
     Failed(String),
@@ -34,6 +35,7 @@ pub struct RemoteHostStatus {
 // ── Internal state ────────────────────────────────────────────────────────────
 
 struct RemoteHostState {
+    #[allow(dead_code)]
     ssh_host: SshHost,
     status: RemoteStatus,
     client: Option<SshClient>,
@@ -104,6 +106,7 @@ impl RemoteManager {
 impl RemoteManager {
     /// Inject a Ready host state pointing at an already-listening local port.
     /// Only for use in tests — bypasses real SSH and deployment.
+    #[allow(dead_code)]
     pub fn inject_ready_for_testing(&self, host_alias: &str, tunnel_port: u16, remote_group_id: &str) {
         self.hosts.insert(
             host_alias.to_string(),

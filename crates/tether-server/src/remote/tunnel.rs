@@ -64,6 +64,7 @@ async fn wait_for_port(local_port: u16) -> anyhow::Result<()> {
 impl Tunnel {
     /// Create a mock tunnel pointing at an already-listening local port.
     /// Only for use in tests — bypasses real SSH.
+    #[allow(dead_code)]
     pub fn new_for_testing(local_port: u16) -> Self {
         Self {
             local_port,

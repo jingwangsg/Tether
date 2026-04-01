@@ -62,7 +62,7 @@ class GhosttyPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFactory {
         return view
     }
 
-    func createArgsCodec() -> FlutterMessageCodec & NSObjectProtocol {
+    func createArgsCodec() -> (any FlutterMessageCodec & NSObjectProtocol)? {
         return FlutterStandardMessageCodec.sharedInstance()
     }
 
