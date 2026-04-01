@@ -294,6 +294,14 @@ async fn create_remote_session(
         id: Some(id),
     };
 
+    // Verify the tunnel port is still alive before attempting the HTTP POST.
+    // If dead, clear the stale Ready state immediately so the scanner reconnects
+    // on its next cycle, and return 503 instead of letting reqwest fail with 502.
+    if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err() {
+        state.inner.remote_manager.clear_dead_tunnel(ssh_host);
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     let http_resp = reqwest::Client::new()
         .post(format!("http://127.0.0.1:{}/api/sessions", port))
         .json(&body)

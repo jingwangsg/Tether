@@ -34,6 +34,23 @@ pub async fn ws_handler(
         Err(_) => return axum::http::StatusCode::BAD_REQUEST.into_response(),
     };
 
+    // For SSH-group sessions, verify the tunnel port is reachable BEFORE upgrading.
+    // If we upgrade first and then fail, Flutter sees HTTP 101 ("connected"), resets
+    // its reconnect-backoff counter to 0, and retries every 1 s forever.
+    // Returning 503 here means Flutter treats it as a real failure and uses
+    // exponential backoff instead.  ECONNREFUSED on localhost is immediate.
+    if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&session_id.to_string()) {
+        match state.inner.remote_manager.get_tunnel_port(&ssh_host) {
+            None => return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            Some(port) => {
+                if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err() {
+                    state.inner.remote_manager.clear_dead_tunnel(&ssh_host);
+                    return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+                }
+            }
+        }
+    }
+
     ws.on_upgrade(move |socket| handle_socket(socket, session_id, state))
         .into_response()
 }

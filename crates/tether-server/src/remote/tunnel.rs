@@ -60,3 +60,14 @@ async fn wait_for_port(local_port: u16) -> anyhow::Result<()> {
     }
     anyhow::bail!("SSH tunnel port {} did not become available in time", local_port)
 }
+
+impl Tunnel {
+    /// Create a mock tunnel pointing at an already-listening local port.
+    /// Only for use in tests — bypasses real SSH.
+    pub fn new_for_testing(local_port: u16) -> Self {
+        Self {
+            local_port,
+            _task: tokio::spawn(async {}),
+        }
+    }
+}

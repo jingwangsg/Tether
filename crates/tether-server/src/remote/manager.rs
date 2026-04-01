@@ -101,7 +101,46 @@ impl RemoteManager {
     }
 }
 
+impl RemoteManager {
+    /// Inject a Ready host state pointing at an already-listening local port.
+    /// Only for use in tests — bypasses real SSH and deployment.
+    pub fn inject_ready_for_testing(&self, host_alias: &str, tunnel_port: u16, remote_group_id: &str) {
+        self.hosts.insert(
+            host_alias.to_string(),
+            RemoteHostState {
+                ssh_host: SshHost {
+                    host: host_alias.to_string(),
+                    hostname: None,
+                    user: None,
+                    port: None,
+                    identity_file: None,
+                },
+                status: RemoteStatus::Ready,
+                client: None,
+                tunnel: Some(Tunnel::new_for_testing(tunnel_port)),
+                remote_group_id: Some(remote_group_id.to_string()),
+            },
+        );
+    }
+
+    /// Immediately mark the host as Unreachable and drop its tunnel/client state.
+    /// Called proactively when any handler detects that the tunnel port is dead,
+    /// so the scanner will trigger a reconnect on its next cycle.
+    pub fn clear_dead_tunnel(&self, host_alias: &str) {
+        if let Some(mut entry) = self.hosts.get_mut(host_alias) {
+            entry.status = RemoteStatus::Unreachable;
+            entry.tunnel = None;
+            entry.client = None;
+            entry.remote_group_id = None;
+        }
+    }
+}
+
 // ── Background scanner ────────────────────────────────────────────────────────
+
+async fn is_port_alive(port: u16) -> bool {
+    tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok()
+}
 
 /// Background task: scan `~/.ssh/config` on startup then every 60 s.
 /// For each reachable host that is not already Ready, connect + deploy + tunnel.
@@ -141,10 +180,18 @@ async fn scan_and_deploy(manager: &RemoteManager) {
         tasks.push(tokio::spawn(async move {
             let alias = &host_clone.host;
 
-            // Skip if already Ready and tunnel is alive
+            // Skip if already Ready and tunnel port is still reachable
             if let Some(entry) = manager.hosts.get(alias) {
-                if entry.status == RemoteStatus::Ready && entry.tunnel.is_some() {
-                    return;
+                if entry.status == RemoteStatus::Ready {
+                    if let Some(t) = entry.tunnel.as_ref() {
+                        if is_port_alive(t.local_port).await {
+                            return;
+                        }
+                        tracing::info!(
+                            "Tunnel for {} is dead (port {} unreachable), reconnecting...",
+                            alias, t.local_port
+                        );
+                    }
                 }
             }
 
@@ -352,5 +399,51 @@ mod tests {
         );
         let s = mgr.list_statuses();
         assert!(matches!(&s[0].status, RemoteStatus::Failed(msg) if msg == "connection refused"));
+    }
+
+    #[tokio::test]
+    async fn clear_dead_tunnel_marks_host_unreachable_and_clears_tunnel() {
+        let mgr = RemoteManager::new();
+        // Start a real listener so new_for_testing can reference a valid port
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener); // port is now dead
+
+        mgr.inject_ready_for_testing("myhost", port, "grp-1");
+        // Still reads as Ready + returns the port
+        assert_eq!(mgr.get_tunnel_port("myhost"), Some(port));
+
+        mgr.clear_dead_tunnel("myhost");
+
+        // After clearing: get_tunnel_port returns None (host is no longer Ready)
+        assert_eq!(mgr.get_tunnel_port("myhost"), None, "port should be unreachable after clear");
+        let statuses = mgr.list_statuses();
+        assert!(
+            matches!(statuses[0].status, RemoteStatus::Unreachable),
+            "status should be Unreachable"
+        );
+
+        // Simulating scanner reconnect: inject a new live tunnel
+        let new_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let new_port = new_listener.local_addr().unwrap().port();
+        mgr.inject_ready_for_testing("myhost", new_port, "grp-2");
+        assert_eq!(mgr.get_tunnel_port("myhost"), Some(new_port));
+        drop(new_listener);
+    }
+
+    #[tokio::test]
+    async fn is_port_alive_returns_true_for_bound_port() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(is_port_alive(port).await);
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn is_port_alive_returns_false_for_closed_port() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(!is_port_alive(port).await);
     }
 }
