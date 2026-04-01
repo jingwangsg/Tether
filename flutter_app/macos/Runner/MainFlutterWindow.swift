@@ -12,9 +12,9 @@ class MainFlutterWindow: NSWindow {
 
         RegisterGeneratedPlugins(registry: flutterViewController)
 
-        // Register GhosttyPlugin (PlatformView factory + input channel)
-        GhosttyApp.shared.setup()
-        GhosttyPlugin.register(with: flutterViewController.registrar(forPlugin: "GhosttyPlugin"))
+        // Register TerminalPlugin (PlatformView factory + input channel)
+        TerminalApp.shared.setup()
+        TerminalPlugin.register(with: flutterViewController.registrar(forPlugin: "TerminalPlugin"))
 
         // Paste channel: forwards Cmd+V / paste: selector to Dart
         pasteChannel = FlutterMethodChannel(

@@ -2,7 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-/// Renders a Ghostty terminal surface inside a Flutter PlatformView (macOS).
+/// Renders a terminal surface inside a Flutter PlatformView (macOS).
 ///
 /// Keyboard input is handled entirely at the AppKit level (Swift side):
 ///   mouseDown: → first responder → keyDown: / NSTextInputClient.insertText:
@@ -11,7 +11,7 @@ import 'package:flutter/services.dart';
 /// EventChannel receives:
 ///   {type: "title", value: "..."} → onTitleChanged
 ///   {type: "exited"}             → onSessionExited
-class GhosttyTerminalView extends StatefulWidget {
+class TerminalView extends StatefulWidget {
   final String sessionId;
   final String? command;
   final String? cwd;
@@ -19,7 +19,7 @@ class GhosttyTerminalView extends StatefulWidget {
   final VoidCallback? onSessionExited;
   final void Function(String? title)? onTitleChanged;
 
-  const GhosttyTerminalView({
+  const TerminalView({
     super.key,
     required this.sessionId,
     this.command,
@@ -30,18 +30,18 @@ class GhosttyTerminalView extends StatefulWidget {
   });
 
   @override
-  State<GhosttyTerminalView> createState() => GhosttyTerminalViewState();
+  State<TerminalView> createState() => TerminalViewState();
 }
 
-class GhosttyTerminalViewState extends State<GhosttyTerminalView> {
-  static const _viewType = 'dev.tether/ghostty_surface';
-  static const _inputChannel = MethodChannel('dev.tether/ghostty_input');
+class TerminalViewState extends State<TerminalView> {
+  static const _viewType = 'dev.tether/terminal_surface';
+  static const _inputChannel = MethodChannel('dev.tether/terminal_input');
 
   int? _viewId;
   EventChannel? _eventChannel;
 
   @override
-  void didUpdateWidget(GhosttyTerminalView oldWidget) {
+  void didUpdateWidget(TerminalView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.isActive != widget.isActive && _viewId != null) {
       _inputChannel.invokeMethod('setActive', {
@@ -53,7 +53,7 @@ class GhosttyTerminalViewState extends State<GhosttyTerminalView> {
 
   void _onPlatformViewCreated(int viewId) {
     _viewId = viewId;
-    _eventChannel = EventChannel('dev.tether/ghostty_events/$viewId');
+    _eventChannel = EventChannel('dev.tether/terminal_events/$viewId');
     _eventChannel!.receiveBroadcastStream().listen(_onEvent);
 
     if (!widget.isActive) {
@@ -106,7 +106,7 @@ class GhosttyTerminalViewState extends State<GhosttyTerminalView> {
     if (!Platform.isMacOS) {
       return const Center(
         child: Text(
-          'Ghostty terminal is only supported on macOS',
+          'Terminal is only supported on macOS',
           style: TextStyle(color: Colors.white54),
         ),
       );

@@ -1,4 +1,4 @@
-# tether_ghostty
+# Tether
 
 A new Flutter project.
 

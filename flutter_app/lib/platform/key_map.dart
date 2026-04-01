@@ -1,9 +1,7 @@
 import 'package:flutter/services.dart';
 
-/// Maps Flutter LogicalKeyboardKey to ghostty key name strings.
-/// These strings correspond to the key names in ghostty's C API.
-/// See ghostty.h: ghostty_input_key_e
-final Map<LogicalKeyboardKey, String> ghosttyKeyMap = {
+/// Maps Flutter LogicalKeyboardKey to terminal key name strings.
+final Map<LogicalKeyboardKey, String> keyMap = {
   // Navigation
   LogicalKeyboardKey.arrowUp: 'up',
   LogicalKeyboardKey.arrowDown: 'down',
@@ -40,9 +38,9 @@ final Map<LogicalKeyboardKey, String> ghosttyKeyMap = {
   LogicalKeyboardKey.f12: 'f12',
 };
 
-/// Returns the ghostty modifier bitmask string for currently held modifiers.
+/// Returns a modifier string for currently held modifiers.
 /// Format: 'shift', 'ctrl', 'alt', 'super' (comma-separated if multiple)
-String ghosttyModifiers({
+String keyModifiers({
   bool shift = false,
   bool ctrl = false,
   bool alt = false,

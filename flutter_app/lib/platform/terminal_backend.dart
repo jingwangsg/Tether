@@ -1,7 +1,7 @@
 import 'package:flutter/widgets.dart';
 
 /// Abstract interface for platform-specific terminal rendering.
-/// macOS uses GhosttyBackend (libghostty + Metal).
+/// macOS uses NativeBackend (Metal).
 /// Android (future) uses TermuxBackend or XtermBackend.
 abstract class TerminalBackend {
   Widget createTerminalWidget({

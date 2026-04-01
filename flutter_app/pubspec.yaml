@@ -1,5 +1,5 @@
-name: tether_ghostty
-description: "Tether terminal multiplexer with libghostty renderer"
+name: tether
+description: "Tether terminal multiplexer"
 publish_to: 'none'
 version: 1.0.0+1
 

@@ -4,11 +4,11 @@ import 'platform/xterm_backend.dart';
 import 'screens/home_screen.dart';
 
 void main() {
-  runApp(const ProviderScope(child: TetherGhosttyApp()));
+  runApp(const ProviderScope(child: TetherApp()));
 }
 
-class TetherGhosttyApp extends StatelessWidget {
-  const TetherGhosttyApp({super.key});
+class TetherApp extends StatelessWidget {
+  const TetherApp({super.key});
 
   @override
   Widget build(BuildContext context) {

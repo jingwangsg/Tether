@@ -5,10 +5,10 @@
 // 'flutter create' template.
 
 // The application's name. By default this is also the title of the Flutter window.
-PRODUCT_NAME = tether_ghostty
+PRODUCT_NAME = Tether
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = dev.tether.tetherGhostty
+PRODUCT_BUNDLE_IDENTIFIER = dev.tether.Tether
 
 // The copyright displayed in application information
 PRODUCT_COPYRIGHT = Copyright © 2026 dev.tether. All rights reserved.

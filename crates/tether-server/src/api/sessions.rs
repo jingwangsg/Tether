@@ -33,7 +33,7 @@ struct RemoteCreateRequest {
 #[derive(Deserialize, Default)]
 pub struct CreateSessionQuery {
     /// When local=true, store a DB record only — skip PTY spawn.
-    /// Used by tether_ghostty where the client manages its own PTY via libghostty.
+    /// Used by the native macOS client which manages its own PTY locally.
     #[serde(default)]
     pub local: bool,
 }
@@ -89,7 +89,7 @@ pub async fn create_session(
 
     if query.local {
         // local=true: store DB record only, skip PTY spawn.
-        // tether_ghostty manages its own PTY via libghostty.
+        // Native macOS client manages its own PTY locally.
         let id = Uuid::new_v4();
         let session_name = req.name.unwrap_or_else(|| format!("session-{}", &id.to_string()[..8]));
         let shell = req.command.unwrap_or_default();
