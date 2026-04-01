@@ -35,6 +35,10 @@ struct Cli {
     /// by a local tether-server — the remote instance only manages PTY sessions)
     #[arg(long)]
     no_ssh_scan: bool,
+
+    /// Kill remote tether-server processes and delete ~/.tether on all SSH hosts before starting
+    #[arg(long)]
+    restart_remote: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -68,10 +72,37 @@ fn main() -> anyhow::Result<()> {
     let pid_file = format!("{}/tether.pid", data_dir);
 
     let no_ssh_scan = cli.no_ssh_scan;
+    let restart_remote = cli.restart_remote;
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(async {
+            if restart_remote {
+                let hosts = ssh_config::parse_ssh_config("~/.ssh/config");
+                if hosts.is_empty() {
+                    tracing::warn!("--restart-remote: no hosts found in ~/.ssh/config");
+                }
+                let mut tasks = Vec::new();
+                for host in hosts {
+                    tasks.push(tokio::spawn(async move {
+                        tracing::info!("--restart-remote: connecting to {}", host.host);
+                        match remote::client::SshClient::connect(&host).await {
+                            Ok(client) => {
+                                if let Err(e) = remote::deploy::restart_remote(&client).await {
+                                    tracing::warn!("restart_remote failed for {}: {}", host.host, e);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("Could not connect to {} for restart: {}", host.host, e);
+                            }
+                        }
+                    }));
+                }
+                for task in tasks {
+                    let _ = task.await;
+                }
+            }
+
             let state = state::AppState::new(config).await?;
             server::run(state, no_ssh_scan).await
         });

@@ -62,6 +62,36 @@ pub async fn ensure_deployed(client: &SshClient) -> anyhow::Result<()> {
     wait_for_ready(client).await
 }
 
+/// Kill any running tether-server processes and delete `~/.tether` on the remote host.
+/// Called when `--restart-remote` is set; a clean re-deploy follows via the normal scanner.
+pub async fn restart_remote(client: &SshClient) -> anyhow::Result<()> {
+    tracing::info!("Restarting remote tether-server on {}", client.host_alias);
+
+    // Kill all tether-server processes ([t] trick avoids matching grep itself).
+    // "; true" ensures the pipeline always exits 0 even when no processes match.
+    let (kill_code, _, kill_err) = client
+        .exec("ps aux | grep '[t]ether-server' | awk '{print $2}' | xargs -r kill -9 2>/dev/null; true")
+        .await?;
+    if kill_code != 0 {
+        tracing::warn!(
+            "kill command on {} exited {}: {}",
+            client.host_alias, kill_code, kill_err.trim()
+        );
+    }
+
+    // Wipe the entire ~/.tether directory so ensure_deployed starts fresh.
+    let (rm_code, _, rm_err) = client.exec("rm -rf ~/.tether").await?;
+    if rm_code != 0 {
+        tracing::warn!(
+            "rm -rf ~/.tether on {} exited {}: {}",
+            client.host_alias, rm_code, rm_err.trim()
+        );
+    }
+
+    tracing::info!("Remote cleanup done for {}", client.host_alias);
+    Ok(())
+}
+
 /// Map `uname -sm` output to a Rust target triple.
 pub(crate) fn uname_to_target(uname: &str) -> Option<&'static str> {
     match uname {
