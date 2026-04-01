@@ -15,6 +15,18 @@ pub async fn run_process_monitor(state: AppState) {
                     let session = entry.value();
                     if !session.is_alive() { continue; }
                     let new_fg = session.detect_foreground();
+                    // Maintain the persistent alt-screen cache.
+                    // When active, the cache is populated from ps/OSC/output detection.
+                    // When idle, detect_foreground_process() falls back to the cache itself,
+                    // so new_fg.process may originate from the cache — writing it back is
+                    // intentional and keeps the cache alive through idle periods.
+                    // The cache is cleared when we are confirmed outside alt-screen with no tool.
+                    let in_alt = session.is_in_alternate_screen();
+                    if PtySession::is_known_tool(new_fg.process.as_deref()) && in_alt {
+                        session.set_last_detected_alt_screen_tool(new_fg.process.clone());
+                    } else if !in_alt && !PtySession::is_known_tool(new_fg.process.as_deref()) {
+                        session.set_last_detected_alt_screen_tool(None);
+                    }
                     let old_fg = session.get_foreground();
                     if new_fg != old_fg {
                         *session.foreground.lock().unwrap() = new_fg.clone();

@@ -63,6 +63,10 @@ pub struct PtySession {
     in_alternate_screen: std::sync::atomic::AtomicBool,
     /// Timestamp of the last PTY output chunk (used for tool running/waiting detection).
     last_output_time: Mutex<Option<std::time::Instant>>,
+    /// Persists the last successfully detected tool while in alternate screen.
+    /// Serves as a stable fallback while the terminal is in alternate screen mode.
+    /// Cleared only when confirmed outside alt screen with no tool detected.
+    last_detected_alt_screen_tool: Mutex<Option<String>>,
 }
 
 impl PtySession {
@@ -138,6 +142,7 @@ impl PtySession {
             output_detected_tool: Mutex::new(None),
             in_alternate_screen: std::sync::atomic::AtomicBool::new(false),
             last_output_time: Mutex::new(None),
+            last_detected_alt_screen_tool: Mutex::new(None),
         });
 
         // Spawn reader task
@@ -283,11 +288,22 @@ impl PtySession {
         matches!(process, Some("claude") | Some("codex"))
     }
 
+    pub fn is_in_alternate_screen(&self) -> bool {
+        self.in_alternate_screen.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_last_detected_alt_screen_tool(&self, tool: Option<String>) {
+        if let Ok(mut t) = self.last_detected_alt_screen_tool.lock() {
+            *t = tool;
+        }
+    }
+
     fn detect_foreground_process(&self) -> Option<String> {
         self.detect_foreground_from_ps()
             .or_else(|| self.detect_foreground_from_sticky_osc())
             .or_else(|| self.detect_foreground_from_output())
             .or_else(|| self.detect_foreground_from_osc_title())
+            .or_else(|| self.detect_foreground_from_alt_screen_cache())
     }
 
     fn detect_foreground_from_ps(&self) -> Option<String> {
@@ -321,6 +337,13 @@ impl PtySession {
             }
         }
         None
+    }
+
+    fn detect_foreground_from_alt_screen_cache(&self) -> Option<String> {
+        if !self.in_alternate_screen.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        self.last_detected_alt_screen_tool.lock().ok()?.clone()
     }
 
     fn detect_foreground_from_sticky_osc(&self) -> Option<String> {
@@ -375,6 +398,9 @@ impl PtySession {
                 if let Ok(mut tool) = session.output_detected_tool.lock() {
                     *tool = None;
                 }
+                if let Ok(mut tool) = session.last_detected_alt_screen_tool.lock() {
+                    *tool = None;
+                }
             }
             (Some(_), None) => {
                 session
@@ -386,6 +412,9 @@ impl PtySession {
                     .in_alternate_screen
                     .store(false, std::sync::atomic::Ordering::Relaxed);
                 if let Ok(mut tool) = session.output_detected_tool.lock() {
+                    *tool = None;
+                }
+                if let Ok(mut tool) = session.last_detected_alt_screen_tool.lock() {
                     *tool = None;
                 }
             }
