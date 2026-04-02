@@ -1,4 +1,5 @@
 import 'dart:math' show min;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../models/group.dart';
@@ -11,6 +12,12 @@ import 'group_dialog.dart';
 import 'group_section.dart';
 import 'settings_dialog.dart';
 import 'ssh_host_list.dart';
+
+bool get _isDesktop =>
+    !kIsWeb &&
+    (defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.linux);
 
 class Sidebar extends ConsumerWidget {
   const Sidebar({super.key});
@@ -117,9 +124,8 @@ class Sidebar extends ConsumerWidget {
                 children: [
                   if (isDropTarget)
                     Container(height: 2, color: Colors.blue),
-                  LongPressDraggable<Group>(
-                    data: group,
-                    feedback: Material(
+                  Builder(builder: (context) {
+                    final feedback = Material(
                       elevation: 4,
                       color: const Color(0xFF2A2A2A),
                       borderRadius: BorderRadius.circular(4),
@@ -143,8 +149,8 @@ class Sidebar extends ConsumerWidget {
                           ),
                         ),
                       ),
-                    ),
-                    childWhenDragging: Opacity(
+                    );
+                    final childWhenDragging = Opacity(
                       opacity: 0.3,
                       child: GroupSection(
                         group: group,
@@ -152,14 +158,27 @@ class Sidebar extends ConsumerWidget {
                         allSessions: sessions,
                         depth: 0,
                       ),
-                    ),
-                    child: GroupSection(
+                    );
+                    final child = GroupSection(
                       group: group,
                       allGroups: groups,
                       allSessions: sessions,
                       depth: 0,
-                    ),
-                  ),
+                    );
+                    return _isDesktop
+                        ? Draggable<Group>(
+                            data: group,
+                            feedback: feedback,
+                            childWhenDragging: childWhenDragging,
+                            child: child,
+                          )
+                        : LongPressDraggable<Group>(
+                            data: group,
+                            feedback: feedback,
+                            childWhenDragging: childWhenDragging,
+                            child: child,
+                          );
+                  }),
                 ],
               );
             },

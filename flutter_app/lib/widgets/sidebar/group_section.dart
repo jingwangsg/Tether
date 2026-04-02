@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../models/group.dart';
@@ -7,6 +8,12 @@ import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_display.dart';
 import 'group_dialog.dart';
+
+bool get _isDesktop =>
+    !kIsWeb &&
+    (defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.linux);
 
 class GroupSection extends ConsumerStatefulWidget {
   final Group group;
@@ -59,9 +66,8 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (isDropTarget) Container(height: 2, color: Colors.blue),
-                    LongPressDraggable<Group>(
-                      data: childGroup,
-                      feedback: Material(
+                    Builder(builder: (context) {
+                      final feedback = Material(
                         elevation: 4,
                         color: const Color(0xFF2A2A2A),
                         borderRadius: BorderRadius.circular(4),
@@ -85,8 +91,8 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                             ),
                           ),
                         ),
-                      ),
-                      childWhenDragging: Opacity(
+                      );
+                      final childWhenDragging = Opacity(
                         opacity: 0.3,
                         child: GroupSection(
                           group: childGroup,
@@ -94,14 +100,27 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                           allSessions: widget.allSessions,
                           depth: widget.depth + 1,
                         ),
-                      ),
-                      child: GroupSection(
+                      );
+                      final child = GroupSection(
                         group: childGroup,
                         allGroups: widget.allGroups,
                         allSessions: widget.allSessions,
                         depth: widget.depth + 1,
-                      ),
-                    ),
+                      );
+                      return _isDesktop
+                          ? Draggable<Group>(
+                              data: childGroup,
+                              feedback: feedback,
+                              childWhenDragging: childWhenDragging,
+                              child: child,
+                            )
+                          : LongPressDraggable<Group>(
+                              data: childGroup,
+                              feedback: feedback,
+                              childWhenDragging: childWhenDragging,
+                              child: child,
+                            );
+                    }),
                   ],
                 );
               },
@@ -339,9 +358,8 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
           children: [
             if (isDropTarget)
               Container(height: 2, color: Colors.blue),
-            LongPressDraggable<Session>(
-              data: session,
-              feedback: Material(
+            Builder(builder: (context) {
+              final feedback = Material(
                 elevation: 4,
                 color: const Color(0xFF2D2D2D),
                 borderRadius: BorderRadius.circular(4),
@@ -367,10 +385,21 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                     ),
                   ),
                 ),
-              ),
-              childWhenDragging: Opacity(opacity: 0.3, child: tile),
-              child: tile,
-            ),
+              );
+              return _isDesktop
+                  ? Draggable<Session>(
+                      data: session,
+                      feedback: feedback,
+                      childWhenDragging: Opacity(opacity: 0.3, child: tile),
+                      child: tile,
+                    )
+                  : LongPressDraggable<Session>(
+                      data: session,
+                      feedback: feedback,
+                      childWhenDragging: Opacity(opacity: 0.3, child: tile),
+                      child: tile,
+                    );
+            }),
           ],
         );
       },
