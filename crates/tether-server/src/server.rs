@@ -81,6 +81,7 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
                         for group in local_groups {
                             match crate::remote::sync::sync_remote_sessions(
                                 &inner_for_sync.db, &host_alias, tunnel_port, &group.id,
+                                &inner_for_sync.ssh_fg,
                             ).await {
                                 Ok(n) if n > 0 => tracing::info!(
                                     "session sync: restored {} sessions for {}", n, host_alias

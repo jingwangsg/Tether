@@ -69,9 +69,13 @@ pub async fn list_sessions(
     for row in &mut rows {
         if let Ok(id) = Uuid::parse_str(&row.id) {
             if let Some(session) = state.inner.sessions.get(&id) {
+                // Local PTY session — use live foreground detection.
                 row.is_alive = session.is_alive();
                 let fg = session.get_foreground();
                 row.foreground_process = fg.process;
+            } else if let Some(fg) = state.inner.ssh_fg.get(&id) {
+                // SSH-proxied session — return cached foreground from last sync/proxy.
+                row.foreground_process = Some(fg.clone());
             }
         }
     }

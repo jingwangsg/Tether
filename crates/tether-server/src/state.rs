@@ -21,6 +21,9 @@ pub struct AppStateInner {
     /// Broadcast foreground process changes per session
     pub fg_tx: broadcast::Sender<(Uuid, SessionForeground)>,
     pub remote_manager: RemoteManager,
+    /// Cached foreground process for SSH-proxied sessions.
+    /// Transient (not persisted). Updated by sync_remote_sessions and proxy_ws_to_remote.
+    pub ssh_fg: DashMap<Uuid, String>,
 }
 
 impl AppState {
@@ -43,6 +46,7 @@ impl AppState {
                 shutdown_tx,
                 fg_tx,
                 remote_manager: RemoteManager::new(),
+                ssh_fg: DashMap::new(),
             }),
         })
     }

@@ -59,7 +59,7 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AppState) {
     // Route to remote tether-server if this session belongs to an SSH group
     if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&session_id.to_string()) {
         if let Some(port) = state.inner.remote_manager.get_tunnel_port(&ssh_host) {
-            proxy_ws_to_remote(socket, session_id, port).await;
+            proxy_ws_to_remote(socket, session_id, port, state).await;
             return;
         }
         tracing::warn!("WS: remote host {} not ready for session {}", ssh_host, session_id);
@@ -224,8 +224,9 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AppState) {
 }
 
 /// Bidirectionally proxy a Flutter WebSocket connection to a remote tether-server
-/// session via the SSH tunnel.
-async fn proxy_ws_to_remote(client_ws: WebSocket, session_id: Uuid, tunnel_port: u16) {
+/// session via the SSH tunnel. Also maintains `state.inner.ssh_fg` by intercepting
+/// `foreground_changed` messages from the remote.
+async fn proxy_ws_to_remote(client_ws: WebSocket, session_id: Uuid, tunnel_port: u16, state: AppState) {
     let url = format!("ws://127.0.0.1:{}/ws/session/{}", tunnel_port, session_id);
     let remote_ws = match tokio_tungstenite::connect_async(&url).await {
         Ok((ws, _)) => ws,
@@ -254,10 +255,21 @@ async fn proxy_ws_to_remote(client_ws: WebSocket, session_id: Uuid, tunnel_port:
         }
     });
 
-    // remote → client
+    // remote → client; intercept foreground_changed to keep ssh_fg cache live
     while let Some(Ok(msg)) = remote_stream.next().await {
         let axum_msg = match msg {
-            tungstenite::Message::Text(t)   => Message::Text(t.to_string().into()),
+            tungstenite::Message::Text(ref t) => {
+                // Update ssh_fg cache when remote sends a foreground_changed message.
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(t.as_str()) {
+                    if v.get("type").and_then(|x| x.as_str()) == Some("foreground_changed") {
+                        match v.get("process").and_then(|x| x.as_str()) {
+                            Some(p) => { state.inner.ssh_fg.insert(session_id, p.to_string()); }
+                            None    => { state.inner.ssh_fg.remove(&session_id); }
+                        }
+                    }
+                }
+                Message::Text(t.to_string().into())
+            }
             tungstenite::Message::Binary(b) => Message::Binary(b.to_vec().into()),
             tungstenite::Message::Ping(p)   => Message::Ping(p.to_vec().into()),
             tungstenite::Message::Pong(p)   => Message::Pong(p.to_vec().into()),
