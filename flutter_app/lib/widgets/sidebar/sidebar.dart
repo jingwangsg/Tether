@@ -105,7 +105,8 @@ class Sidebar extends ConsumerWidget {
         ],
         for (final group in rootGroups)
           DragTarget<Group>(
-            onWillAcceptWithDetails: (details) => details.data.id != group.id,
+            onWillAcceptWithDetails: (details) =>
+                details.data.id != group.id && details.data.parentId == null,
             onAcceptWithDetails: (details) {
               _handleGroupDrop(ref, details.data, group, rootGroups);
             },

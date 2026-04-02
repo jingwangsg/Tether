@@ -47,12 +47,67 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
         _buildGroupHeader(sessions),
         if (_expanded) ...[
           for (final childGroup in childGroups)
-            GroupSection(
-              group: childGroup,
-              allGroups: widget.allGroups,
-              allSessions: widget.allSessions,
-              depth: widget.depth + 1,
+            DragTarget<Group>(
+              onWillAcceptWithDetails: (details) =>
+                  details.data.id != childGroup.id &&
+                  details.data.parentId == childGroup.parentId,
+              onAcceptWithDetails: (details) =>
+                  _handleChildGroupDrop(details.data, childGroup, childGroups),
+              builder: (context, candidateData, rejectedData) {
+                final isDropTarget = candidateData.isNotEmpty;
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (isDropTarget) Container(height: 2, color: Colors.blue),
+                    LongPressDraggable<Group>(
+                      data: childGroup,
+                      feedback: Material(
+                        elevation: 4,
+                        color: const Color(0xFF2A2A2A),
+                        borderRadius: BorderRadius.circular(4),
+                        child: SizedBox(
+                          width: 220,
+                          child: Padding(
+                            padding: const EdgeInsets.all(8),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.folder, size: 16, color: Colors.white54),
+                                const SizedBox(width: 6),
+                                Flexible(
+                                  child: Text(
+                                    childGroup.name,
+                                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      childWhenDragging: Opacity(
+                        opacity: 0.3,
+                        child: GroupSection(
+                          group: childGroup,
+                          allGroups: widget.allGroups,
+                          allSessions: widget.allSessions,
+                          depth: widget.depth + 1,
+                        ),
+                      ),
+                      child: GroupSection(
+                        group: childGroup,
+                        allGroups: widget.allGroups,
+                        allSessions: widget.allSessions,
+                        depth: widget.depth + 1,
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
+          if (childGroups.isNotEmpty)
+            _buildChildGroupEndDropZone(childGroups),
           for (final session in sessions)
             _buildSessionTile(session),
           _buildEndDropZone(),
@@ -358,6 +413,34 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
     );
   }
 
+  Widget _buildChildGroupEndDropZone(List<Group> childGroups) {
+    return DragTarget<Group>(
+      onWillAcceptWithDetails: (details) =>
+          details.data.parentId == widget.group.id &&
+          details.data.id != childGroups.last.id,
+      onAcceptWithDetails: (details) {
+        final groups = List<Group>.from(childGroups);
+        groups.removeWhere((g) => g.id == details.data.id);
+        groups.add(details.data);
+        final items = <Map<String, dynamic>>[];
+        for (int i = 0; i < groups.length; i++) {
+          items.add({'id': groups[i].id, 'sort_order': i});
+        }
+        ref.read(serverProvider.notifier).reorderGroups(items);
+      },
+      builder: (context, candidateData, rejectedData) {
+        final isDropTarget = candidateData.isNotEmpty;
+        return Container(
+          height: isDropTarget ? 24 : 4,
+          color: isDropTarget ? Colors.blue.withValues(alpha: 0.15) : Colors.transparent,
+          child: isDropTarget
+              ? Center(child: Container(height: 2, color: Colors.blue))
+              : null,
+        );
+      },
+    );
+  }
+
   Widget _buildEndDropZone() {
     return DragTarget<Session>(
       onWillAcceptWithDetails: (_) => true,
@@ -377,6 +460,23 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
         );
       },
     );
+  }
+
+  void _handleChildGroupDrop(Group dragged, Group target, List<Group> siblingGroups) {
+    final groups = List<Group>.from(siblingGroups);
+    groups.removeWhere((g) => g.id == dragged.id);
+    final targetIdx = groups.indexWhere((g) => g.id == target.id);
+    if (targetIdx >= 0) {
+      groups.insert(targetIdx, dragged);
+    } else {
+      groups.add(dragged);
+    }
+
+    final items = <Map<String, dynamic>>[];
+    for (int i = 0; i < groups.length; i++) {
+      items.add({'id': groups[i].id, 'sort_order': i});
+    }
+    ref.read(serverProvider.notifier).reorderGroups(items);
   }
 
   void _handleSessionDrop(Session dragged, Session target) {
