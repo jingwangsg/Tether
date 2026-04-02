@@ -21,10 +21,10 @@ class TerminalArea extends ConsumerStatefulWidget {
   const TerminalArea({super.key, required this.backend});
 
   @override
-  ConsumerState<TerminalArea> createState() => _TerminalAreaState();
+  ConsumerState<TerminalArea> createState() => TerminalAreaState();
 }
 
-class _TerminalAreaState extends ConsumerState<TerminalArea> {
+class TerminalAreaState extends ConsumerState<TerminalArea> {
   final Map<String, GlobalKey<XtermTerminalViewState>> _terminalKeys = {};
   final VolumeKeyService _volumeKeys = VolumeKeyService();
   final PasteService _pasteService = PasteService();
@@ -250,6 +250,12 @@ class _TerminalAreaState extends ConsumerState<TerminalArea> {
     if (data?.text != null) {
       _terminalKeys[activeId]?.currentState?.paste(data!.text!);
     }
+  }
+
+  void showSearchForActiveSession() {
+    final activeId = ref.read(sessionProvider).activeSessionId;
+    if (activeId == null) return;
+    _terminalKeys[activeId]?.currentState?.showSearch();
   }
 }
 

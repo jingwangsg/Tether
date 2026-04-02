@@ -1,82 +1,113 @@
 import Cocoa
-import ApplicationServices
+import Carbon.HIToolbox
+
+// C-compatible callback required by Carbon's InstallEventHandler.
+// Must be a free function (not closure/method) — only free functions satisfy @convention(c).
+private func carbonHotkeyHandler(
+    _ nextHandler: EventHandlerCallRef?,
+    _ event: EventRef?,
+    _ userData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    DispatchQueue.main.async {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.windows.first(where: { !($0 is NSPanel) })?.makeKeyAndOrderFront(nil)
+    }
+    return noErr
+}
 
 class HotkeyManager {
     static let shared = HotkeyManager()
-    private var globalMonitor: Any?
+
+    private var carbonHotKeyRef: EventHotKeyRef?
+    private var eventHandlerRef: EventHandlerRef?
     private var localMonitor: Any?
-    private var pendingHotkey: String?
+    private var registeredKeyCode: UInt32 = 0
+    private var registeredModifiers: UInt32 = 0
 
     private init() {
-        // Re-register the global monitor when Accessibility permission is granted
-        // while the app is already running (user visits System Settings mid-session).
-        DistributedNotificationCenter.default().addObserver(
-            self,
-            selector: #selector(accessibilityChanged),
-            name: NSNotification.Name("com.apple.accessibility.api"),
-            object: nil
+        // Install Carbon event handler once for the lifetime of the app.
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
         )
-    }
-
-    @objc private func accessibilityChanged() {
-        if AXIsProcessTrusted(), let hotkey = pendingHotkey {
-            register(hotkey: hotkey)
-        }
+        InstallEventHandler(
+            GetApplicationEventTarget(),
+            carbonHotkeyHandler,
+            1, &eventType, nil, &eventHandlerRef
+        )
     }
 
     func register(hotkey: String) {
         unregister()
-        pendingHotkey = hotkey
-        guard let (modifiers, key) = parseHotkey(hotkey) else { return }
+        guard let (keyCode, carbonMods) = parseHotkey(hotkey) else { return }
+        registeredKeyCode = keyCode
+        registeredModifiers = carbonMods
 
-        // Global monitor requires Accessibility permission.
-        // Pass prompt=true so macOS shows the system dialog if not yet granted.
-        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true as AnyObject] as CFDictionary
-        if AXIsProcessTrustedWithOptions(opts) {
-            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                guard self?.matches(event, modifiers: modifiers, key: key) == true else { return }
-                DispatchQueue.main.async {
-                    NSApp.activate(ignoringOtherApps: true)
-                    NSApp.windows.first(where: { !($0 is NSPanel) })?.makeKeyAndOrderFront(nil)
-                }
-            }
-        }
+        // "TTHR" — private 4-char signature; id=1 since we only ever have one hotkey.
+        let hotKeyID = EventHotKeyID(signature: OSType(0x5454_4852), id: 1)
+        RegisterEventHotKey(keyCode, carbonMods, hotKeyID,
+                            GetApplicationEventTarget(), 0, &carbonHotKeyRef)
 
-        // Local monitor (hide while app is focused) works without Accessibility.
+        // Local monitor handles hide-when-focused (no Accessibility permission needed).
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard self?.matches(event, modifiers: modifiers, key: key) == true else { return event }
+            guard self?.eventMatchesCarbonHotkey(event) == true else { return event }
             NSApp.hide(nil)
             return nil  // consume event
         }
     }
 
     func unregister() {
-        pendingHotkey = nil
-        if let m = globalMonitor { NSEvent.removeMonitor(m); globalMonitor = nil }
-        if let m = localMonitor  { NSEvent.removeMonitor(m); localMonitor  = nil }
+        if let ref = carbonHotKeyRef { UnregisterEventHotKey(ref); carbonHotKeyRef = nil }
+        if let m = localMonitor { NSEvent.removeMonitor(m); localMonitor = nil }
+        registeredKeyCode = 0
+        registeredModifiers = 0
     }
 
-    private func matches(_ event: NSEvent, modifiers: NSEvent.ModifierFlags, key: String) -> Bool {
+    // Matches an NSEvent against the stored Carbon hotkey values.
+    private func eventMatchesCarbonHotkey(_ event: NSEvent) -> Bool {
+        guard registeredKeyCode != 0 else { return false }
+        var expectedMods: NSEvent.ModifierFlags = []
+        if registeredModifiers & UInt32(cmdKey)     != 0 { expectedMods.insert(.command) }
+        if registeredModifiers & UInt32(shiftKey)   != 0 { expectedMods.insert(.shift) }
+        if registeredModifiers & UInt32(optionKey)  != 0 { expectedMods.insert(.option) }
+        if registeredModifiers & UInt32(controlKey) != 0 { expectedMods.insert(.control) }
         let eventMods = event.modifierFlags.intersection([.command, .shift, .control, .option])
-        let eventKey  = event.charactersIgnoringModifiers?.lowercased() ?? ""
-        return eventMods == modifiers && eventKey == key
+        guard eventMods == expectedMods else { return false }
+        let char = event.charactersIgnoringModifiers?.lowercased() ?? ""
+        return carbonKeyCode(for: char) == registeredKeyCode
     }
 
-    // Parses "cmd+shift+t" → (ModifierFlags, "t")
-    private func parseHotkey(_ s: String) -> (NSEvent.ModifierFlags, String)? {
+    // Parses "alt+z" → (carbonKeyCode: 6, carbonModifiers: optionKey).
+    private func parseHotkey(_ s: String) -> (UInt32, UInt32)? {
         let parts = s.lowercased().split(separator: "+").map(String.init)
-        var modifiers: NSEvent.ModifierFlags = []
-        var key = ""
+        var mods: UInt32 = 0
+        var keyStr = ""
         for part in parts {
             switch part {
-            case "cmd", "command":   modifiers.insert(.command)
-            case "shift":            modifiers.insert(.shift)
-            case "ctrl", "control":  modifiers.insert(.control)
-            case "alt", "option":    modifiers.insert(.option)
-            case "space":            key = " "
-            default:                 key = part
+            case "cmd", "command":  mods |= UInt32(cmdKey)
+            case "shift":           mods |= UInt32(shiftKey)
+            case "ctrl", "control": mods |= UInt32(controlKey)
+            case "alt", "option":   mods |= UInt32(optionKey)
+            default:                keyStr = part
             }
         }
-        return key.isEmpty ? nil : (modifiers, key)
+        guard !keyStr.isEmpty, let kc = carbonKeyCode(for: keyStr) else { return nil }
+        return (kc, mods)
+    }
+
+    // US-layout physical key codes (Carbon/HIToolbox).
+    private func carbonKeyCode(for key: String) -> UInt32? {
+        let table: [String: UInt32] = [
+            "a":0,  "s":1,  "d":2,  "f":3,  "h":4,  "g":5,
+            "z":6,  "x":7,  "c":8,  "v":9,  "b":11, "q":12,
+            "w":13, "e":14, "r":15, "y":16, "t":17,
+            "1":18, "2":19, "3":20, "4":21, "6":22, "5":23,
+            "=":24, "9":25, "7":26, "-":27, "8":28, "0":29,
+            "]":30, "o":31, "u":32, "[":33, "i":34, "p":35,
+            "l":37, "j":38, "'":39, "k":40, ";":41, "\\":42,
+            ",":43, "/":44, "n":45, "m":46, ".":47,
+            " ":49, "space":49,
+        ]
+        return table[key]
     }
 }

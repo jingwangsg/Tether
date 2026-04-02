@@ -19,6 +19,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
+  final _terminalAreaKey = GlobalKey<TerminalAreaState>();
   bool _edgeDragActive = false;
   double _dragDistance = 0;
 
@@ -38,11 +39,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
   bool _handleGlobalKey(KeyEvent event) {
-    if (event is KeyDownEvent &&
-        event.logicalKey == LogicalKeyboardKey.keyR &&
-        HardwareKeyboard.instance.isMetaPressed) {
-      _renameActiveSession();
-      return true;
+    if (event is KeyDownEvent && HardwareKeyboard.instance.isMetaPressed) {
+      if (event.logicalKey == LogicalKeyboardKey.keyR) {
+        _renameActiveSession();
+        return true;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.keyF) {
+        _terminalAreaKey.currentState?.showSearchForActiveSession();
+        return true;
+      }
     }
     return false;
   }
@@ -105,7 +110,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             Row(
               children: [
                 if (!uiState.isMobile && uiState.sidebarOpen) const Sidebar(),
-                Expanded(child: TerminalArea(backend: widget.backend)),
+                Expanded(child: TerminalArea(key: _terminalAreaKey, backend: widget.backend)),
               ],
             ),
             if (uiState.isMobile) ...[

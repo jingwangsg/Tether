@@ -57,6 +57,18 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   // Timestamp of last user input sent — used to suppress echo false positives
   DateTime? _lastInputSentAt;
 
+  // Search state
+  bool _searchOpen = false;
+  final List<({int line, int col, int length})> _searchMatches = [];
+  int _currentMatchIndex = -1;
+  final List<xterm.TerminalHighlight> _searchHighlights = [];
+  final List<xterm.CellAnchor> _searchAnchors = [];
+  xterm.TerminalHighlight? _currentMatchHighlight;
+  xterm.CellAnchor? _currentMatchP1;
+  xterm.CellAnchor? _currentMatchP2;
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+
   @override
   void initState() {
     super.initState();
@@ -73,7 +85,148 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     _bytesInput.stream
         .transform(const Utf8Decoder(allowMalformed: true))
         .listen((text) => _terminal.write(text));
+    HardwareKeyboard.instance.addHandler(_handleSearchKey);
     _connect();
+  }
+
+  bool _handleSearchKey(KeyEvent event) {
+    if (!_searchOpen) return false;
+    if (event is! KeyDownEvent) return false;
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      _closeSearch();
+      return true;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.enter) {
+      if (HardwareKeyboard.instance.isShiftPressed) {
+        _prevMatch();
+      } else {
+        _nextMatch();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  void showSearch() {
+    if (_searchOpen) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _searchFocusNode.requestFocus());
+      return;
+    }
+    setState(() { _searchOpen = true; });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _searchFocusNode.requestFocus());
+  }
+
+  void _closeSearch() {
+    _disposeAllSearchHighlights();
+    _searchMatches.clear();
+    _searchController.clear();
+    setState(() { _searchOpen = false; _currentMatchIndex = -1; });
+  }
+
+  void _disposeAllSearchHighlights() {
+    for (final h in _searchHighlights) h.dispose();
+    _searchHighlights.clear();
+    for (final a in _searchAnchors) a.dispose();
+    _searchAnchors.clear();
+    _disposeCurrentMatch();
+  }
+
+  void _disposeCurrentMatch() {
+    _currentMatchHighlight?.dispose();
+    _currentMatchHighlight = null;
+    _currentMatchP1?.dispose();
+    _currentMatchP1 = null;
+    _currentMatchP2?.dispose();
+    _currentMatchP2 = null;
+  }
+
+  void _runSearch(String query) {
+    _disposeAllSearchHighlights();
+    _searchMatches.clear();
+
+    if (query.isEmpty) {
+      setState(() { _currentMatchIndex = -1; });
+      return;
+    }
+
+    final buffer = _terminal.buffer;
+    final lowerQuery = query.toLowerCase();
+
+    for (int i = 0; i < buffer.height; i++) {
+      final lineText = buffer.lines[i].getText();
+      final lowerLine = lineText.toLowerCase();
+      int start = 0;
+      while (true) {
+        final idx = lowerLine.indexOf(lowerQuery, start);
+        if (idx < 0) break;
+        _searchMatches.add((line: i, col: idx, length: lowerQuery.length));
+        start = idx + 1;
+      }
+    }
+
+    // Yellow highlights for all matches
+    for (final match in _searchMatches) {
+      final p1 = buffer.createAnchor(match.col, match.line);
+      final p2 = buffer.createAnchor(match.col + match.length, match.line);
+      _searchAnchors.addAll([p1, p2]);
+      _searchHighlights.add(_terminalController.highlight(
+        p1: p1, p2: p2, color: const Color(0x40FFFF00),
+      ));
+    }
+
+    int newIdx = -1;
+    if (_searchMatches.isNotEmpty) {
+      newIdx = 0;
+      _highlightCurrentMatch(newIdx);
+      _scrollToMatch(newIdx);
+    }
+
+    setState(() { _currentMatchIndex = newIdx; });
+  }
+
+  void _highlightCurrentMatch(int index) {
+    _disposeCurrentMatch();
+    if (index < 0 || index >= _searchMatches.length) return;
+    final match = _searchMatches[index];
+    final buffer = _terminal.buffer;
+    _currentMatchP1 = buffer.createAnchor(match.col, match.line);
+    _currentMatchP2 = buffer.createAnchor(match.col + match.length, match.line);
+    _currentMatchHighlight = _terminalController.highlight(
+      p1: _currentMatchP1!, p2: _currentMatchP2!, color: const Color(0x80FF8C00),
+    );
+  }
+
+  void _nextMatch() {
+    if (_searchMatches.isEmpty) return;
+    final newIdx = (_currentMatchIndex + 1) % _searchMatches.length;
+    _highlightCurrentMatch(newIdx);
+    _scrollToMatch(newIdx);
+    setState(() { _currentMatchIndex = newIdx; });
+  }
+
+  void _prevMatch() {
+    if (_searchMatches.isEmpty) return;
+    final newIdx = (_currentMatchIndex - 1 + _searchMatches.length) % _searchMatches.length;
+    _highlightCurrentMatch(newIdx);
+    _scrollToMatch(newIdx);
+    setState(() { _currentMatchIndex = newIdx; });
+  }
+
+  void _scrollToMatch(int index) {
+    if (index < 0 || index >= _searchMatches.length) return;
+    if (!_scrollController.hasClients) return;
+    final scrollBack = _terminal.buffer.scrollBack;
+    if (scrollBack <= 0) return;
+    final maxExtent = _scrollController.position.maxScrollExtent;
+    if (maxExtent <= 0) return;
+    final lineHeight = maxExtent / scrollBack;
+    final match = _searchMatches[index];
+    final targetOffset = (match.line * lineHeight).clamp(0.0, maxExtent);
+    _scrollController.animateTo(
+      targetOffset,
+      duration: const Duration(milliseconds: 150),
+      curve: Curves.easeOut,
+    );
   }
 
   @override
@@ -305,6 +458,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleSearchKey);
+    _disposeAllSearchHighlights();
+    _searchController.dispose();
+    _searchFocusNode.dispose();
     _foregroundDebounce?.cancel();
     _toolStateTimer?.cancel();
     _msgSub?.cancel();
@@ -318,7 +475,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
-    return xterm.TerminalView(
+    final terminalView = xterm.TerminalView(
       _terminal,
       controller: _terminalController,
       scrollController: _scrollController,
@@ -329,6 +486,84 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       onSecondaryTapDown: (details, cellOffset) {
         _showContextMenu(context, details.globalPosition);
       },
+    );
+
+    if (!_searchOpen) return terminalView;
+
+    return Stack(
+      children: [
+        terminalView,
+        Positioned(
+          top: 8,
+          right: 8,
+          child: _buildSearchBar(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSearchBar() {
+    final count = _searchMatches.length;
+    final countText = count == 0
+        ? 'No results'
+        : '${_currentMatchIndex + 1} / $count';
+
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        width: 300,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(0xCC1E1E1E),
+          border: Border.all(color: Colors.white12),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Expanded(
+              child: SizedBox(
+                height: 28,
+                child: TextField(
+                  controller: _searchController,
+                  focusNode: _searchFocusNode,
+                  onChanged: _runSearch,
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                  cursorColor: Colors.white,
+                  decoration: const InputDecoration(
+                    hintText: 'Search...',
+                    hintStyle: TextStyle(color: Colors.white38, fontSize: 13),
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.zero,
+                    isDense: true,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              countText,
+              style: const TextStyle(color: Colors.white54, fontSize: 11),
+            ),
+            _searchNavButton(Icons.keyboard_arrow_up, count > 0 ? _prevMatch : null),
+            _searchNavButton(Icons.keyboard_arrow_down, count > 0 ? _nextMatch : null),
+            _searchNavButton(Icons.close, _closeSearch),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _searchNavButton(IconData icon, VoidCallback? onPressed) {
+    return SizedBox(
+      width: 24,
+      height: 24,
+      child: IconButton(
+        icon: Icon(icon, size: 14, color: onPressed != null ? Colors.white70 : Colors.white24),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+        onPressed: onPressed,
+      ),
     );
   }
 }
