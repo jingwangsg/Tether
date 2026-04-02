@@ -264,11 +264,16 @@ async fn create_remote_session(
     req: CreateSessionRequest,
     ssh_host: &str,
 ) -> Result<(StatusCode, Json<SessionRow>), StatusCode> {
-    let port = state
-        .inner
-        .remote_manager
-        .get_tunnel_port(ssh_host)
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let port = match state.inner.remote_manager.get_tunnel_port(ssh_host) {
+        Some(p) => p,
+        None => {
+            // Host not Ready — kick off a background connect attempt so a
+            // client retry in a few seconds succeeds instead of waiting for
+            // the 60-second scanner cycle.
+            state.inner.remote_manager.trigger_connect_if_needed(ssh_host);
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
 
     // Use the group that was created on the remote server, not the local group ID
     let remote_group_id = state

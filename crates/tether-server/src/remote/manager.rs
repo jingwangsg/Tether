@@ -137,6 +137,102 @@ impl RemoteManager {
             entry.remote_group_id = None;
         }
     }
+
+    /// Fire-and-forget: ensure a connect+deploy attempt is in flight for `host_alias`.
+    /// No-ops if the host is already Connecting or Ready.
+    /// If the host is not yet in the map, re-parses `~/.ssh/config` to find it.
+    /// Called when a session creation request arrives for a host that is not yet Ready,
+    /// so the client can retry after a few seconds instead of waiting 60 s for the scanner.
+    pub fn trigger_connect_if_needed(&self, host_alias: &str) {
+        // If not in map, try to load from ssh config
+        if !self.hosts.contains_key(host_alias) {
+            let hosts = crate::ssh_config::parse_ssh_config("~/.ssh/config");
+            if let Some(host) = hosts.into_iter().find(|h| h.host == host_alias) {
+                self.hosts.entry(host_alias.to_string()).or_insert_with(|| RemoteHostState {
+                    ssh_host: host,
+                    status: RemoteStatus::Unreachable,
+                    client: None,
+                    tunnel: None,
+                    remote_group_id: None,
+                });
+            } else {
+                return; // unknown host, nothing we can do
+            }
+        }
+
+        // Atomically check status and transition to Connecting in one lock hold,
+        // preventing TOCTOU races with concurrent requests or the 60-s scanner.
+        let ssh_host = match self.hosts.get_mut(host_alias) {
+            None => return,
+            Some(mut entry) => {
+                if matches!(entry.status, RemoteStatus::Connecting | RemoteStatus::Ready) {
+                    return; // already in progress or ready
+                }
+                entry.status = RemoteStatus::Connecting;
+                entry.ssh_host.clone()
+            }
+        };
+
+        tracing::info!("Triggering on-demand connect to SSH host: {}", host_alias);
+
+        let manager = self.clone();
+        let alias = host_alias.to_string();
+        // Clone for the panic-recovery watcher spawned below.
+        let manager_recovery = manager.clone();
+        let alias_recovery = alias.clone();
+
+        let handle = tokio::spawn(async move {
+            // Quick TCP reachability check (2 s timeout) before full SSH connect
+            let target = ssh_host.hostname.as_deref().unwrap_or(&ssh_host.host);
+            let port = ssh_host.port.unwrap_or(22);
+            let addr = format!("{}:{}", target, port);
+            let reachable = tokio::time::timeout(
+                Duration::from_secs(2),
+                tokio::net::TcpStream::connect(&addr),
+            )
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false);
+
+            if !reachable {
+                tracing::debug!("On-demand connect: {} unreachable", alias);
+                manager.set_status(&alias, RemoteStatus::Unreachable);
+                return;
+            }
+
+            match connect_and_deploy(&ssh_host).await {
+                Ok((client, tunnel, remote_group_id)) => {
+                    tracing::info!(
+                        "On-demand connect: {} is Ready (tunnel port {})",
+                        alias, tunnel.local_port
+                    );
+                    if let Some(mut entry) = manager.hosts.get_mut(&alias) {
+                        entry.status = RemoteStatus::Ready;
+                        entry.client = Some(client);
+                        entry.tunnel = Some(tunnel);
+                        entry.remote_group_id = Some(remote_group_id);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("On-demand connect to {} failed: {}", alias, e);
+                    manager.set_status(&alias, RemoteStatus::Failed(e.to_string()));
+                }
+            }
+        });
+
+        // If the task panics the host would be stuck in Connecting indefinitely
+        // (scanner and trigger both skip Connecting).  Reset to Unreachable so
+        // the scanner can retry on its next 60-second cycle.
+        tokio::spawn(async move {
+            if handle.await.is_err() {
+                tracing::warn!(
+                    "On-demand connect task for {} panicked; resetting to Unreachable",
+                    alias_recovery
+                );
+                manager_recovery.set_status(&alias_recovery, RemoteStatus::Unreachable);
+            }
+        });
+    }
 }
 
 // ── Background scanner ────────────────────────────────────────────────────────
@@ -183,8 +279,11 @@ async fn scan_and_deploy(manager: &RemoteManager) {
         tasks.push(tokio::spawn(async move {
             let alias = &host_clone.host;
 
-            // Skip if already Ready and tunnel port is still reachable
+            // Skip if a connect is already in flight or the host is Ready with a live tunnel
             if let Some(entry) = manager.hosts.get(alias) {
+                if entry.status == RemoteStatus::Connecting {
+                    return; // on-demand trigger already in progress
+                }
                 if entry.status == RemoteStatus::Ready {
                     if let Some(t) = entry.tunnel.as_ref() {
                         if is_port_alive(t.local_port).await {

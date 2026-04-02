@@ -35,6 +35,21 @@ pub async fn ensure_deployed(client: &SshClient) -> anyhow::Result<()> {
         client.upload(&binary, "~/.tether/bin/tether-server").await?;
         client.exec("chmod +x ~/.tether/bin/tether-server").await?;
         tracing::info!("Binary uploaded to {}", client.host_alias);
+
+        // Kill running daemon (if any), wait for it to exit, then remove the
+        // PID file so the liveness check below always starts a fresh daemon.
+        client
+            .exec(
+                "pid=$(cat ~/.tether/tether.pid 2>/dev/null); \
+                 if [ -n \"$pid\" ]; then \
+                     kill \"$pid\" 2>/dev/null; \
+                     for i in 1 2; do kill -0 \"$pid\" 2>/dev/null || break; sleep 1; done; \
+                 fi; \
+                 rm -f ~/.tether/tether.pid; \
+                 true",
+            )
+            .await
+            .ok();
     } else {
         tracing::debug!(
             "tether-server {} already up-to-date on {}",
