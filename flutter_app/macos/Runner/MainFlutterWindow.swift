@@ -3,6 +3,7 @@ import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
     private var pasteChannel: FlutterMethodChannel?
+    private var windowChannel: FlutterMethodChannel?
 
     override func awakeFromNib() {
         let flutterViewController = FlutterViewController()
@@ -21,6 +22,27 @@ class MainFlutterWindow: NSWindow {
             name: "dev.tether/paste",
             binaryMessenger: flutterViewController.engine.binaryMessenger
         )
+
+        // Window channel: global hotkey management
+        windowChannel = FlutterMethodChannel(
+            name: "dev.tether/window",
+            binaryMessenger: flutterViewController.engine.binaryMessenger
+        )
+        windowChannel?.setMethodCallHandler { call, result in
+            switch call.method {
+            case "setGlobalHotkey":
+                if let args = call.arguments as? [String: Any],
+                   let hotkey = args["hotkey"] as? String {
+                    HotkeyManager.shared.register(hotkey: hotkey)
+                }
+                result(nil)
+            case "clearGlobalHotkey":
+                HotkeyManager.shared.unregister()
+                result(nil)
+            default:
+                result(FlutterMethodNotImplemented)
+            }
+        }
 
         super.awakeFromNib()
     }

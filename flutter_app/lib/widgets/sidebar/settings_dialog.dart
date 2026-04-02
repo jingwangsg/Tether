@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../models/mobile_key.dart';
 import '../../providers/settings_provider.dart';
@@ -42,6 +43,9 @@ class _SettingsDialog extends ConsumerWidget {
                 ref.read(settingsProvider.notifier).setShowTabBar(value);
               },
             ),
+            const Divider(color: Colors.white12),
+            const SizedBox(height: 8),
+            const _HotkeyRow(),
             const Divider(color: Colors.white12),
             const SizedBox(height: 8),
             const Text('Font',
@@ -236,6 +240,152 @@ class _SettingsDialog extends ConsumerWidget {
           ],
         );
       },
+    );
+  }
+}
+
+String _formatHotkey(String s) {
+  return s.split('+').map((p) {
+    return switch (p) {
+      'cmd' => '⌘',
+      'shift' => '⇧',
+      'ctrl' => '⌃',
+      'alt' => '⌥',
+      'space' => 'Space',
+      _ => p.toUpperCase(),
+    };
+  }).join('');
+}
+
+class _HotkeyRow extends ConsumerStatefulWidget {
+  const _HotkeyRow();
+
+  @override
+  ConsumerState<_HotkeyRow> createState() => _HotkeyRowState();
+}
+
+class _HotkeyRowState extends ConsumerState<_HotkeyRow> {
+  bool _recording = false;
+
+  @override
+  void dispose() {
+    if (_recording) {
+      HardwareKeyboard.instance.removeHandler(_captureKey);
+    }
+    super.dispose();
+  }
+
+  void _startRecording() {
+    setState(() => _recording = true);
+    HardwareKeyboard.instance.addHandler(_captureKey);
+  }
+
+  bool _captureKey(KeyEvent event) {
+    if (event is! KeyDownEvent) return false;
+
+    // Cancel on Escape
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      _stopRecording();
+      return true;
+    }
+
+    // Ignore pure modifier presses
+    final modifierKeys = {
+      LogicalKeyboardKey.metaLeft,
+      LogicalKeyboardKey.metaRight,
+      LogicalKeyboardKey.shiftLeft,
+      LogicalKeyboardKey.shiftRight,
+      LogicalKeyboardKey.controlLeft,
+      LogicalKeyboardKey.controlRight,
+      LogicalKeyboardKey.altLeft,
+      LogicalKeyboardKey.altRight,
+    };
+    if (modifierKeys.contains(event.logicalKey)) return false;
+
+    final kb = HardwareKeyboard.instance;
+    // Require at least one modifier
+    if (!kb.isMetaPressed && !kb.isShiftPressed && !kb.isControlPressed && !kb.isAltPressed) {
+      return false;
+    }
+
+    final parts = <String>[];
+    if (kb.isMetaPressed) parts.add('cmd');
+    if (kb.isShiftPressed) parts.add('shift');
+    if (kb.isControlPressed) parts.add('ctrl');
+    if (kb.isAltPressed) parts.add('alt');
+
+    // Only accept space or keys with a printable character so the Swift side
+    // can match via charactersIgnoringModifiers (non-printable keys like arrows
+    // have no reliable cross-platform label).
+    final String keyLabel;
+    if (event.logicalKey == LogicalKeyboardKey.space) {
+      keyLabel = 'space';
+    } else {
+      // Use keyLabel (modifier-independent) instead of event.character, which
+      // on macOS produces Option-layer glyphs (e.g. opt+z → 'Ω' instead of 'z').
+      final ch = event.logicalKey.keyLabel.toLowerCase();
+      if (!RegExp(r'^[a-z0-9]$').hasMatch(ch)) return false;
+      keyLabel = ch;
+    }
+    parts.add(keyLabel);
+
+    final hotkey = parts.join('+');
+    ref.read(settingsProvider.notifier).setGlobalHotkey(hotkey);
+    _stopRecording();
+    return true;
+  }
+
+  void _stopRecording() {
+    HardwareKeyboard.instance.removeHandler(_captureKey);
+    if (mounted) setState(() => _recording = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hotkey = ref.watch(settingsProvider).globalHotkey;
+
+    return Row(
+      children: [
+        const Text('Global Hotkey',
+            style: TextStyle(fontSize: 13, color: Colors.white70)),
+        const Spacer(),
+        if (_recording)
+          const Text('Press key combo…',
+              style: TextStyle(fontSize: 12, color: Colors.white38))
+        else
+          Text(
+            hotkey != null ? _formatHotkey(hotkey) : 'Not set',
+            style: TextStyle(
+                fontSize: 12,
+                color: hotkey != null ? Colors.white70 : Colors.white38),
+          ),
+        const SizedBox(width: 8),
+        SizedBox(
+          height: 28,
+          child: TextButton(
+            style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8)),
+            onPressed: _recording ? _stopRecording : _startRecording,
+            child: Text(_recording ? 'Cancel' : 'Set',
+                style: const TextStyle(fontSize: 12)),
+          ),
+        ),
+        if (hotkey != null && !_recording) ...[
+          const SizedBox(width: 4),
+          SizedBox(
+            width: 28,
+            height: 28,
+            child: IconButton(
+              icon: const Icon(Icons.close, size: 14),
+              color: Colors.white38,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              onPressed: () =>
+                  ref.read(settingsProvider.notifier).setGlobalHotkey(null),
+            ),
+          ),
+        ],
+      ],
     );
   }
 }

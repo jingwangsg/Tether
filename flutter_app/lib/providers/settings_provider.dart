@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/mobile_key.dart';
@@ -8,12 +9,14 @@ class TerminalSettings {
   final double fontSize;
   final List<MobileKey> customKeys;
   final bool showTabBar;
+  final String? globalHotkey;
 
   const TerminalSettings({
     this.fontFamily = 'MesloLGSNF',
     this.fontSize = 14,
     this.customKeys = defaultCustomKeys,
     this.showTabBar = false,
+    this.globalHotkey,
   });
 
   TerminalSettings copyWith({
@@ -21,12 +24,15 @@ class TerminalSettings {
     double? fontSize,
     List<MobileKey>? customKeys,
     bool? showTabBar,
+    String? globalHotkey,
+    bool clearHotkey = false,
   }) {
     return TerminalSettings(
       fontFamily: fontFamily ?? this.fontFamily,
       fontSize: fontSize ?? this.fontSize,
       customKeys: customKeys ?? this.customKeys,
       showTabBar: showTabBar ?? this.showTabBar,
+      globalHotkey: clearHotkey ? null : (globalHotkey ?? this.globalHotkey),
     );
   }
 }
@@ -40,6 +46,7 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
   static const _keyFontSize = 'terminal_font_size';
   static const _keyCustomKeys = 'custom_mobile_keys';
   static const _keyShowTabBar = 'show_tab_bar';
+  static const _keyGlobalHotkey = 'global_hotkey';
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -47,6 +54,7 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
     final fontSize = prefs.getDouble(_keyFontSize);
     final customKeysJson = prefs.getString(_keyCustomKeys);
     final showTabBar = prefs.getBool(_keyShowTabBar);
+    final globalHotkey = prefs.getString(_keyGlobalHotkey);
     List<MobileKey>? customKeys;
     if (customKeysJson != null) {
       final list = jsonDecode(customKeysJson) as List;
@@ -57,7 +65,9 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
       fontSize: fontSize ?? state.fontSize,
       customKeys: customKeys ?? state.customKeys,
       showTabBar: showTabBar ?? state.showTabBar,
+      globalHotkey: globalHotkey,
     );
+    if (globalHotkey != null) _applyHotkey(globalHotkey);
   }
 
   Future<void> setFontFamily(String fontFamily) async {
@@ -82,6 +92,28 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
     state = state.copyWith(showTabBar: show);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyShowTabBar, show);
+  }
+
+  Future<void> setGlobalHotkey(String? hotkey) async {
+    state = hotkey != null
+        ? state.copyWith(globalHotkey: hotkey)
+        : state.copyWith(clearHotkey: true);
+    final prefs = await SharedPreferences.getInstance();
+    if (hotkey != null) {
+      await prefs.setString(_keyGlobalHotkey, hotkey);
+    } else {
+      await prefs.remove(_keyGlobalHotkey);
+    }
+    _applyHotkey(hotkey);
+  }
+
+  void _applyHotkey(String? hotkey) {
+    const channel = MethodChannel('dev.tether/window');
+    if (hotkey != null) {
+      channel.invokeMethod('setGlobalHotkey', {'hotkey': hotkey});
+    } else {
+      channel.invokeMethod('clearGlobalHotkey');
+    }
   }
 
   Future<void> addCustomKey(MobileKey key) async {

@@ -32,6 +32,7 @@
 		TG001111AAA00001 /* TerminalApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = TG001110AAA00001 /* TerminalApp.swift */; };
 		TG001111AAA00002 /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = TG001110AAA00002 /* TerminalView.swift */; };
 		TG001111AAA00003 /* TerminalPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = TG001110AAA00003 /* TerminalPlugin.swift */; };
+		TG001111AAA00004 /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = TG001110AAA00004 /* HotkeyManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -94,6 +95,7 @@
 		TG001110AAA00001 /* TerminalApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalApp.swift; sourceTree = "<group>"; };
 		TG001110AAA00002 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		TG001110AAA00003 /* TerminalPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPlugin.swift; sourceTree = "<group>"; };
+		TG001110AAA00004 /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -200,6 +202,7 @@
 				TG001110AAA00001 /* TerminalApp.swift */,
 				TG001110AAA00002 /* TerminalView.swift */,
 				TG001110AAA00003 /* TerminalPlugin.swift */,
+				TG001110AAA00004 /* HotkeyManager.swift */,
 				33E51913231747F40026EE4D /* DebugProfile.entitlements */,
 				33E51914231749380026EE4D /* Release.entitlements */,
 				33CC11242044D66E0003C045 /* Resources */,
@@ -471,6 +474,7 @@
 				TG001111AAA00001 /* TerminalApp.swift in Sources */,
 				TG001111AAA00002 /* TerminalView.swift in Sources */,
 				TG001111AAA00003 /* TerminalPlugin.swift in Sources */,
+				TG001111AAA00004 /* HotkeyManager.swift in Sources */,
 				335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
