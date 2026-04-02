@@ -88,6 +88,19 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AppState) {
         }
     }
 
+    // Send current foreground state immediately so the client reflects it
+    // without waiting for the next process_monitor broadcast cycle.
+    let current_fg = session.get_foreground();
+    if current_fg.process.is_some() {
+        let msg = ServerMessage::ForegroundChanged {
+            process: current_fg.process,
+            tool_state: current_fg.tool_state,
+        };
+        if let Ok(json) = serde_json::to_string(&msg) {
+            let _ = ws_sink.send(Message::Text(json.into())).await;
+        }
+    }
+
     // Subscribe to session output
     let mut output_rx = session.output_tx.subscribe();
 

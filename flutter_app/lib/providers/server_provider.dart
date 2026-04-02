@@ -133,8 +133,14 @@ class ServerNotifier extends StateNotifier<ServerState> {
       // wipe the foreground and leave the icon stuck as terminal during idle.
       final currentSessions = state.sessions;
       final refreshed = (results[1] as List<Session>).map((s) {
-        if (s.foregroundProcess != null) return s;
         final current = currentSessions.where((c) => c.id == s.id).firstOrNull;
+        if (s.foregroundProcess != null) {
+          // Server gave us foreground_process but not tool_state — preserve in-memory toolState.
+          if (current?.toolState != null) {
+            return s.copyWith(toolState: current!.toolState);
+          }
+          return s;
+        }
         if (current?.foregroundProcess == null) return s;
         return s.copyWith(
           foregroundProcess: current!.foregroundProcess,

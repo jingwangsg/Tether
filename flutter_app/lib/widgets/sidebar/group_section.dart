@@ -7,6 +7,7 @@ import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_display.dart';
+import '../tool_state_dot.dart';
 import 'group_dialog.dart';
 
 bool get _isDesktop =>
@@ -296,9 +297,20 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
           color: isActive ? Colors.white.withValues(alpha: 0.08) : null,
           child: Row(
             children: [
-              display.iconAsset != null
-                  ? Image.asset(display.iconAsset!, width: 14, height: 14)
-                  : Icon(display.icon, size: 14, color: display.iconColor),
+              Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  display.iconAsset != null
+                      ? Image.asset(display.iconAsset!, width: 14, height: 14)
+                      : Icon(display.icon, size: 14, color: display.iconColor),
+                  if (session.toolState != null)
+                    Positioned(
+                      right: -3,
+                      bottom: -3,
+                      child: ToolStateDot(session.toolState),
+                    ),
+                ],
+              ),
               const SizedBox(width: 6),
               Expanded(
                 child: Column(
