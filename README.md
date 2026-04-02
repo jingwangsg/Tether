@@ -52,15 +52,32 @@
 - **Scrollback** — managed inside libghostty's PageList (same implementation as Ghostty app)
 - **Session titles** — OSC 0/2 escape sequences update tab names automatically; PUA/Nerd Font glyphs stripped before display
 
-### Organization (from Tether)
+### Organization
 - **Hierarchical groups** — nested folders with inherited working directories
 - **Persistent sessions** — metadata (name, shell, cwd, group) survives restarts via SQLite
-- **Drag & drop tabs** — reorder sessions within the tab bar
-- **SSH host association** — bind groups to SSH hosts; open a session with `ssh host` as the command
-- **Session presets** — one-click launch for Claude Code, custom shells, or arbitrary commands
+- **Drag & drop reordering** — reorder sessions and nested groups within the sidebar
+- **SSH host association** — bind groups to SSH hosts; sessions in that group are spawned on the remote server
+- **Group assignment persistence** — SSH sessions remember their local group across server restarts via `session_group_registry`
+
+### SSH & Remote Sessions
+- **Remote daemon management** — automatically deploys and maintains a `tether-server` process on each SSH host via `~/.ssh/config`
+- **SSH tunnel proxying** — local server establishes a port-forward tunnel to each remote server; all session API calls and terminal I/O are proxied through it
+- **Session sync** — remote sessions are mirrored into the local group hierarchy on connect and kept in sync
+- **WebSocket terminal I/O** — for SSH-proxied sessions, terminal input/output is streamed over WebSocket through the tunnel; local PTY sessions never use WebSocket
+- **Scrollback replay** — on reconnect, the full scrollback buffer is replayed from the remote server
+- **SSH host status** — sidebar shows reachable SSH hosts from `~/.ssh/config` with live connection state (Connecting / Deploying / Ready / Failed)
+
+### Tool State Awareness
+- **Live foreground process** — detects the active process in each terminal session (local and SSH)
+- **Claude Code / Codex indicator** — small colored dot on session tabs and sidebar entries when an AI coding tool is active:
+  - Green + pulsing = tool is actively running / generating output
+  - Amber + static = tool is waiting for user input
+- Detection is based on OSC title sequences, terminal output patterns, and alternate-screen state
 
 ### Platform
 - **macOS native** — Apple Silicon (aarch64) with a direct Metal surface; no Rosetta, no translation layer
+- **Global hotkey** — configurable system-wide shortcut to show/hide the app from any macOS context (requires Accessibility permission)
+- **Settings panel** — font family, font size, global hotkey, custom key bindings
 - **Pluggable backend** — `TerminalBackend` abstraction; macOS uses `NativeBackend`, other platforms fall back to `XtermBackend`
 
 ## Architecture
@@ -73,24 +90,40 @@ Flutter App (Dart / macOS)
 │  │   Sidebar    │   │       TerminalArea          │  │
 │  │  (groups,    │   │  ┌──────────────────────┐   │  │
 │  │   sessions,  │   │  │  TerminalView         │   │  │
-│  │   SSH)       │   │  │  AppKitView (native)  │   │  │
-│  │              │   │  └──────────────────────┘   │  │
-│  │  Riverpod    │   │  MethodChannel: input        │  │
-│  │  providers   │   │  EventChannel:  title/exit   │  │
-│  └──────────────┘   └────────────────────────────┘  │
+│  │   SSH hosts, │   │  │  AppKitView (native)  │   │  │
+│  │   tool dots) │   │  └──────────────────────┘   │  │
+│  │              │   │  MethodChannel: input        │  │
+│  │  Riverpod    │   │  EventChannel:  title/exit   │  │
+│  │  providers   │   └────────────────────────────┘  │
+│  └──────────────┘                                    │
 └─────────────────┬───────────────────────────────────┘
-                  │ HTTP (REST only — metadata)
+                  │ HTTP REST (metadata)
                   ▼
 ┌─────────────────────────────────────────────────────┐
 │  tether-server  (Rust / Axum)                        │
 │  ┌──────────────────────────────────────────────┐   │
 │  │ REST API                                      │   │
-│  │  /api/groups  /api/sessions?local=true        │   │
-│  │  /api/ssh/hosts  /api/completions             │   │
+│  │  /api/groups   /api/sessions                  │   │
+│  │  /api/ssh/hosts  /api/remote/hosts            │   │
+│  │  /api/completions  /api/completions/remote    │   │
 │  ├──────────────────────────────────────────────┤   │
-│  │ SQLite — groups, sessions (metadata only)     │   │
-│  │ No PTY spawn for local sessions               │   │
+│  │ WebSocket  /ws/session/{id}                   │   │
+│  │  (terminal I/O for SSH-proxied sessions only) │   │
+│  ├──────────────────────────────────────────────┤   │
+│  │ SQLite — groups, sessions, session_group_     │   │
+│  │          registry (group assignment cache)    │   │
+│  ├──────────────────────────────────────────────┤   │
+│  │ RemoteManager — per-host state machine        │   │
+│  │  Unreachable → Connecting → Deploying →       │   │
+│  │  Ready → (tunnel port assigned)               │   │
 │  └──────────────────────────────────────────────┘   │
+└───────────────┬─────────────────────────────────────┘
+                │ SSH tunnel (localhost:XXXX → remote:7680)
+                ▼
+┌─────────────────────────────────────────────────────┐
+│  Remote tether-server  (on SSH host)                 │
+│  — identical binary; manages PTY sessions on host    │
+│  — same REST + WebSocket API                         │
 └─────────────────────────────────────────────────────┘
 
 macOS Native  (Swift + libghostty.a)
@@ -111,9 +144,10 @@ libghostty.a  (Zig — compiled from ghostty-org/ghostty)
 
 **Key design choices:**
 
-- **No WebSocket** — tether-server is used for metadata (groups, session names, SSH hosts) only. The terminal I/O lives entirely in-process and never leaves the app.
+- **Local vs remote I/O** — for local sessions, the PTY lives entirely in-process inside libghostty; no WebSocket, no server round-trip. For SSH sessions, the PTY runs on the remote tether-server and terminal I/O is streamed over WebSocket through the SSH tunnel.
 - **`?local=true`** — sessions created with this flag are stored in SQLite but skip `PtySession::spawn()`; the PTY is owned by the native terminal library on the client side.
 - **Event-driven rendering** — the terminal library calls `wakeup_cb` from any thread when it has output to paint. A coalescing dispatcher on the main queue calls `ghostty_app_tick()` then redraws only the active surface. Offstage tabs are unregistered from the drawable set so they don't burn GPU time.
+- **Group registry** — `session_group_registry` is a write-ahead table that records each SSH session's local group assignment. `delete_all_sessions()` (called on startup) clears the sessions table but preserves the registry, so sessions reconnect to their original groups rather than falling back to the sync-provided default.
 
 ## Quick Start
 
@@ -177,10 +211,21 @@ tether/
 ├── crates/
 │   └── tether-server/
 │       └── src/
-│           ├── api/               # REST endpoints — groups, sessions (?local=true), SSH, completions
-│           ├── pty/               # PTY lifecycle (skipped for local sessions)
-│           ├── persistence/       # SQLite — groups, sessions metadata
-│           ├── ws/                # WebSocket handler (unused by native macOS client)
+│           ├── api/               # REST endpoints
+│           │   ├── groups.rs      # /api/groups
+│           │   ├── sessions.rs    # /api/sessions
+│           │   ├── ssh.rs         # /api/ssh/hosts
+│           │   ├── remote.rs      # /api/remote/hosts
+│           │   └── completions.rs # /api/completions[/remote]
+│           ├── remote/            # SSH remote session management
+│           │   ├── manager.rs     # Per-host state machine
+│           │   ├── tunnel.rs      # SSH port-forward tunnel
+│           │   ├── deploy.rs      # Remote binary deployment
+│           │   ├── sync.rs        # Session list sync
+│           │   └── client.rs      # HTTP client to remote server
+│           ├── pty/               # PTY lifecycle (local sessions)
+│           ├── persistence/       # SQLite — groups, sessions, registry
+│           ├── ws/                # WebSocket handler (SSH-proxied sessions)
 │           ├── server.rs          # Axum router
 │           ├── config.rs          # TOML config
 │           ├── auth.rs            # Bearer token middleware
@@ -194,7 +239,8 @@ tether/
 │   │   │   ├── key_map.dart            # LogicalKeyboardKey → terminal key names
 │   │   │   └── xterm_backend.dart      # Fallback / Android stub
 │   │   ├── widgets/
-│   │   │   ├── sidebar/           # Groups, sessions, SSH hosts (from Tether, unchanged)
+│   │   │   ├── sidebar/           # Groups, sessions, SSH hosts
+│   │   │   ├── tool_state_dot.dart     # Green/amber badge for Claude Code / Codex
 │   │   │   └── terminal/
 │   │   │       ├── terminal_view.dart        # AppKitView + MethodChannel/EventChannel
 │   │   │       ├── terminal_area.dart        # Tab management, title sanitization
@@ -207,6 +253,7 @@ tether/
 │       ├── TerminalPlugin.swift         # FlutterPlugin + PlatformViewFactory
 │       ├── TerminalApp.swift            # Singleton ghostty_app_t + callbacks
 │       ├── TerminalView.swift           # NSView: surface lifecycle, input, events
+│       ├── HotkeyManager.swift          # Global hotkey (show/hide app)
 │       ├── MainFlutterWindow.swift      # Registers TerminalPlugin
 │       └── ghostty/
 │           ├── ghostty.h                # C API header (ghostty library)
@@ -231,6 +278,7 @@ tether/
 | Native bridge | Swift, `FlutterPlatformView`, `MethodChannel`, `EventChannel` |
 | App framework | Flutter 3.7, Dart, Riverpod 2.6 |
 | Metadata server | Rust, Axum 0.8, SQLite (rusqlite) |
+| Remote sessions | SSH tunnel + WebSocket proxy |
 | Font rendering | CoreText + Ghostty's custom rasterizer |
 | Build toolchain | Zig 0.13 (for libghostty), Cargo (server), Flutter (app) |
 
