@@ -54,6 +54,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   // Tool state (running/waiting) detected from output activity
   Timer? _toolStateTimer;
 
+  // Timestamp of last user input sent — used to suppress echo false positives
+  DateTime? _lastInputSentAt;
+
   @override
   void initState() {
     super.initState();
@@ -149,6 +152,13 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     final process = session?.foregroundProcess;
     if (process != 'claude' && process != 'codex') return;
 
+    // Suppress Running if output arrived shortly after user input — likely echo.
+    final lastInput = _lastInputSentAt;
+    if (lastInput != null &&
+        DateTime.now().difference(lastInput) < const Duration(milliseconds: 150)) {
+      return;
+    }
+
     if (session?.toolState != 'running') {
       ref.read(serverProvider.notifier).updateForegroundProcess(
         widget.sessionId, process, toolState: 'running',
@@ -240,11 +250,13 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   }
 
   void _onTerminalInput(String data) {
+    _lastInputSentAt = DateTime.now();
     _ws?.sendInput(data);
   }
 
   /// Send raw text to the PTY (used by MobileKeyBar and paste service).
   void sendText(String text) {
+    _lastInputSentAt = DateTime.now();
     _ws?.sendInput(text);
   }
 

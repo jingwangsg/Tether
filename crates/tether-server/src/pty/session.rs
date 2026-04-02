@@ -63,6 +63,8 @@ pub struct PtySession {
     in_alternate_screen: std::sync::atomic::AtomicBool,
     /// Timestamp of the last PTY output chunk (used for tool running/waiting detection).
     last_output_time: Mutex<Option<std::time::Instant>>,
+    /// Timestamp of the last user input written to the PTY (used to suppress echo false positives).
+    last_input_time: Mutex<Option<std::time::Instant>>,
     /// Persists the last successfully detected tool while in alternate screen.
     /// Serves as a stable fallback while the terminal is in alternate screen mode.
     /// Cleared only when confirmed outside alt screen with no tool detected.
@@ -145,6 +147,7 @@ impl PtySession {
             output_detected_tool: Mutex::new(None),
             in_alternate_screen: std::sync::atomic::AtomicBool::new(false),
             last_output_time: Mutex::new(None),
+            last_input_time: Mutex::new(None),
             last_detected_alt_screen_tool: Mutex::new(None),
             last_alt_screen_exit_time: Mutex::new(None),
         });
@@ -198,6 +201,7 @@ impl PtySession {
     }
 
     pub fn write_input(&self, data: &[u8]) -> anyhow::Result<()> {
+        *self.last_input_time.lock().unwrap() = Some(std::time::Instant::now());
         let mut writer = self.master_writer.lock().unwrap();
         writer.write_all(data)?;
         writer.flush()?;
@@ -281,6 +285,13 @@ impl PtySession {
     pub fn compute_tool_state(&self) -> Option<ToolState> {
         if !self.in_alternate_screen.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
+        }
+        let input_is_recent = self.last_input_time.lock().unwrap()
+            .map(|t| t.elapsed() < std::time::Duration::from_millis(200))
+            .unwrap_or(false);
+        if input_is_recent {
+            // Suppress Running — output is likely echo of user input.
+            return Some(ToolState::Waiting);
         }
         let is_recent = self.last_output_time.lock().unwrap()
             .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
