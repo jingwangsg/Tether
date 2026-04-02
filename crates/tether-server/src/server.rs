@@ -63,6 +63,43 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
 
     // Start remote SSH host scanner (disabled when running as a remote daemon)
     if !no_ssh_scan {
+        // Subscribe before spawning scanner so no Ready events are missed.
+        let mut ready_rx = state.inner.remote_manager.ready_tx.subscribe();
+        let inner_for_sync = state.inner.clone();
+        tokio::spawn(async move {
+            use tokio::sync::broadcast::error::RecvError;
+            loop {
+                match ready_rx.recv().await {
+                    Ok((host_alias, tunnel_port, _remote_group_id)) => {
+                        let local_groups = match inner_for_sync.db.get_groups_by_ssh_host(&host_alias) {
+                            Ok(g) => g,
+                            Err(e) => {
+                                tracing::warn!("session sync: DB error for {}: {}", host_alias, e);
+                                continue;
+                            }
+                        };
+                        for group in local_groups {
+                            match crate::remote::sync::sync_remote_sessions(
+                                &inner_for_sync.db, &host_alias, tunnel_port, &group.id,
+                            ).await {
+                                Ok(n) if n > 0 => tracing::info!(
+                                    "session sync: restored {} sessions for {}", n, host_alias
+                                ),
+                                Err(e) => tracing::warn!(
+                                    "session sync: failed for {}: {}", host_alias, e
+                                ),
+                                _ => {}
+                            }
+                        }
+                    }
+                    Err(RecvError::Lagged(n)) => {
+                        tracing::warn!("session sync: lagged by {} Ready events, continuing", n);
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        });
+
         tokio::spawn(crate::remote::manager::run_scanner(
             state.inner.remote_manager.clone(),
         ));

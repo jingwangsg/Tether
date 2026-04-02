@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio::sync::broadcast;
 use tokio::time::timeout;
 
 use dashmap::DashMap;
@@ -49,13 +50,14 @@ struct RemoteHostState {
 #[derive(Clone)]
 pub struct RemoteManager {
     hosts: Arc<DashMap<String, RemoteHostState>>,
+    /// Fires (host_alias, tunnel_port, remote_group_id) when a host becomes Ready.
+    pub ready_tx: broadcast::Sender<(String, u16, String)>,
 }
 
 impl RemoteManager {
     pub fn new() -> Self {
-        Self {
-            hosts: Arc::new(DashMap::new()),
-        }
+        let (ready_tx, _) = broadcast::channel(16);
+        Self { hosts: Arc::new(DashMap::new()), ready_tx }
     }
 
     /// Return the remote default group ID for `host_alias` if it is Ready.
@@ -206,12 +208,15 @@ impl RemoteManager {
                         "On-demand connect: {} is Ready (tunnel port {})",
                         alias, tunnel.local_port
                     );
+                    let tunnel_port = tunnel.local_port;
+                    let rg = remote_group_id.clone();
                     if let Some(mut entry) = manager.hosts.get_mut(&alias) {
                         entry.status = RemoteStatus::Ready;
                         entry.client = Some(client);
                         entry.tunnel = Some(tunnel);
                         entry.remote_group_id = Some(remote_group_id);
                     }
+                    let _ = manager.ready_tx.send((alias.to_string(), tunnel_port, rg));
                 }
                 Err(e) => {
                     tracing::warn!("On-demand connect to {} failed: {}", alias, e);
@@ -320,12 +325,15 @@ async fn scan_and_deploy(manager: &RemoteManager) {
                         "Remote host {} is Ready (tunnel port {}, group {})",
                         alias, tunnel.local_port, remote_group_id
                     );
+                    let tunnel_port = tunnel.local_port;
+                    let rg = remote_group_id.clone();
                     if let Some(mut entry) = manager.hosts.get_mut(alias) {
                         entry.status = RemoteStatus::Ready;
                         entry.client = Some(client);
                         entry.tunnel = Some(tunnel);
                         entry.remote_group_id = Some(remote_group_id);
                     }
+                    let _ = manager.ready_tx.send((alias.to_string(), tunnel_port, rg));
                 }
                 Err(e) => {
                     tracing::warn!("Failed to connect/deploy to {}: {}", alias, e);

@@ -443,6 +443,49 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
+
+    pub fn get_groups_by_ssh_host(&self, host_alias: &str) -> anyhow::Result<Vec<GroupRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, default_cwd, sort_order, parent_id, created_at, updated_at, ssh_host \
+             FROM groups WHERE ssh_host = ?1 ORDER BY sort_order, name",
+        )?;
+        let rows = stmt.query_map(params![host_alias], |row| {
+            Ok(GroupRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                default_cwd: row.get(2)?,
+                sort_order: row.get(3)?,
+                parent_id: row.get(4)?,
+                ssh_host: row.get(7)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Insert a session record if no record with the same id already exists.
+    /// Returns true if a row was inserted, false if it already existed.
+    pub fn try_insert_remote_session(
+        &self,
+        id: &str,
+        group_id: &str,
+        name: &str,
+        shell: &str,
+        cwd: &str,
+    ) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let n = conn.execute(
+            "INSERT OR IGNORE INTO sessions \
+             (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, is_alive) \
+             VALUES (?1, ?2, ?3, ?4, 80, 24, ?5, ?6, ?7, 1)",
+            params![id, group_id, name, shell, cwd, now, now],
+        )?;
+        Ok(n > 0)
+    }
 }
 
 #[cfg(test)]
@@ -941,5 +984,51 @@ mod tests {
         let store = new_store();
         let result = store.get_session_ssh_host("no-such-session").unwrap();
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn get_groups_by_ssh_host_empty() {
+        let store = new_store();
+        store.create_group("local", "~", None, None).unwrap();
+        let result = store.get_groups_by_ssh_host("myhost").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn get_groups_by_ssh_host_returns_matching() {
+        let store = new_store();
+        store.create_group("local", "~", None, None).unwrap();
+        let g1 = store.create_group("remote1", "~", None, Some("myhost")).unwrap();
+        let g2 = store.create_group("remote2", "~", None, Some("myhost")).unwrap();
+        store.create_group("other", "~", None, Some("otherhost")).unwrap();
+
+        let result = store.get_groups_by_ssh_host("myhost").unwrap();
+        assert_eq!(result.len(), 2);
+        let ids: Vec<_> = result.iter().map(|g| g.id.as_str()).collect();
+        assert!(ids.contains(&g1.id.as_str()));
+        assert!(ids.contains(&g2.id.as_str()));
+    }
+
+    #[test]
+    fn try_insert_remote_session_inserts_new() {
+        let store = new_store();
+        let g = store.create_group("g", "~", None, Some("myhost")).unwrap();
+        let inserted = store.try_insert_remote_session("sid1", &g.id, "sess", "/bin/sh", "~").unwrap();
+        assert!(inserted);
+        let sessions = store.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "sid1");
+    }
+
+    #[test]
+    fn try_insert_remote_session_ignores_duplicate() {
+        let store = new_store();
+        let g = store.create_group("g", "~", None, Some("myhost")).unwrap();
+        let first = store.try_insert_remote_session("sid1", &g.id, "sess", "/bin/sh", "~").unwrap();
+        assert!(first);
+        let second = store.try_insert_remote_session("sid1", &g.id, "sess", "/bin/sh", "~").unwrap();
+        assert!(!second);
+        // Still only one row
+        assert_eq!(store.list_sessions().unwrap().len(), 1);
     }
 }

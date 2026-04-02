@@ -67,6 +67,9 @@ pub struct PtySession {
     /// Serves as a stable fallback while the terminal is in alternate screen mode.
     /// Cleared only when confirmed outside alt screen with no tool detected.
     last_detected_alt_screen_tool: Mutex<Option<String>>,
+    /// Timestamp of the last alt-screen exit, used to maintain the tool cache
+    /// for a short grace period while Claude Code is running commands outside alt-screen.
+    last_alt_screen_exit_time: Mutex<Option<std::time::Instant>>,
 }
 
 impl PtySession {
@@ -143,6 +146,7 @@ impl PtySession {
             in_alternate_screen: std::sync::atomic::AtomicBool::new(false),
             last_output_time: Mutex::new(None),
             last_detected_alt_screen_tool: Mutex::new(None),
+            last_alt_screen_exit_time: Mutex::new(None),
         });
 
         // Spawn reader task
@@ -340,10 +344,17 @@ impl PtySession {
     }
 
     fn detect_foreground_from_alt_screen_cache(&self) -> Option<String> {
-        if !self.in_alternate_screen.load(std::sync::atomic::Ordering::Relaxed) {
-            return None;
+        let in_alt = self.in_alternate_screen.load(std::sync::atomic::Ordering::Relaxed);
+        let usable = in_alt || {
+            self.last_alt_screen_exit_time.lock().ok()
+                .and_then(|g| g.as_ref().map(|t| t.elapsed() < std::time::Duration::from_secs(5)))
+                .unwrap_or(false)
+        };
+        if usable {
+            self.last_detected_alt_screen_tool.lock().ok()?.clone()
+        } else {
+            None
         }
-        self.last_detected_alt_screen_tool.lock().ok()?.clone()
     }
 
     fn detect_foreground_from_sticky_osc(&self) -> Option<String> {
@@ -398,8 +409,8 @@ impl PtySession {
                 if let Ok(mut tool) = session.output_detected_tool.lock() {
                     *tool = None;
                 }
-                if let Ok(mut tool) = session.last_detected_alt_screen_tool.lock() {
-                    *tool = None;
+                if let Ok(mut t) = session.last_alt_screen_exit_time.lock() {
+                    *t = Some(std::time::Instant::now());
                 }
             }
             (Some(_), None) => {
@@ -414,8 +425,8 @@ impl PtySession {
                 if let Ok(mut tool) = session.output_detected_tool.lock() {
                     *tool = None;
                 }
-                if let Ok(mut tool) = session.last_detected_alt_screen_tool.lock() {
-                    *tool = None;
+                if let Ok(mut t) = session.last_alt_screen_exit_time.lock() {
+                    *t = Some(std::time::Instant::now());
                 }
             }
             (None, None) => {}
