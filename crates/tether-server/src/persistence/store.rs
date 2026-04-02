@@ -73,7 +73,13 @@ impl Store {
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_sessions_group_id ON sessions(group_id);",
+            CREATE INDEX IF NOT EXISTS idx_sessions_group_id ON sessions(group_id);
+            CREATE TABLE IF NOT EXISTS session_group_registry (
+                session_id TEXT PRIMARY KEY,
+                group_id   TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO session_group_registry (session_id, group_id)
+            SELECT id, group_id FROM sessions;",
         )?;
         // Migration: add parent_id column if it doesn't exist (for existing DBs)
         conn.execute_batch(
@@ -226,6 +232,10 @@ impl Store {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         for gid in &ids {
+            tx.execute(
+                "DELETE FROM session_group_registry WHERE session_id IN (SELECT id FROM sessions WHERE group_id = ?1)",
+                params![gid],
+            )?;
             tx.execute("DELETE FROM sessions WHERE group_id = ?1", params![gid])?;
         }
         // Delete in reverse order (children first) to respect FK constraints
@@ -330,12 +340,18 @@ impl Store {
         shell: &str,
         cwd: &str,
     ) -> anyhow::Result<SessionRow> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, is_alive) VALUES (?1, ?2, ?3, ?4, 80, 24, ?5, ?6, ?7, 1)",
             params![id, group_id, name, shell, cwd, now, now],
         )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO session_group_registry (session_id, group_id) VALUES (?1, ?2)",
+            params![id, group_id],
+        )?;
+        tx.commit()?;
         Ok(SessionRow {
             id: id.to_string(),
             group_id: group_id.to_string(),
@@ -370,11 +386,17 @@ impl Store {
     }
 
     pub fn update_session_group(&self, id: &str, group_id: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
             "UPDATE sessions SET group_id = ?1 WHERE id = ?2",
             params![group_id, id],
         )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO session_group_registry (session_id, group_id) VALUES (?1, ?2)",
+            params![id, group_id],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -388,8 +410,11 @@ impl Store {
     }
 
     pub fn delete_session(&self, id: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+        tx.execute("DELETE FROM session_group_registry WHERE session_id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -411,6 +436,10 @@ impl Store {
         }
     }
 
+    /// Delete all session rows (called on server startup because PTY processes do not survive
+    /// a restart). Intentionally does NOT touch `session_group_registry` — that table is the
+    /// persistence mechanism that allows remote sessions to be restored to their original
+    /// user-chosen groups when the SSH host reconnects.
     pub fn delete_all_sessions(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM sessions", [])?;
@@ -468,22 +497,40 @@ impl Store {
 
     /// Insert a session record if no record with the same id already exists.
     /// Returns true if a row was inserted, false if it already existed.
+    /// Uses the session_group_registry to restore the original local group (if known),
+    /// falling back to `fallback_group_id` for sessions seen for the first time.
     pub fn try_insert_remote_session(
         &self,
         id: &str,
-        group_id: &str,
+        fallback_group_id: &str,
         name: &str,
         shell: &str,
         cwd: &str,
     ) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
+        // Look up the session's registered home group; fall back to the provided group.
+        let group_id: String = conn.query_row(
+            "SELECT group_id FROM session_group_registry WHERE session_id = ?1",
+            params![id],
+            |row| row.get(0),
+        ).unwrap_or_else(|_| fallback_group_id.to_string());
+
         let now = chrono::Utc::now().to_rfc3339();
-        let n = conn.execute(
+        let tx = conn.transaction()?;
+        let n = tx.execute(
             "INSERT OR IGNORE INTO sessions \
              (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, is_alive) \
              VALUES (?1, ?2, ?3, ?4, 80, 24, ?5, ?6, ?7, 1)",
             params![id, group_id, name, shell, cwd, now, now],
         )?;
+        if n > 0 {
+            // Register the group so future restarts restore this session to the same group.
+            tx.execute(
+                "INSERT OR IGNORE INTO session_group_registry (session_id, group_id) VALUES (?1, ?2)",
+                params![id, group_id],
+            )?;
+        }
+        tx.commit()?;
         Ok(n > 0)
     }
 }
@@ -854,6 +901,24 @@ mod tests {
         store.delete_all_sessions().unwrap();
     }
 
+    #[test]
+    fn delete_all_sessions_preserves_registry() {
+        // Verifies that the registry survives delete_all_sessions (server restart simulation).
+        let store = new_store();
+        let g_original = store.create_group("original", "~", None, Some("myhost")).unwrap();
+        let g_wrong = store.create_group("wrong", "~", None, Some("myhost")).unwrap();
+
+        store.create_session("s1", &g_original.id, "sess", "/bin/sh", "~").unwrap();
+        store.delete_all_sessions().unwrap();
+        assert!(store.list_sessions().unwrap().is_empty());
+
+        // Registry must survive: wrong fallback must not win
+        store.try_insert_remote_session("s1", &g_wrong.id, "sess", "/bin/sh", "~").unwrap();
+        let sessions = store.list_sessions().unwrap();
+        assert_eq!(sessions[0].group_id, g_original.id,
+            "delete_all_sessions must not clear session_group_registry");
+    }
+
     // --- Batch Reorder Sessions ---
 
     #[test]
@@ -1018,6 +1083,29 @@ mod tests {
         let sessions = store.list_sessions().unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "sid1");
+    }
+
+    #[test]
+    fn try_insert_remote_session_respects_registry() {
+        // Simulate: session was created in group A, server restarts, sync uses group B as fallback.
+        // The registry should win and restore the session to group A.
+        let store = new_store();
+        let g_a = store.create_group("groupA", "~", None, Some("myhost")).unwrap();
+        let g_b = store.create_group("groupB", "~", None, Some("myhost")).unwrap();
+
+        // Create session in group A (populates registry)
+        store.create_session("sid1", &g_a.id, "sess", "/bin/sh", "~").unwrap();
+
+        // Simulate restart: delete all sessions (registry survives)
+        store.delete_all_sessions().unwrap();
+        assert!(store.list_sessions().unwrap().is_empty());
+
+        // Sync passes group B as fallback, but registry says group A
+        let inserted = store.try_insert_remote_session("sid1", &g_b.id, "sess", "/bin/sh", "~").unwrap();
+        assert!(inserted);
+        let sessions = store.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].group_id, g_a.id, "session should be restored to its original group A, not fallback group B");
     }
 
     #[test]
