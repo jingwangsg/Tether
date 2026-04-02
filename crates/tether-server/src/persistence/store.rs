@@ -409,6 +409,16 @@ impl Store {
         Ok(())
     }
 
+    /// Permanently delete a session and its registry entry.
+    ///
+    /// The registry entry is intentionally cleared here because this is an explicit
+    /// user-initiated deletion (HTTP DELETE), which also proxies the delete to the
+    /// remote server.  If the session ever reappears via sync it is treated as a new
+    /// first-time session and falls back to `fallback_group_id`.
+    ///
+    /// Contrast with `delete_all_sessions`, which is called on server *restart* and
+    /// intentionally leaves the registry intact so SSH sessions are restored to their
+    /// original groups on reconnect.
     pub fn delete_session(&self, id: &str) -> anyhow::Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
@@ -721,6 +731,24 @@ mod tests {
     }
 
     #[test]
+    fn delete_group_clears_registry() {
+        // After the group is deleted, the session's registry entry must be gone so
+        // try_insert_remote_session uses the fallback group instead of the stale one.
+        let store = new_store();
+        let g_original = store.create_group("original", "~", None, Some("host")).unwrap();
+        let g_fallback = store.create_group("fallback", "~", None, Some("host")).unwrap();
+
+        store.create_session("s1", &g_original.id, "s", "/bin/sh", "~").unwrap();
+        store.delete_group(&g_original.id).unwrap();
+
+        // g_original is gone; inserting via sync should use fallback, not the deleted group.
+        store.try_insert_remote_session("s1", &g_fallback.id, "s", "/bin/sh", "~").unwrap();
+        let sessions = store.list_sessions().unwrap();
+        assert_eq!(sessions[0].group_id, g_fallback.id,
+            "deleted group's registry entry must be cleared so fallback is used");
+    }
+
+    #[test]
     fn delete_group_cascades_nested_sessions() {
         let store = new_store();
         let root = store.create_group("root", "~", None, None).unwrap();
@@ -869,6 +897,26 @@ mod tests {
     }
 
     #[test]
+    fn update_session_group_updates_registry() {
+        // After move g1→g2, restart, re-sync with g3 as fallback → session must land in g2.
+        let store = new_store();
+        let g1 = store.create_group("g1", "~", None, Some("host")).unwrap();
+        let g2 = store.create_group("g2", "~", None, Some("host")).unwrap();
+        let g3 = store.create_group("g3", "~", None, Some("host")).unwrap();
+
+        store.create_session("s1", &g1.id, "s", "/bin/sh", "~").unwrap();
+        store.update_session_group("s1", &g2.id).unwrap();
+
+        // Simulate restart
+        store.delete_all_sessions().unwrap();
+
+        store.try_insert_remote_session("s1", &g3.id, "s", "/bin/sh", "~").unwrap();
+        let sessions = store.list_sessions().unwrap();
+        assert_eq!(sessions[0].group_id, g2.id,
+            "registry must reflect the post-move group, not the fallback");
+    }
+
+    #[test]
     fn delete_session() {
         let store = new_store();
         let group = store.create_group("g", "~", None, None).unwrap();
@@ -882,6 +930,23 @@ mod tests {
         let store = new_store();
         // Should succeed (no-op)
         store.delete_session("nonexistent").unwrap();
+    }
+
+    #[test]
+    fn delete_session_clears_registry() {
+        // Documents that explicit deletion (user-initiated) also clears the registry entry.
+        // If the session reappears via sync, it falls back to fallback_group_id.
+        let store = new_store();
+        let g_original = store.create_group("original", "~", None, Some("host")).unwrap();
+        let g_fallback = store.create_group("fallback", "~", None, Some("host")).unwrap();
+
+        store.create_session("s1", &g_original.id, "s", "/bin/sh", "~").unwrap();
+        store.delete_session("s1").unwrap();
+
+        store.try_insert_remote_session("s1", &g_fallback.id, "s", "/bin/sh", "~").unwrap();
+        let sessions = store.list_sessions().unwrap();
+        assert_eq!(sessions[0].group_id, g_fallback.id,
+            "after explicit deletion, registry is cleared and fallback is used on re-sync");
     }
 
     #[test]
