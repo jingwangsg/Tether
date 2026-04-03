@@ -349,13 +349,12 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     _writeScheduled = false;
     if (!mounted || _writeQueue.isEmpty) return;
 
-    // Snapshot scroll state before writing. 20px fuzz handles floating-point
-    // imprecision at the bottom boundary (logical pixels).
+    // Capture pre-write bottom state.  After an alt-buffer exit the stored
+    // maxScrollExtent jumps from 0 to a large value while pixels stays at 0,
+    // so the post-frame "near bottom" check alone would miss the transition.
     var wasAtBottom = true;
-    var savedOffset = 0.0;
     if (_scrollController.hasClients) {
       final pos = _scrollController.position;
-      savedOffset = pos.pixels;
       wasAtBottom = pos.pixels >= pos.maxScrollExtent - 20.0;
     }
 
@@ -375,15 +374,21 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) return;
-      final maxExtent = _scrollController.position.maxScrollExtent;
-      final shouldScrollToBottom =
-          ref.read(settingsProvider).scrollToBottomOnOutput || wasAtBottom;
-      if (shouldScrollToBottom) {
+      final pos = _scrollController.position;
+      final maxExtent = pos.maxScrollExtent;
+      // Scroll to bottom when:
+      //  • the setting forces it, OR
+      //  • we were at the bottom before writing (covers alt-buffer exit), OR
+      //  • we're still at/near the bottom after the frame.
+      // When none hold, xterm's _stickToBottom=false preserves the user's
+      // scroll position naturally — no jumpTo needed.
+      final isNowAtBottom = pos.pixels >= maxExtent - 20.0;
+      final shouldScroll =
+          ref.read(settingsProvider).scrollToBottomOnOutput ||
+          wasAtBottom ||
+          isNowAtBottom;
+      if (shouldScroll) {
         _scrollController.jumpTo(maxExtent);
-      } else {
-        // Skip if the user is mid-fling — let momentum continue uninterrupted.
-        if (_scrollController.position.isScrollingNotifier.value) return;
-        _scrollController.jumpTo(savedOffset.clamp(0.0, maxExtent));
       }
     });
   }
@@ -414,6 +419,16 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   void sendText(String text) {
     _lastInputSentAt = DateTime.now();
     _ws?.sendInput(text);
+    // Snap to live output when user sends input, matching ghostty's
+    // scroll-to-bottom-on-keystroke default behavior.  forcePixels always
+    // notifies listeners (unlike jumpTo which is a no-op when pixels already
+    // equals the target), so xterm's _onScroll re-arms _stickToBottom even
+    // after alt-buffer transitions that leave maxScrollExtent at 0.
+    if (_scrollController.hasClients) {
+      _scrollController.position.forcePixels(
+        _scrollController.position.maxScrollExtent,
+      );
+    }
   }
 
   void paste(String text) {
