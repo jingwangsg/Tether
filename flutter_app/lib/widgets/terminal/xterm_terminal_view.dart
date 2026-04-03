@@ -373,16 +373,19 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
 
     _bytesInput.add(merged);
 
-    if (!wasAtBottom) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _scrollController.hasClients) {
-          // Skip if the user is mid-fling — let the momentum continue uninterrupted.
-          if (_scrollController.position.isScrollingNotifier.value) return;
-          final maxExtent = _scrollController.position.maxScrollExtent;
-          _scrollController.jumpTo(savedOffset.clamp(0.0, maxExtent));
-        }
-      });
-    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      final maxExtent = _scrollController.position.maxScrollExtent;
+      final shouldScrollToBottom =
+          ref.read(settingsProvider).scrollToBottomOnOutput || wasAtBottom;
+      if (shouldScrollToBottom) {
+        _scrollController.jumpTo(maxExtent);
+      } else {
+        // Skip if the user is mid-fling — let momentum continue uninterrupted.
+        if (_scrollController.position.isScrollingNotifier.value) return;
+        _scrollController.jumpTo(savedOffset.clamp(0.0, maxExtent));
+      }
+    });
   }
 
   void _pause() {

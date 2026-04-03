@@ -10,6 +10,7 @@ class TerminalSettings {
   final List<MobileKey> customKeys;
   final bool showTabBar;
   final String? globalHotkey;
+  final bool scrollToBottomOnOutput;
 
   const TerminalSettings({
     this.fontFamily = 'MesloLGSNF',
@@ -17,6 +18,7 @@ class TerminalSettings {
     this.customKeys = defaultCustomKeys,
     this.showTabBar = false,
     this.globalHotkey,
+    this.scrollToBottomOnOutput = false,
   });
 
   TerminalSettings copyWith({
@@ -26,6 +28,7 @@ class TerminalSettings {
     bool? showTabBar,
     String? globalHotkey,
     bool clearHotkey = false,
+    bool? scrollToBottomOnOutput,
   }) {
     return TerminalSettings(
       fontFamily: fontFamily ?? this.fontFamily,
@@ -33,6 +36,7 @@ class TerminalSettings {
       customKeys: customKeys ?? this.customKeys,
       showTabBar: showTabBar ?? this.showTabBar,
       globalHotkey: clearHotkey ? null : (globalHotkey ?? this.globalHotkey),
+      scrollToBottomOnOutput: scrollToBottomOnOutput ?? this.scrollToBottomOnOutput,
     );
   }
 }
@@ -47,6 +51,7 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
   static const _keyCustomKeys = 'custom_mobile_keys';
   static const _keyShowTabBar = 'show_tab_bar';
   static const _keyGlobalHotkey = 'global_hotkey';
+  static const _keyScrollToBottomOnOutput = 'scroll_to_bottom_on_output';
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -55,6 +60,7 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
     final customKeysJson = prefs.getString(_keyCustomKeys);
     final showTabBar = prefs.getBool(_keyShowTabBar);
     final globalHotkey = prefs.getString(_keyGlobalHotkey);
+    final scrollToBottomOnOutput = prefs.getBool(_keyScrollToBottomOnOutput);
     List<MobileKey>? customKeys;
     if (customKeysJson != null) {
       final list = jsonDecode(customKeysJson) as List;
@@ -66,6 +72,7 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
       customKeys: customKeys ?? state.customKeys,
       showTabBar: showTabBar ?? state.showTabBar,
       globalHotkey: globalHotkey,
+      scrollToBottomOnOutput: scrollToBottomOnOutput ?? state.scrollToBottomOnOutput,
     );
     if (globalHotkey != null) _applyHotkey(globalHotkey);
   }
@@ -114,6 +121,12 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
     } else {
       channel.invokeMethod('clearGlobalHotkey');
     }
+  }
+
+  Future<void> setScrollToBottomOnOutput(bool value) async {
+    state = state.copyWith(scrollToBottomOnOutput: value);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyScrollToBottomOnOutput, value);
   }
 
   Future<void> addCustomKey(MobileKey key) async {

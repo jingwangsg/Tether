@@ -43,6 +43,18 @@ class _SettingsDialog extends ConsumerWidget {
                 ref.read(settingsProvider.notifier).setShowTabBar(value);
               },
             ),
+            SwitchListTile(
+              title: const Text('Scroll to Bottom on Output',
+                  style: TextStyle(fontSize: 13)),
+              subtitle: const Text('Always follow new terminal output',
+                  style: TextStyle(fontSize: 11, color: Colors.white38)),
+              value: settings.scrollToBottomOnOutput,
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              onChanged: (value) {
+                ref.read(settingsProvider.notifier).setScrollToBottomOnOutput(value);
+              },
+            ),
             const Divider(color: Colors.white12),
             const SizedBox(height: 8),
             const _HotkeyRow(),
