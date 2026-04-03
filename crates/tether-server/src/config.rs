@@ -37,7 +37,7 @@ pub struct TerminalSection {
 }
 
 fn default_bind() -> String {
-    "0.0.0.0".to_string()
+    "127.0.0.1".to_string()
 }
 fn default_port() -> u16 {
     7680
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn default_values() {
         let config = ServerConfig::default();
-        assert_eq!(config.server.bind, "0.0.0.0");
+        assert_eq!(config.server.bind, "127.0.0.1");
         assert_eq!(config.server.port, 7680);
         assert_eq!(config.persistence.data_dir, "~/.tether");
         assert_eq!(config.terminal.scrollback_memory_kb, 100);
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn load_or_default_nonexistent_path() {
         let config = ServerConfig::load_or_default("/tmp/tether-test-nonexistent-9f8a7b.toml");
-        assert_eq!(config.server.bind, "0.0.0.0");
+        assert_eq!(config.server.bind, "127.0.0.1");
         assert_eq!(config.server.port, 7680);
     }
 
@@ -193,7 +193,7 @@ scrollback_disk_max_mb = 100
 
         let config = ServerConfig::load_or_default(tmp.path().to_str().unwrap());
         // Should gracefully fall back to defaults
-        assert_eq!(config.server.bind, "0.0.0.0");
+        assert_eq!(config.server.bind, "127.0.0.1");
         assert_eq!(config.server.port, 7680);
     }
 

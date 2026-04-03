@@ -70,9 +70,20 @@ class TerminalPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFactory {
 
     func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         let args = call.arguments as? [String: Any] ?? [:]
-        guard let viewId = args["viewId"] as? Int64,
-              let view = views[viewId]
-        else {
+        guard let viewId = args["viewId"] as? Int64 else {
+            result(FlutterError(code: "INVALID_ARGS", message: "Missing viewId", details: nil))
+            return
+        }
+
+        // destroyView is handled before the view-existence guard so it can clean up
+        // even if the view is in a partially initialized state.
+        if call.method == "destroyView" {
+            views.removeValue(forKey: viewId)
+            result(nil)
+            return
+        }
+
+        guard let view = views[viewId] else {
             result(FlutterError(code: "NO_VIEW", message: "View not found", details: nil))
             return
         }

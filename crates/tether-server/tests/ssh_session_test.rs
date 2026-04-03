@@ -15,8 +15,8 @@ fn ssh_with_remote_cwd_includes_cd() {
     let (shell, cwd) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~/projects");
 
     assert!(
-        shell.contains("cd ~/projects"),
-        "should contain 'cd ~/projects', got: {}",
+        shell.contains("cd ~/'projects'"),
+        "should contain properly quoted cd, got: {}",
         shell
     );
     assert!(
@@ -68,8 +68,8 @@ fn ssh_with_absolute_remote_path() {
     let (shell, _) = resolve_ssh_command(Some("prod"), "ssh prod", "/opt/app");
 
     assert!(
-        shell.contains("cd /opt/app"),
-        "should handle absolute remote path, got: {}",
+        shell.contains("cd '/opt/app'"),
+        "should handle absolute remote path (quoted), got: {}",
         shell
     );
 }
@@ -80,8 +80,8 @@ fn ssh_with_deep_nested_path() {
         resolve_ssh_command(Some("devbox"), "ssh devbox", "~/a/b/c/d");
 
     assert!(
-        shell.contains("cd ~/a/b/c/d"),
-        "should handle deeply nested path, got: {}",
+        shell.contains("cd ~/'a/b/c/d'"),
+        "should handle deeply nested path (quoted), got: {}",
         shell
     );
 }
@@ -96,7 +96,7 @@ fn ssh_preserves_host_with_user() {
         "should preserve user@host, got: {}",
         shell
     );
-    assert!(shell.contains("cd ~/work"));
+    assert!(shell.contains("cd ~/'work'"));
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn ssh_preserves_host_with_port() {
         "should preserve port flag, got: {}",
         shell
     );
-    assert!(shell.contains("cd ~/work"));
+    assert!(shell.contains("cd ~/'work'"));
 }
 
 // --- Non-SSH commands are not transformed ---
@@ -184,10 +184,10 @@ fn transformation_returns_different_values_than_originals() {
 fn full_command_format_is_correct() {
     let (shell, _) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~/work");
 
-    // Expected: ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox -t "cd ~/work && exec \$SHELL -l"
+    // ~/ prefix stays unquoted for tilde expansion; path component is single-quoted
     assert_eq!(
         shell,
-        r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox -t "cd ~/work && exec \$SHELL -l""#,
+        r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox -t "cd ~/'work' && exec \$SHELL -l""#,
         "full command format should match exactly"
     );
 }
@@ -198,11 +198,11 @@ fn full_command_format_with_absolute_path() {
 
     assert_eq!(
         shell,
-        r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay prod -t "cd /var/app && exec \$SHELL -l""#,
+        r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay prod -t "cd '/var/app' && exec \$SHELL -l""#,
     );
 }
 
-// --- Edge case: path with spaces ---
+// --- Edge case: paths that must be shell-quoted ---
 
 #[test]
 fn path_with_spaces() {
@@ -210,8 +210,53 @@ fn path_with_spaces() {
         resolve_ssh_command(Some("devbox"), "ssh devbox", "~/my projects");
 
     assert!(
-        shell.contains("cd ~/my projects"),
-        "should handle path with spaces, got: {}",
+        shell.contains("cd ~/'my projects'"),
+        "path with spaces: ~/ unquoted, rest single-quoted, got: {}",
+        shell
+    );
+}
+
+#[test]
+fn path_with_shell_metacharacters() {
+    let (shell, _) =
+        resolve_ssh_command(Some("devbox"), "ssh devbox", "~/projects/$(evil)");
+
+    assert!(
+        shell.contains("cd ~/'projects/$(evil)'"),
+        "metacharacters must be single-quoted, got: {}",
+        shell
+    );
+    // The $() must NOT appear unquoted
+    assert!(
+        !shell.contains("cd ~/projects/$(evil)"),
+        "unquoted metacharacters must not appear in command"
+    );
+}
+
+#[test]
+fn bare_tilde_slash_produces_valid_shell() {
+    // shell_quote("~/") → ~/'' — the trailing '' is a no-op and the result is valid shell.
+    let (shell, _) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~/");
+
+    // resolve_ssh_command skips cd when cwd == "~", so "~/" should produce the cd wrapper.
+    // shell_quote("~/") strips "~/" prefix, single_quote("") = '' → result is ~/''
+    assert!(
+        shell.contains("cd ~/''") || shell.contains("cd ~/"),
+        "bare tilde-slash must produce valid shell, got: {}",
+        shell
+    );
+}
+
+#[test]
+fn path_with_embedded_single_quote() {
+    let (shell, _) =
+        resolve_ssh_command(Some("devbox"), "ssh devbox", "~/it's a path");
+
+    // Single quote inside the path component must be escaped via '\''
+    // ~/ stays unquoted; the rest is: 'it'\''s a path'
+    assert!(
+        shell.contains("cd ~/'it'\\''s a path'"),
+        "embedded single quote must be escaped, got: {}",
         shell
     );
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -39,6 +40,7 @@ class TerminalViewState extends State<TerminalView> {
 
   int? _viewId;
   EventChannel? _eventChannel;
+  StreamSubscription? _eventSubscription;
 
   @override
   void didUpdateWidget(TerminalView oldWidget) {
@@ -54,7 +56,7 @@ class TerminalViewState extends State<TerminalView> {
   void _onPlatformViewCreated(int viewId) {
     _viewId = viewId;
     _eventChannel = EventChannel('dev.tether/terminal_events/$viewId');
-    _eventChannel!.receiveBroadcastStream().listen(_onEvent);
+    _eventSubscription = _eventChannel!.receiveBroadcastStream().listen(_onEvent);
 
     if (!widget.isActive) {
       _inputChannel.invokeMethod('setActive', {
@@ -96,6 +98,15 @@ class TerminalViewState extends State<TerminalView> {
 
   /// Paste text with bracketed paste if the terminal supports it.
   void paste(String text) => sendText(text);
+
+  @override
+  void dispose() {
+    _eventSubscription?.cancel();
+    if (_viewId != null) {
+      _inputChannel.invokeMethod('destroyView', {'viewId': _viewId});
+    }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

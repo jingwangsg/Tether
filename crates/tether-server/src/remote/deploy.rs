@@ -181,9 +181,18 @@ fn get_or_build_linux_binary(target: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Poll until the remote tether-server is listening on port 7680, or time out.
+/// Uses a POSIX/shell-agnostic probe: Python3 TCP connect (available on all
+/// modern Linux targets) with a PID-file liveness fallback.
 async fn wait_for_ready(client: &SshClient) -> anyhow::Result<()> {
-    // Use bash /dev/tcp to probe the port without requiring curl/nc
-    let check = "(echo > /dev/tcp/localhost/7680) 2>/dev/null && echo ok || echo fail";
+    // python3 TCP probe works regardless of the remote user's login shell.
+    // Falls back to a POSIX kill-0 PID check in the unlikely case python3 is absent.
+    let check = concat!(
+        "python3 -c 'import socket; s=socket.socket(); s.settimeout(1); ",
+        "r=s.connect_ex((\"localhost\",7680)); s.close(); print(\"ok\" if r==0 else \"fail\")' ",
+        "2>/dev/null || ",
+        "{ pid=$(cat ~/.tether/tether.pid 2>/dev/null); ",
+        "[ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null && echo ok || echo fail; }"
+    );
     for attempt in 1..=20 {
         tokio::time::sleep(Duration::from_millis(500)).await;
         if let Ok((_, out, _)) = client.exec(check).await {

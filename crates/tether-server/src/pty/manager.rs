@@ -3,6 +3,29 @@ use crate::state::AppState;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// POSIX single-quote escaping for a shell path argument.
+///
+/// For `~/...` paths the tilde-slash prefix is kept *outside* the single-quote
+/// block so the remote shell expands it to `$HOME`.  The rest of the path is
+/// single-quoted to prevent word splitting and metacharacter injection.
+///
+/// Examples:
+///   `~/my projects`   → `~/'my projects'`
+///   `/opt/my app`     → `'/opt/my app'`
+///   `~/it's here`     → `~/'it'\''s here'`
+fn shell_quote(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix("~/") {
+        // Keep ~/ unquoted for tilde expansion; single-quote the path component.
+        format!("~/{}", single_quote(rest))
+    } else {
+        single_quote(s)
+    }
+}
+
+fn single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Resolve the effective shell command and cwd for session spawning.
 /// For SSH groups with a non-home remote cwd, wraps the ssh command
 /// to cd into the remote path. Returns (effective_shell, effective_cwd)
@@ -19,7 +42,7 @@ pub fn resolve_ssh_command(
             1,
         );
         let ssh_cmd = if cwd != "~" && !cwd.is_empty() {
-            format!("{} -t \"cd {} && exec \\$SHELL -l\"", shell_with_keepalive, cwd)
+            format!("{} -t \"cd {} && exec \\$SHELL -l\"", shell_with_keepalive, shell_quote(cwd))
         } else {
             shell_with_keepalive
         };

@@ -16,6 +16,7 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use base64::Engine as _;
 use axum::middleware;
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
@@ -285,7 +286,7 @@ async fn create_session_in_local_group_succeeds_with_local_true() {
 // ─── DELETE /api/sessions/{id} – SSH group session ───────────────────────────
 
 #[tokio::test]
-async fn delete_ssh_group_session_removes_from_db_even_without_tunnel() {
+async fn delete_ssh_group_session_returns_503_without_tunnel() {
     let state = test_state();
     let app = test_router(state.clone());
 
@@ -313,10 +314,13 @@ async fn delete_ssh_group_session_removes_from_db_even_without_tunnel() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert!(
-        state.inner.db.list_sessions().unwrap().is_empty(),
-        "session should be removed from DB even when remote tunnel is absent"
+    // Without a live tunnel the server must refuse (not silently clean up locally)
+    // so the remote shell is not orphaned.
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        state.inner.db.list_sessions().unwrap().len(),
+        1,
+        "session must remain in DB when tunnel is absent"
     );
 
     cleanup(&state);
@@ -420,10 +424,10 @@ async fn list_sessions_includes_ssh_group_sessions_from_db() {
 // ─── GET /api/sessions/{id}/scrollback – local session ───────────────────────
 
 #[tokio::test]
-async fn get_scrollback_for_local_session_returns_404_when_not_in_memory() {
-    // A local session exists only in DB (is_alive=false), not in the in-memory
-    // sessions DashMap.  The scrollback handler currently returns 404 for these
-    // because there is no in-memory PtySession.  This test documents that behaviour.
+async fn get_scrollback_for_dead_local_session_returns_empty_data() {
+    // A local session exists only in DB (is_alive=false, no in-memory PtySession).
+    // After the Issue 3 fix, the scrollback handler falls back to reading from disk:
+    // it returns 200 with empty data when no scrollback file exists yet.
     let state = test_state();
     let app = test_router(state.clone());
 
@@ -459,8 +463,71 @@ async fn get_scrollback_for_local_session_returns_404_when_not_in_memory() {
         .await
         .unwrap();
 
-    // Scrollback for a DB-only local session returns 404 (no PtySession in memory)
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    // Dead local sessions now serve scrollback from disk (Issue 3 fix).
+    // No scrollback file → 200 with empty data payload.
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["length"], 0, "no scrollback data for a never-written session");
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn get_scrollback_for_dead_session_serves_existing_disk_data() {
+    // After a server restart, a dead local session's scrollback.raw must be readable.
+    // Simulate by: creating a local session, writing a scrollback file by hand,
+    // then querying the API without spawning a live PtySession.
+    use std::io::Write;
+
+    let state = test_state();
+    let app = test_router(state.clone());
+
+    let gid = create_group(&app, "local", None).await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/sessions?local=true")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"group_id": gid, "name": "db-only"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let session: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let id = session["id"].as_str().unwrap();
+
+    // Write a fake scrollback file in the expected location
+    let data_dir = state.inner.config.data_dir();
+    let session_dir = format!("{}/sessions/{}", data_dir, id);
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let scrollback_path = format!("{}/scrollback.raw", session_dir);
+    let mut f = std::fs::File::create(&scrollback_path).unwrap();
+    f.write_all(b"hello scrollback").unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/sessions/{}/scrollback", id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["length"], 16, "should return the 16 bytes written");
+    let data_b64 = body["data"].as_str().unwrap();
+    let decoded = base64::engine::general_purpose::STANDARD.decode(data_b64).unwrap();
+    assert_eq!(decoded, b"hello scrollback");
 
     cleanup(&state);
 }

@@ -5,16 +5,20 @@ use crate::ws;
 use axum::middleware;
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
-    // Delete all sessions on startup (PTY processes can't survive a restart)
-    state.inner.db.delete_all_sessions()?;
-    // Clean up scrollback dirs
-    let sessions_dir = format!("{}/sessions", state.inner.config.data_dir());
-    if std::path::Path::new(&sessions_dir).exists() {
-        std::fs::remove_dir_all(&sessions_dir).ok();
+    // Mark local sessions dead (PTYs don't survive restart; keep records and scrollback
+    // so the user can see their session list and history after restarting the server).
+    state.inner.db.mark_local_sessions_dead()?;
+    // Remote sessions are re-imported by the sync mechanism when tunnels reconnect.
+    // Collect their IDs first so we can clean up their scrollback dirs before deletion.
+    let data_dir = state.inner.config.data_dir();
+    let remote_ids = state.inner.db.get_remote_session_ids()?;
+    state.inner.db.delete_remote_sessions()?;
+    for id in remote_ids {
+        std::fs::remove_dir_all(format!("{}/sessions/{}", data_dir, id)).ok();
     }
 
     let addr = format!(
@@ -50,7 +54,22 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
         .merge(api_routes)
         // WebSocket (has its own auth check via query param)
         .route("/ws/session/{id}", get(ws::handler::ws_handler))
-        .layer(CorsLayer::permissive())
+        .layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::predicate(|origin, _| {
+                    // Accept only origins whose host is exactly "localhost" or "127.0.0.1"
+                    // (with any port or none). Prefix matching is insufficient —
+                    // "http://localhost.evil.com" would pass a starts_with check.
+                    let s = origin.to_str().unwrap_or("");
+                    let host_part = s
+                        .strip_prefix("http://")
+                        .unwrap_or("");
+                    let host = host_part.split(':').next().unwrap_or(host_part);
+                    host == "localhost" || host == "127.0.0.1"
+                }))
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
 

@@ -169,24 +169,41 @@ pub async fn update_session(
     Path(id): Path<String>,
     Json(req): Json<UpdateSessionRequest>,
 ) -> StatusCode {
-    // Apply all local updates first.
+    // Capture the original SSH host BEFORE any group_id update so the proxy PATCH
+    // below always reaches the server that owns the PTY, not the destination group's host.
+    let original_ssh_host = state.inner.db.get_session_ssh_host(&id).ok().flatten();
+
+    // Apply all local updates, propagating DB errors and returning 404 on missing session.
     if let Some(name) = &req.name {
         if let Ok(uuid) = Uuid::parse_str(&id) {
             if let Some(session) = state.inner.sessions.get(&uuid) {
                 session.set_name(name);
             }
         }
-        state.inner.db.update_session_name(&id, name).ok();
+        match state.inner.db.update_session_name(&id, name) {
+            Ok(0) => return StatusCode::NOT_FOUND,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+            _ => {}
+        }
     }
     if let Some(order) = req.sort_order {
-        state.inner.db.update_session_sort_order(&id, order).ok();
+        match state.inner.db.update_session_sort_order(&id, order) {
+            Ok(0) => return StatusCode::NOT_FOUND,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+            _ => {}
+        }
     }
     if let Some(ref group_id) = req.group_id {
-        state.inner.db.update_session_group(&id, group_id).ok();
-        if let Ok(uuid) = Uuid::parse_str(&id) {
-            if let Ok(new_gid) = Uuid::parse_str(group_id) {
-                if let Some(session) = state.inner.sessions.get(&uuid) {
-                    session.set_group_id(new_gid);
+        match state.inner.db.update_session_group(&id, group_id) {
+            Ok(0) => return StatusCode::NOT_FOUND,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+            Ok(_) => {
+                if let Ok(uuid) = Uuid::parse_str(&id) {
+                    if let Ok(new_gid) = Uuid::parse_str(group_id) {
+                        if let Some(session) = state.inner.sessions.get(&uuid) {
+                            session.set_group_id(new_gid);
+                        }
+                    }
                 }
             }
         }
@@ -196,19 +213,20 @@ pub async fn update_session(
     // proxy (i.e. the local tether-server PATCHed us). The req.group_id block above
     // is skipped because the proxied body only contains local_group_id, not group_id.
     if let Some(ref lgid) = req.local_group_id {
-        state.inner.db.update_session_local_group_id(&id, lgid).ok();
+        if let Err(e) = state.inner.db.update_session_local_group_id(&id, lgid) {
+            tracing::warn!("Failed to update local_group_id for {}: {}", id, e);
+        }
     }
 
     // For remote sessions, propagate metadata changes to the remote server in one PATCH.
-    // This ensures name renames, sort order, and group moves survive server restarts —
-    // on re-sync, the remote's stored values are used to reconstruct the local session.
+    // Uses `original_ssh_host` (captured before any group_id update) so the PATCH always
+    // reaches the host that owns the PTY, not whatever group the session was moved to.
     //
     // Known limitation: if the tunnel is down at update time, the remote is not updated.
     // The local registry write (for group moves) is the only durable record until the
-    // tunnel comes back and the user makes another move. Do not remove the registry write
-    // assuming local_group_id alone covers it.
+    // tunnel comes back and the user makes another move.
     if req.name.is_some() || req.sort_order.is_some() || req.group_id.is_some() {
-        if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&id) {
+        if let Some(ssh_host) = original_ssh_host {
             if let Some(port) = state.inner.remote_manager.get_tunnel_port(&ssh_host) {
                 let url = format!("http://127.0.0.1:{}/api/sessions/{}", port, id);
                 let mut patch = serde_json::Map::new();
@@ -221,11 +239,26 @@ pub async fn update_session(
                 if let Some(ref group_id) = req.group_id {
                     patch.insert("local_group_id".into(), serde_json::Value::String(group_id.clone()));
                 }
-                let _ = reqwest::Client::new()
+                match reqwest::Client::new()
                     .patch(&url)
                     .json(&serde_json::Value::Object(patch))
                     .send()
-                    .await;
+                    .await
+                {
+                    Ok(resp) if !resp.status().is_success() => {
+                        tracing::warn!(
+                            "Remote PATCH for session {} returned {}",
+                            id, resp.status()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to proxy PATCH to remote for session {}: {}",
+                            id, e
+                        );
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -238,11 +271,21 @@ pub async fn delete_session(
 ) -> StatusCode {
     // Proxy to remote if this is a remote session
     if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&id) {
-        if let Some(port) = state.inner.remote_manager.get_tunnel_port(&ssh_host) {
-            let url = format!("http://127.0.0.1:{}/api/sessions/{}", port, id);
-            let _ = reqwest::Client::new().delete(&url).send().await;
+        // Require the tunnel to be up — do not silently clean up locally while
+        // the remote shell keeps running (that would orphan it permanently).
+        let Some(port) = state.inner.remote_manager.get_tunnel_port(&ssh_host) else {
+            return StatusCode::SERVICE_UNAVAILABLE;
+        };
+        let url = format!("http://127.0.0.1:{}/api/sessions/{}", port, id);
+        let remote_ok = reqwest::Client::new()
+            .delete(&url)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+        if !remote_ok {
+            return StatusCode::BAD_GATEWAY;
         }
-        // Always remove local DB record regardless of remote result
         state.inner.db.delete_session(&id).ok();
         return StatusCode::OK;
     }
@@ -256,15 +299,77 @@ pub async fn delete_session(
     }
 }
 
+#[derive(Deserialize)]
+pub struct SessionReorderItem {
+    pub id: String,
+    pub sort_order: i32,
+    /// When present, moves the session to this group in the same operation.
+    pub group_id: Option<String>,
+}
+
 pub async fn batch_reorder_sessions(
     State(state): State<AppState>,
-    Json(items): Json<Vec<super::groups::ReorderItem>>,
+    Json(items): Json<Vec<SessionReorderItem>>,
 ) -> StatusCode {
-    let orders: Vec<(String, i32)> = items.into_iter().map(|i| (i.id, i.sort_order)).collect();
-    match state.inner.db.batch_reorder_sessions(&orders) {
-        Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    // Capture original SSH hosts BEFORE updating group_ids so the proxy PATCHes
+    // target the host that owns each PTY, not the destination group's host.
+    let original_ssh_hosts: Vec<Option<String>> = items
+        .iter()
+        .map(|item| {
+            state.inner.db.get_session_ssh_host(&item.id).ok().flatten()
+        })
+        .collect();
+
+    let orders: Vec<(String, i32, Option<String>)> = items
+        .iter()
+        .map(|i| (i.id.clone(), i.sort_order, i.group_id.clone()))
+        .collect();
+    if state.inner.db.batch_reorder_sessions(&orders).is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR;
     }
+
+    // For items that include a group_id move, update in-memory state and proxy
+    // the new local_group_id to the remote server that owns the session.
+    for (item, original_ssh_host) in items.iter().zip(original_ssh_hosts.iter()) {
+        let Some(ref group_id) = item.group_id else { continue };
+        // Update in-memory group_id for live local PTY sessions.
+        if let Ok(uuid) = Uuid::parse_str(&item.id) {
+            if let Ok(new_gid) = Uuid::parse_str(group_id) {
+                if let Some(session) = state.inner.sessions.get(&uuid) {
+                    session.set_group_id(new_gid);
+                }
+            }
+        }
+        // For remote sessions, propagate local_group_id to the PTY-owning server.
+        if let Some(ssh_host) = original_ssh_host {
+            if let Some(port) = state.inner.remote_manager.get_tunnel_port(ssh_host) {
+                let url = format!("http://127.0.0.1:{}/api/sessions/{}", port, item.id);
+                let patch = serde_json::json!({"local_group_id": group_id});
+                match reqwest::Client::new()
+                    .patch(&url)
+                    .json(&patch)
+                    .send()
+                    .await
+                {
+                    Ok(resp) if !resp.status().is_success() => {
+                        tracing::warn!(
+                            "Remote PATCH for session {} returned {}",
+                            item.id, resp.status()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to proxy group move to remote for session {}: {}",
+                            item.id, e
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    StatusCode::OK
 }
 
 pub async fn get_scrollback(
@@ -293,14 +398,48 @@ pub async fn get_scrollback(
     }
 
     let uuid = Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let session = state
-        .get_session(uuid)
+
+    // Fast path: live session with an in-memory ScrollbackBuffer.
+    if let Some(session) = state.get_session(uuid) {
+        let data = session
+            .scrollback
+            .lock()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .read_disk(query.offset, query.limit)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        return Ok(Json(serde_json::json!({
+            "data": b64.encode(&data),
+            "offset": query.offset,
+            "length": data.len(),
+        })));
+    }
+
+    // Slow path: dead local session preserved across restart.
+    // The session record must exist in the DB, and the scrollback file on disk.
+    state.inner.db.list_sessions()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .find(|s| s.id == id)
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let data = session
-        .scrollback
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    let session_dir = format!("{}/sessions/{}", state.inner.config.data_dir(), uuid);
+    let scrollback_path = format!("{}/scrollback.raw", session_dir);
+    if !std::path::Path::new(&scrollback_path).exists() {
+        // Session exists but no scrollback file — return empty.
+        let b64 = base64::engine::general_purpose::STANDARD;
+        return Ok(Json(serde_json::json!({
+            "data": b64.encode(b""),
+            "offset": query.offset,
+            "length": 0,
+        })));
+    }
+    let scrollback = crate::persistence::scrollback::ScrollbackBuffer::new(
+        &session_dir,
+        0, // no in-memory ring needed for read
+        state.inner.config.terminal.scrollback_disk_max_mb,
+    );
+    let data = scrollback
         .read_disk(query.offset, query.limit)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 

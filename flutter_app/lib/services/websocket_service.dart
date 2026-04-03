@@ -52,6 +52,9 @@ class WebSocketService {
   bool _disposed = false;
   bool _autoReconnect = true;
   int _reconnectAttempts = 0;
+  // True only after receiving the first message from the server, confirming the
+  // connection is actually usable (not just that connect() was called).
+  bool _confirmed = false;
   static const _maxReconnectDelay = Duration(seconds: 30);
 
   WebSocketService(this._url);
@@ -62,6 +65,7 @@ class WebSocketService {
   void connect() {
     if (_disposed) return;
     _reconnectTimer?.cancel();
+    _confirmed = false;
 
     try {
       _channel = WebSocketChannel.connect(Uri.parse(_url));
@@ -74,6 +78,7 @@ class WebSocketService {
       _onMessage,
       onError: (error) {
         _channel = null;
+        _confirmed = false;
         _stopPing();
         _messageController.add(ConnectionStateMessage(false));
         if (_autoReconnect && !_disposed) {
@@ -82,6 +87,7 @@ class WebSocketService {
       },
       onDone: () {
         _channel = null;
+        _confirmed = false;
         _stopPing();
         if (!_disposed) {
           _messageController.add(ConnectionStateMessage(false));
@@ -92,8 +98,8 @@ class WebSocketService {
       },
     );
 
-    _reconnectAttempts = 0;
-    _messageController.add(ConnectionStateMessage(true));
+    // Start pinging so the server can reply, triggering _onMessage which
+    // confirms the connection and resets the backoff counter.
     _startPing();
   }
 
@@ -115,6 +121,13 @@ class WebSocketService {
 
   void _onMessage(dynamic raw) {
     if (raw is! String) return;
+
+    // First message received — connection is confirmed usable.
+    if (!_confirmed) {
+      _confirmed = true;
+      _reconnectAttempts = 0;
+      _messageController.add(ConnectionStateMessage(true));
+    }
 
     try {
       final json = jsonDecode(raw) as Map<String, dynamic>;
@@ -185,6 +198,7 @@ class WebSocketService {
   void dispose() {
     _disposed = true;
     _autoReconnect = false;
+    _confirmed = false;
     _reconnectTimer?.cancel();
     _stopPing();
     _channel?.sink.close();
