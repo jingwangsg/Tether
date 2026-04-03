@@ -9,8 +9,12 @@ private func carbonHotkeyHandler(
     _ userData: UnsafeMutableRawPointer?
 ) -> OSStatus {
     DispatchQueue.main.async {
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.windows.first(where: { !($0 is NSPanel) })?.makeKeyAndOrderFront(nil)
+        if NSApp.isActive {
+            NSApp.hide(nil)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            NSApp.windows.first(where: { !($0 is NSPanel) })?.makeKeyAndOrderFront(nil)
+        }
     }
     return noErr
 }
@@ -20,9 +24,6 @@ class HotkeyManager {
 
     private var carbonHotKeyRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
-    private var localMonitor: Any?
-    private var registeredKeyCode: UInt32 = 0
-    private var registeredModifiers: UInt32 = 0
 
     private init() {
         // Install Carbon event handler once for the lifetime of the app.
@@ -40,41 +41,15 @@ class HotkeyManager {
     func register(hotkey: String) {
         unregister()
         guard let (keyCode, carbonMods) = parseHotkey(hotkey) else { return }
-        registeredKeyCode = keyCode
-        registeredModifiers = carbonMods
 
         // "TTHR" — private 4-char signature; id=1 since we only ever have one hotkey.
         let hotKeyID = EventHotKeyID(signature: OSType(0x5454_4852), id: 1)
         RegisterEventHotKey(keyCode, carbonMods, hotKeyID,
                             GetApplicationEventTarget(), 0, &carbonHotKeyRef)
-
-        // Local monitor handles hide-when-focused (no Accessibility permission needed).
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard self?.eventMatchesCarbonHotkey(event) == true else { return event }
-            NSApp.hide(nil)
-            return nil  // consume event
-        }
     }
 
     func unregister() {
         if let ref = carbonHotKeyRef { UnregisterEventHotKey(ref); carbonHotKeyRef = nil }
-        if let m = localMonitor { NSEvent.removeMonitor(m); localMonitor = nil }
-        registeredKeyCode = 0
-        registeredModifiers = 0
-    }
-
-    // Matches an NSEvent against the stored Carbon hotkey values.
-    private func eventMatchesCarbonHotkey(_ event: NSEvent) -> Bool {
-        guard registeredKeyCode != 0 else { return false }
-        var expectedMods: NSEvent.ModifierFlags = []
-        if registeredModifiers & UInt32(cmdKey)     != 0 { expectedMods.insert(.command) }
-        if registeredModifiers & UInt32(shiftKey)   != 0 { expectedMods.insert(.shift) }
-        if registeredModifiers & UInt32(optionKey)  != 0 { expectedMods.insert(.option) }
-        if registeredModifiers & UInt32(controlKey) != 0 { expectedMods.insert(.control) }
-        let eventMods = event.modifierFlags.intersection([.command, .shift, .control, .option])
-        guard eventMods == expectedMods else { return false }
-        let char = event.charactersIgnoringModifiers?.lowercased() ?? ""
-        return carbonKeyCode(for: char) == registeredKeyCode
     }
 
     // Parses "alt+z" → (carbonKeyCode: 6, carbonModifiers: optionKey).
