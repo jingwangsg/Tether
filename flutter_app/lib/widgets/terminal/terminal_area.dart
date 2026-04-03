@@ -47,8 +47,24 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     // paste mode correctly. Falls back to PasteTextIntent (Actions widget below)
     // if the native channel has no active handler.
     _pasteService.onPaste = (text) {
-      // If a text field (e.g. rename dialog) has focus, it handles paste itself.
-      if (FocusManager.instance.primaryFocus?.context?.widget is EditableText) return;
+      final focusCtx = FocusManager.instance.primaryFocus?.context;
+
+      // Strategy A: the currently focused widget is inside a dialog route (e.g. the
+      // new-group or rename-group dialog). Forward paste to the text field and block
+      // the terminal from receiving it.
+      // Checking the focused context's route — not isCurrent on the terminal's route —
+      // avoids false-positives from popup menus (showMenu) which push a PopupRoute
+      // without taking keyboard focus, so Cmd+V still reaches the terminal normally.
+      if (focusCtx != null && ModalRoute.of(focusCtx) is DialogRoute) {
+        Actions.maybeInvoke(
+            focusCtx, const PasteTextIntent(SelectionChangedCause.keyboard));
+        return;
+      }
+
+      // Strategy B: text field has focus with no dialog open (edge-case safety net).
+      if (focusCtx?.widget is EditableText) return;
+
+      // Strategy C: normal terminal paste.
       final activeId = ref.read(sessionProvider).activeSessionId;
       if (activeId == null) return;
       _terminalKeys[activeId]?.currentState?.paste(text);
