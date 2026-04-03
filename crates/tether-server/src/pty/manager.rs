@@ -79,6 +79,7 @@ impl AppState {
             &session_name,
             &shell,
             &cwd,
+            None,
         )?;
 
         inner.sessions.insert(id, session.clone());

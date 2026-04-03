@@ -67,6 +67,7 @@ fn test_state() -> AppState {
             shutdown_tx,
             fg_tx,
             remote_manager: RemoteManager::new(),
+            ssh_fg: DashMap::new(),
         }),
     }
 }
@@ -295,7 +296,7 @@ async fn delete_ssh_group_session_removes_from_db_even_without_tunnel() {
     state
         .inner
         .db
-        .create_session(&session_id, &gid, "orphan", "ssh myhost", "~")
+        .create_session(&session_id, &gid, "orphan", "ssh myhost", "~", None)
         .unwrap();
 
     assert_eq!(state.inner.db.list_sessions().unwrap().len(), 1);
@@ -333,7 +334,7 @@ async fn get_scrollback_for_ssh_session_returns_503_when_no_tunnel() {
     state
         .inner
         .db
-        .create_session(&session_id, &gid, "remote-sess", "ssh myhost", "~")
+        .create_session(&session_id, &gid, "remote-sess", "ssh myhost", "~", None)
         .unwrap();
 
     let resp = app
@@ -386,7 +387,7 @@ async fn list_sessions_includes_ssh_group_sessions_from_db() {
     state
         .inner
         .db
-        .create_session(&remote_id, &remote_gid, "remote-sess", "ssh myhost", "~")
+        .create_session(&remote_id, &remote_gid, "remote-sess", "ssh myhost", "~", None)
         .unwrap();
 
     let resp = app
@@ -478,7 +479,7 @@ async fn store_get_session_ssh_host_via_api_created_group() {
     state
         .inner
         .db
-        .create_session(&session_id, &gid, "s", "ssh prod.server.example", "~")
+        .create_session(&session_id, &gid, "s", "ssh prod.server.example", "~", None)
         .unwrap();
 
     let ssh_host = state

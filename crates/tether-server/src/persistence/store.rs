@@ -34,6 +34,12 @@ pub struct SessionRow {
     /// Transient: detected foreground process (e.g. "claude", "codex")
     #[serde(skip_deserializing)]
     pub foreground_process: Option<String>,
+    /// Persisted on the remote server: which local group this session belongs to.
+    /// Set when a session is created via create_remote_session and kept in sync
+    /// when the user moves the session between groups. Used during sync to restore
+    /// sessions to their correct local group, overriding any poisoned registry entry.
+    #[serde(default)]
+    pub local_group_id: Option<String>,
 }
 
 impl Store {
@@ -97,6 +103,11 @@ impl Store {
         // Migration: add ssh_host to groups
         conn.execute_batch(
             "ALTER TABLE groups ADD COLUMN ssh_host TEXT;",
+        )
+        .ok();
+        // Migration: add local_group_id to sessions (for remote group assignment persistence)
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN local_group_id TEXT;",
         )
         .ok();
         Ok(())
@@ -310,7 +321,7 @@ impl Store {
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, is_alive FROM sessions ORDER BY sort_order, created_at",
+            "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, is_alive, local_group_id FROM sessions ORDER BY sort_order, created_at",
         )?;
         let rows = stmt
             .query_map([], |row| {
@@ -326,6 +337,7 @@ impl Store {
                     last_active: row.get(8)?,
                     is_alive: row.get::<_, i32>(9)? != 0,
                     foreground_process: None,
+                    local_group_id: row.get(10)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -339,13 +351,14 @@ impl Store {
         name: &str,
         shell: &str,
         cwd: &str,
+        local_group_id: Option<&str>,
     ) -> anyhow::Result<SessionRow> {
         let mut conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, is_alive) VALUES (?1, ?2, ?3, ?4, 80, 24, ?5, ?6, ?7, 1)",
-            params![id, group_id, name, shell, cwd, now, now],
+            "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, is_alive, local_group_id) VALUES (?1, ?2, ?3, ?4, 80, 24, ?5, ?6, ?7, 1, ?8)",
+            params![id, group_id, name, shell, cwd, now, now, local_group_id],
         )?;
         tx.execute(
             "INSERT OR REPLACE INTO session_group_registry (session_id, group_id) VALUES (?1, ?2)",
@@ -364,6 +377,7 @@ impl Store {
             last_active: now,
             is_alive: true,
             foreground_process: None,
+            local_group_id: local_group_id.map(|s| s.to_string()),
         })
     }
 
@@ -397,6 +411,17 @@ impl Store {
             params![id, group_id],
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Update the `local_group_id` field on a session. Used when the remote server
+    /// receives a proxied PATCH from the local server after the user moves a session.
+    pub fn update_session_local_group_id(&self, id: &str, local_group_id: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET local_group_id = ?1 WHERE id = ?2",
+            params![local_group_id, id],
+        )?;
         Ok(())
     }
 
@@ -507,39 +532,57 @@ impl Store {
 
     /// Insert a session record if no record with the same id already exists.
     /// Returns true if a row was inserted, false if it already existed.
-    /// Uses the session_group_registry to restore the original local group (if known),
-    /// falling back to `fallback_group_id` for sessions seen for the first time.
+    ///
+    /// Group assignment priority:
+    /// 1. `local_group_id` (from remote session field) — authoritative; also repairs
+    ///    any poisoned registry entry via INSERT OR REPLACE.
+    /// 2. `session_group_registry` — used when `local_group_id` is absent (old sessions).
+    /// 3. `fallback_group_id` — last resort; does NOT write to registry (avoids poisoning).
     pub fn try_insert_remote_session(
         &self,
         id: &str,
         fallback_group_id: &str,
+        local_group_id: Option<&str>,
         name: &str,
         shell: &str,
         cwd: &str,
     ) -> anyhow::Result<bool> {
         let mut conn = self.conn.lock().unwrap();
-        // Look up the session's registered home group; fall back to the provided group.
-        let group_id: String = conn.query_row(
-            "SELECT group_id FROM session_group_registry WHERE session_id = ?1",
-            params![id],
-            |row| row.get(0),
-        ).unwrap_or_else(|_| fallback_group_id.to_string());
+
+        let group_id: String;
+        let authoritative: bool;
+
+        if let Some(lgid) = local_group_id {
+            // Authoritative source: the remote server remembers which local group this belongs to.
+            group_id = lgid.to_string();
+            authoritative = true;
+        } else {
+            // Fall back to registry, then to the caller-supplied fallback.
+            group_id = conn.query_row(
+                "SELECT group_id FROM session_group_registry WHERE session_id = ?1",
+                params![id],
+                |row| row.get(0),
+            ).unwrap_or_else(|_| fallback_group_id.to_string());
+            authoritative = false;
+        }
 
         let now = chrono::Utc::now().to_rfc3339();
         let tx = conn.transaction()?;
-        let n = tx.execute(
-            "INSERT OR IGNORE INTO sessions \
-             (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, is_alive) \
-             VALUES (?1, ?2, ?3, ?4, 80, 24, ?5, ?6, ?7, 1)",
-            params![id, group_id, name, shell, cwd, now, now],
-        )?;
-        if n > 0 {
-            // Register the group so future restarts restore this session to the same group.
+
+        if authoritative {
+            // Fix any poisoned registry entry with the correct authoritative value.
             tx.execute(
-                "INSERT OR IGNORE INTO session_group_registry (session_id, group_id) VALUES (?1, ?2)",
+                "INSERT OR REPLACE INTO session_group_registry (session_id, group_id) VALUES (?1, ?2)",
                 params![id, group_id],
             )?;
         }
+
+        let n = tx.execute(
+            "INSERT OR IGNORE INTO sessions \
+             (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, is_alive, local_group_id) \
+             VALUES (?1, ?2, ?3, ?4, 80, 24, ?5, ?6, ?7, 1, ?8)",
+            params![id, group_id, name, shell, cwd, now, now, local_group_id],
+        )?;
         tx.commit()?;
         Ok(n > 0)
     }
@@ -722,8 +765,8 @@ mod tests {
     fn delete_group_cascades_sessions() {
         let store = new_store();
         let group = store.create_group("g", "~", None, None).unwrap();
-        store.create_session("s1", &group.id, "session1", "/bin/sh", "~").unwrap();
-        store.create_session("s2", &group.id, "session2", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &group.id, "session1", "/bin/sh", "~", None).unwrap();
+        store.create_session("s2", &group.id, "session2", "/bin/sh", "~", None).unwrap();
 
         store.delete_group(&group.id).unwrap();
         let sessions = store.list_sessions().unwrap();
@@ -738,11 +781,11 @@ mod tests {
         let g_original = store.create_group("original", "~", None, Some("host")).unwrap();
         let g_fallback = store.create_group("fallback", "~", None, Some("host")).unwrap();
 
-        store.create_session("s1", &g_original.id, "s", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &g_original.id, "s", "/bin/sh", "~", None).unwrap();
         store.delete_group(&g_original.id).unwrap();
 
         // g_original is gone; inserting via sync should use fallback, not the deleted group.
-        store.try_insert_remote_session("s1", &g_fallback.id, "s", "/bin/sh", "~").unwrap();
+        store.try_insert_remote_session("s1", &g_fallback.id, None, "s", "/bin/sh", "~").unwrap();
         let sessions = store.list_sessions().unwrap();
         assert_eq!(sessions[0].group_id, g_fallback.id,
             "deleted group's registry entry must be cleared so fallback is used");
@@ -753,8 +796,8 @@ mod tests {
         let store = new_store();
         let root = store.create_group("root", "~", None, None).unwrap();
         let child = store.create_group("child", "~", Some(&root.id), None).unwrap();
-        store.create_session("s1", &root.id, "s1", "/bin/sh", "~").unwrap();
-        store.create_session("s2", &child.id, "s2", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &root.id, "s1", "/bin/sh", "~", None).unwrap();
+        store.create_session("s2", &child.id, "s2", "/bin/sh", "~", None).unwrap();
 
         store.delete_group(&root.id).unwrap();
         assert!(store.list_sessions().unwrap().is_empty());
@@ -842,7 +885,7 @@ mod tests {
     fn create_and_list_session() {
         let store = new_store();
         let group = store.create_group("g", "~", None, None).unwrap();
-        let session = store.create_session("sid1", &group.id, "my-session", "/bin/bash", "/home").unwrap();
+        let session = store.create_session("sid1", &group.id, "my-session", "/bin/bash", "/home", None).unwrap();
         assert_eq!(session.id, "sid1");
         assert_eq!(session.group_id, group.id);
         assert_eq!(session.name, "my-session");
@@ -868,7 +911,7 @@ mod tests {
     fn update_session_name() {
         let store = new_store();
         let group = store.create_group("g", "~", None, None).unwrap();
-        store.create_session("s1", &group.id, "old", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &group.id, "old", "/bin/sh", "~", None).unwrap();
         store.update_session_name("s1", "new").unwrap();
         let sessions = store.list_sessions().unwrap();
         assert_eq!(sessions[0].name, "new");
@@ -878,7 +921,7 @@ mod tests {
     fn update_session_sort_order() {
         let store = new_store();
         let group = store.create_group("g", "~", None, None).unwrap();
-        store.create_session("s1", &group.id, "s", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &group.id, "s", "/bin/sh", "~", None).unwrap();
         store.update_session_sort_order("s1", 42).unwrap();
         // Verify by listing (sort_order affects ordering)
         let sessions = store.list_sessions().unwrap();
@@ -890,7 +933,7 @@ mod tests {
         let store = new_store();
         let g1 = store.create_group("g1", "~", None, None).unwrap();
         let g2 = store.create_group("g2", "~", None, None).unwrap();
-        store.create_session("s1", &g1.id, "s", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &g1.id, "s", "/bin/sh", "~", None).unwrap();
         store.update_session_group("s1", &g2.id).unwrap();
         let sessions = store.list_sessions().unwrap();
         assert_eq!(sessions[0].group_id, g2.id);
@@ -904,13 +947,13 @@ mod tests {
         let g2 = store.create_group("g2", "~", None, Some("host")).unwrap();
         let g3 = store.create_group("g3", "~", None, Some("host")).unwrap();
 
-        store.create_session("s1", &g1.id, "s", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &g1.id, "s", "/bin/sh", "~", None).unwrap();
         store.update_session_group("s1", &g2.id).unwrap();
 
         // Simulate restart
         store.delete_all_sessions().unwrap();
 
-        store.try_insert_remote_session("s1", &g3.id, "s", "/bin/sh", "~").unwrap();
+        store.try_insert_remote_session("s1", &g3.id, None, "s", "/bin/sh", "~").unwrap();
         let sessions = store.list_sessions().unwrap();
         assert_eq!(sessions[0].group_id, g2.id,
             "registry must reflect the post-move group, not the fallback");
@@ -920,7 +963,7 @@ mod tests {
     fn delete_session() {
         let store = new_store();
         let group = store.create_group("g", "~", None, None).unwrap();
-        store.create_session("s1", &group.id, "s", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &group.id, "s", "/bin/sh", "~", None).unwrap();
         store.delete_session("s1").unwrap();
         assert!(store.list_sessions().unwrap().is_empty());
     }
@@ -940,10 +983,10 @@ mod tests {
         let g_original = store.create_group("original", "~", None, Some("host")).unwrap();
         let g_fallback = store.create_group("fallback", "~", None, Some("host")).unwrap();
 
-        store.create_session("s1", &g_original.id, "s", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &g_original.id, "s", "/bin/sh", "~", None).unwrap();
         store.delete_session("s1").unwrap();
 
-        store.try_insert_remote_session("s1", &g_fallback.id, "s", "/bin/sh", "~").unwrap();
+        store.try_insert_remote_session("s1", &g_fallback.id, None, "s", "/bin/sh", "~").unwrap();
         let sessions = store.list_sessions().unwrap();
         assert_eq!(sessions[0].group_id, g_fallback.id,
             "after explicit deletion, registry is cleared and fallback is used on re-sync");
@@ -953,9 +996,9 @@ mod tests {
     fn delete_all_sessions() {
         let store = new_store();
         let group = store.create_group("g", "~", None, None).unwrap();
-        store.create_session("s1", &group.id, "a", "/bin/sh", "~").unwrap();
-        store.create_session("s2", &group.id, "b", "/bin/sh", "~").unwrap();
-        store.create_session("s3", &group.id, "c", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &group.id, "a", "/bin/sh", "~", None).unwrap();
+        store.create_session("s2", &group.id, "b", "/bin/sh", "~", None).unwrap();
+        store.create_session("s3", &group.id, "c", "/bin/sh", "~", None).unwrap();
         store.delete_all_sessions().unwrap();
         assert!(store.list_sessions().unwrap().is_empty());
     }
@@ -973,12 +1016,12 @@ mod tests {
         let g_original = store.create_group("original", "~", None, Some("myhost")).unwrap();
         let g_wrong = store.create_group("wrong", "~", None, Some("myhost")).unwrap();
 
-        store.create_session("s1", &g_original.id, "sess", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &g_original.id, "sess", "/bin/sh", "~", None).unwrap();
         store.delete_all_sessions().unwrap();
         assert!(store.list_sessions().unwrap().is_empty());
 
         // Registry must survive: wrong fallback must not win
-        store.try_insert_remote_session("s1", &g_wrong.id, "sess", "/bin/sh", "~").unwrap();
+        store.try_insert_remote_session("s1", &g_wrong.id, None, "sess", "/bin/sh", "~").unwrap();
         let sessions = store.list_sessions().unwrap();
         assert_eq!(sessions[0].group_id, g_original.id,
             "delete_all_sessions must not clear session_group_registry");
@@ -990,9 +1033,9 @@ mod tests {
     fn batch_reorder_sessions_basic() {
         let store = new_store();
         let group = store.create_group("g", "~", None, None).unwrap();
-        store.create_session("s1", &group.id, "a", "/bin/sh", "~").unwrap();
-        store.create_session("s2", &group.id, "b", "/bin/sh", "~").unwrap();
-        store.create_session("s3", &group.id, "c", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &group.id, "a", "/bin/sh", "~", None).unwrap();
+        store.create_session("s2", &group.id, "b", "/bin/sh", "~", None).unwrap();
+        store.create_session("s3", &group.id, "c", "/bin/sh", "~", None).unwrap();
 
         store.batch_reorder_sessions(&[
             ("s3".to_string(), 0),
@@ -1018,7 +1061,7 @@ mod tests {
     fn update_session_size() {
         let store = new_store();
         let group = store.create_group("g", "~", None, None).unwrap();
-        store.create_session("s1", &group.id, "s", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &group.id, "s", "/bin/sh", "~", None).unwrap();
         store.update_session_size("s1", 120, 40).unwrap();
         let sessions = store.list_sessions().unwrap();
         assert_eq!(sessions[0].cols, 120);
@@ -1032,8 +1075,8 @@ mod tests {
         let store = new_store();
         let g1 = store.create_group("g1", "~", None, None).unwrap();
         let g2 = store.create_group("g2", "~", None, None).unwrap();
-        store.create_session("s1", &g1.id, "a", "/bin/sh", "~").unwrap();
-        store.create_session("s2", &g2.id, "b", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &g1.id, "a", "/bin/sh", "~", None).unwrap();
+        store.create_session("s2", &g2.id, "b", "/bin/sh", "~", None).unwrap();
 
         store.delete_group(&g1.id).unwrap();
 
@@ -1048,8 +1091,8 @@ mod tests {
         let root = store.create_group("root", "~", None, None).unwrap();
         let mid = store.create_group("mid", "~", Some(&root.id), None).unwrap();
         let leaf = store.create_group("leaf", "~", Some(&mid.id), None).unwrap();
-        store.create_session("s1", &mid.id, "a", "/bin/sh", "~").unwrap();
-        store.create_session("s2", &leaf.id, "b", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &mid.id, "a", "/bin/sh", "~", None).unwrap();
+        store.create_session("s2", &leaf.id, "b", "/bin/sh", "~", None).unwrap();
 
         // Delete mid -- should cascade to leaf and both sessions
         let deleted = store.delete_group(&mid.id).unwrap();
@@ -1093,7 +1136,7 @@ mod tests {
     fn get_session_ssh_host_none_for_local_session() {
         let store = new_store();
         let g = store.create_group("local", "~", None, None).unwrap();
-        store.create_session("s1", &g.id, "sess", "/bin/sh", "~").unwrap();
+        store.create_session("s1", &g.id, "sess", "/bin/sh", "~", None).unwrap();
         let result = store.get_session_ssh_host("s1").unwrap();
         assert_eq!(result, None);
     }
@@ -1104,7 +1147,7 @@ mod tests {
         let g = store
             .create_group("remote", "~", None, Some("myhost"))
             .unwrap();
-        store.create_session("s2", &g.id, "sess", "ssh myhost", "~").unwrap();
+        store.create_session("s2", &g.id, "sess", "ssh myhost", "~", None).unwrap();
         let result = store.get_session_ssh_host("s2").unwrap();
         assert_eq!(result, Some("myhost".to_string()));
     }
@@ -1143,7 +1186,7 @@ mod tests {
     fn try_insert_remote_session_inserts_new() {
         let store = new_store();
         let g = store.create_group("g", "~", None, Some("myhost")).unwrap();
-        let inserted = store.try_insert_remote_session("sid1", &g.id, "sess", "/bin/sh", "~").unwrap();
+        let inserted = store.try_insert_remote_session("sid1", &g.id, None, "sess", "/bin/sh", "~").unwrap();
         assert!(inserted);
         let sessions = store.list_sessions().unwrap();
         assert_eq!(sessions.len(), 1);
@@ -1159,14 +1202,14 @@ mod tests {
         let g_b = store.create_group("groupB", "~", None, Some("myhost")).unwrap();
 
         // Create session in group A (populates registry)
-        store.create_session("sid1", &g_a.id, "sess", "/bin/sh", "~").unwrap();
+        store.create_session("sid1", &g_a.id, "sess", "/bin/sh", "~", None).unwrap();
 
         // Simulate restart: delete all sessions (registry survives)
         store.delete_all_sessions().unwrap();
         assert!(store.list_sessions().unwrap().is_empty());
 
         // Sync passes group B as fallback, but registry says group A
-        let inserted = store.try_insert_remote_session("sid1", &g_b.id, "sess", "/bin/sh", "~").unwrap();
+        let inserted = store.try_insert_remote_session("sid1", &g_b.id, None, "sess", "/bin/sh", "~").unwrap();
         assert!(inserted);
         let sessions = store.list_sessions().unwrap();
         assert_eq!(sessions.len(), 1);
@@ -1174,12 +1217,52 @@ mod tests {
     }
 
     #[test]
+    fn try_insert_remote_session_uses_local_group_id() {
+        // Core regression test: local_group_id from remote overrides a poisoned registry entry.
+        let store = new_store();
+        let g_a = store.create_group("groupA", "~", None, Some("myhost")).unwrap();
+        let g_b = store.create_group("groupB", "~", None, Some("myhost")).unwrap();
+        let g_poison = store.create_group("poison", "~", None, Some("myhost")).unwrap();
+
+        // Simulate a poisoned registry (e.g. from a prior buggy sync).
+        // Manually insert a wrong registry entry for the session.
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO session_group_registry (session_id, group_id) VALUES ('sid-x', ?1)",
+                rusqlite::params![g_poison.id],
+            ).unwrap();
+        }
+
+        // Sync arrives with local_group_id = groupB (authoritative, set at creation time).
+        // Despite the poisoned registry saying "poison", it should go to groupB.
+        let inserted = store.try_insert_remote_session("sid-x", &g_a.id, Some(&g_b.id), "sess", "/bin/sh", "~").unwrap();
+        assert!(inserted);
+        let sessions = store.list_sessions().unwrap();
+        assert_eq!(sessions[0].group_id, g_b.id,
+            "local_group_id from remote must override a poisoned registry entry");
+        assert_eq!(sessions[0].local_group_id, Some(g_b.id.clone()),
+            "local_group_id must be persisted in the local session row");
+
+        // Registry should now be corrected to groupB.
+        let reg_group: String = {
+            let conn = store.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT group_id FROM session_group_registry WHERE session_id = 'sid-x'",
+                [],
+                |r| r.get(0),
+            ).unwrap()
+        };
+        assert_eq!(reg_group, g_b.id, "registry must be updated to the authoritative group");
+    }
+
+    #[test]
     fn try_insert_remote_session_ignores_duplicate() {
         let store = new_store();
         let g = store.create_group("g", "~", None, Some("myhost")).unwrap();
-        let first = store.try_insert_remote_session("sid1", &g.id, "sess", "/bin/sh", "~").unwrap();
+        let first = store.try_insert_remote_session("sid1", &g.id, None, "sess", "/bin/sh", "~").unwrap();
         assert!(first);
-        let second = store.try_insert_remote_session("sid1", &g.id, "sess", "/bin/sh", "~").unwrap();
+        let second = store.try_insert_remote_session("sid1", &g.id, None, "sess", "/bin/sh", "~").unwrap();
         assert!(!second);
         // Still only one row
         assert_eq!(store.list_sessions().unwrap().len(), 1);

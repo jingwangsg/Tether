@@ -72,6 +72,7 @@ fn test_state() -> AppState {
             shutdown_tx,
             fg_tx,
             remote_manager: RemoteManager::new(),
+            ssh_fg: DashMap::new(),
         }),
     }
 }
@@ -252,6 +253,7 @@ async fn ws_proxy_disconnects_when_remote_dies() {
             "sess",
             "ssh testhost",
             "~",
+            None,
         )
         .unwrap();
 
@@ -321,6 +323,7 @@ async fn ws_proxy_fails_fast_when_tunnel_port_dead() {
             "sess",
             "ssh testhost",
             "~",
+            None,
         )
         .unwrap();
     state
@@ -364,6 +367,7 @@ async fn ws_proxy_recovers_after_ssh_reconnect() {
             "sess",
             "ssh testhost",
             "~",
+            None,
         )
         .unwrap();
     state
@@ -443,6 +447,7 @@ async fn ws_returns_503_before_upgrade_when_tunnel_dead() {
             "sess",
             "ssh testhost",
             "~",
+            None,
         )
         .unwrap();
     state

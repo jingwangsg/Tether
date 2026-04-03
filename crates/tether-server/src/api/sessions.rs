@@ -17,6 +17,10 @@ pub struct CreateSessionRequest {
     /// Optional explicit session ID; used internally when local server creates a
     /// session on a remote tether-server so both sides share the same UUID.
     pub id: Option<Uuid>,
+    /// Which local group this session belongs to. Set by the local server when
+    /// proxying creation to the remote; stored on the remote so sync can restore
+    /// sessions to their correct local group after a restart.
+    pub local_group_id: Option<String>,
 }
 
 /// Body sent from local tether-server → remote tether-server when proxying session creation.
@@ -27,6 +31,9 @@ struct RemoteCreateRequest {
     pub command: Option<String>,
     pub cwd: Option<String>,
     pub id: Option<Uuid>,
+    /// The local group this session should be restored to on re-sync.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_group_id: Option<String>,
 }
 
 /// Query params for POST /api/sessions
@@ -43,6 +50,9 @@ pub struct UpdateSessionRequest {
     pub name: Option<String>,
     pub sort_order: Option<i32>,
     pub group_id: Option<String>,
+    /// Forwarded from local server to update the remote session's stored local_group_id
+    /// when the user moves a session to a different group.
+    pub local_group_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -108,6 +118,7 @@ pub async fn create_session(
                 &session_name,
                 &shell,
                 &cwd,
+                req.local_group_id.as_deref(),
             )
             .map_err(|e| {
                 tracing::error!("Failed to create local session record: {}", e);
@@ -147,6 +158,7 @@ pub async fn create_session(
         last_active: chrono::Utc::now().to_rfc3339(),
         is_alive: session.is_alive(),
         foreground_process: None,
+        local_group_id: None,
     };
 
     Ok((StatusCode::CREATED, Json(row)))
@@ -157,6 +169,7 @@ pub async fn update_session(
     Path(id): Path<String>,
     Json(req): Json<UpdateSessionRequest>,
 ) -> StatusCode {
+    // Apply all local updates first.
     if let Some(name) = &req.name {
         if let Ok(uuid) = Uuid::parse_str(&id) {
             if let Some(session) = state.inner.sessions.get(&uuid) {
@@ -175,6 +188,44 @@ pub async fn update_session(
                 if let Some(session) = state.inner.sessions.get(&uuid) {
                     session.set_group_id(new_gid);
                 }
+            }
+        }
+    }
+    // Handle local_group_id update proxied from another tether-server instance.
+    // This code path is reached when this server is acting as the *remote* end of a
+    // proxy (i.e. the local tether-server PATCHed us). The req.group_id block above
+    // is skipped because the proxied body only contains local_group_id, not group_id.
+    if let Some(ref lgid) = req.local_group_id {
+        state.inner.db.update_session_local_group_id(&id, lgid).ok();
+    }
+
+    // For remote sessions, propagate metadata changes to the remote server in one PATCH.
+    // This ensures name renames, sort order, and group moves survive server restarts —
+    // on re-sync, the remote's stored values are used to reconstruct the local session.
+    //
+    // Known limitation: if the tunnel is down at update time, the remote is not updated.
+    // The local registry write (for group moves) is the only durable record until the
+    // tunnel comes back and the user makes another move. Do not remove the registry write
+    // assuming local_group_id alone covers it.
+    if req.name.is_some() || req.sort_order.is_some() || req.group_id.is_some() {
+        if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&id) {
+            if let Some(port) = state.inner.remote_manager.get_tunnel_port(&ssh_host) {
+                let url = format!("http://127.0.0.1:{}/api/sessions/{}", port, id);
+                let mut patch = serde_json::Map::new();
+                if let Some(ref name) = req.name {
+                    patch.insert("name".into(), serde_json::Value::String(name.clone()));
+                }
+                if let Some(order) = req.sort_order {
+                    patch.insert("sort_order".into(), serde_json::Value::Number(order.into()));
+                }
+                if let Some(ref group_id) = req.group_id {
+                    patch.insert("local_group_id".into(), serde_json::Value::String(group_id.clone()));
+                }
+                let _ = reqwest::Client::new()
+                    .patch(&url)
+                    .json(&serde_json::Value::Object(patch))
+                    .send()
+                    .await;
             }
         }
     }
@@ -301,6 +352,9 @@ async fn create_remote_session(
         command: remote_command,
         cwd: req.cwd.clone(),
         id: Some(id),
+        // Tell the remote server which local group this session belongs to so that
+        // sync can restore it to the correct group after a server restart.
+        local_group_id: Some(group_id.to_string()),
     };
 
     // Verify the tunnel port is still alive before attempting the HTTP POST.
@@ -333,7 +387,8 @@ async fn create_remote_session(
         StatusCode::BAD_GATEWAY
     })?;
 
-    // Store metadata in local DB so we can route future requests
+    // Store metadata in local DB so we can route future requests.
+    // local_group_id is None here because the local routing entry uses group_id directly.
     state
         .inner
         .db
@@ -343,6 +398,7 @@ async fn create_remote_session(
             &remote_row.name,
             &remote_row.shell,
             &remote_row.cwd,
+            None,
         )
         .map_err(|e| {
             tracing::error!("Failed to store remote session in local DB: {}", e);

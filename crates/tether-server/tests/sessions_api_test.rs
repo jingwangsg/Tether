@@ -63,6 +63,7 @@ fn test_state() -> AppState {
             shutdown_tx,
             fg_tx,
             remote_manager: tether_server::remote::manager::RemoteManager::new(),
+            ssh_fg: DashMap::new(),
         }),
     }
 }
