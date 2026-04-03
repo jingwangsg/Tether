@@ -284,7 +284,16 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
             );
           });
         case ConnectionStateMessage():
-          if (!msg.connected && !_sessionExited) {
+          if (msg.connected) {
+            // Re-send terminal dimensions now that the WebSocket is confirmed.
+            // The initial resize from xterm.dart's performLayout may fire before
+            // the channel is ready; this ensures the server always has the size.
+            final w = _terminal.viewWidth;
+            final h = _terminal.viewHeight;
+            if (w > 0 && h > 0) {
+              _ws?.sendResize(w, h);
+            }
+          } else if (!_sessionExited) {
             _writeToTerminal(utf8.encode('\r\n\x1b[33m[reconnecting...]\x1b[0m\r\n'));
           }
         case PongMessage():
@@ -349,15 +358,6 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     _writeScheduled = false;
     if (!mounted || _writeQueue.isEmpty) return;
 
-    // Capture pre-write bottom state.  After an alt-buffer exit the stored
-    // maxScrollExtent jumps from 0 to a large value while pixels stays at 0,
-    // so the post-frame "near bottom" check alone would miss the transition.
-    var wasAtBottom = true;
-    if (_scrollController.hasClients) {
-      final pos = _scrollController.position;
-      wasAtBottom = pos.pixels >= pos.maxScrollExtent - 20.0;
-    }
-
     int totalLen = 0;
     for (final chunk in _writeQueue) {
       totalLen += chunk.length;
@@ -372,25 +372,17 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
 
     _bytesInput.add(merged);
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollController.hasClients) return;
-      final pos = _scrollController.position;
-      final maxExtent = pos.maxScrollExtent;
-      // Scroll to bottom when:
-      //  • the setting forces it, OR
-      //  • we were at the bottom before writing (covers alt-buffer exit), OR
-      //  • we're still at/near the bottom after the frame.
-      // When none hold, xterm's _stickToBottom=false preserves the user's
-      // scroll position naturally — no jumpTo needed.
-      final isNowAtBottom = pos.pixels >= maxExtent - 20.0;
-      final shouldScroll =
-          ref.read(settingsProvider).scrollToBottomOnOutput ||
-          wasAtBottom ||
-          isNowAtBottom;
-      if (shouldScroll) {
-        _scrollController.jumpTo(maxExtent);
-      }
-    });
+    // Only force-scroll when the user's setting explicitly requests it.
+    // Otherwise let xterm.dart's _stickToBottom handle auto-follow — exactly
+    // as ghostty lets its terminal engine manage the viewport internally.
+    if (ref.read(settingsProvider).scrollToBottomOnOutput) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_scrollController.hasClients) return;
+        _scrollController.position.forcePixels(
+          _scrollController.position.maxScrollExtent,
+        );
+      });
+    }
   }
 
   void _pause() {
@@ -497,6 +489,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       _terminal,
       controller: _terminalController,
       scrollController: _scrollController,
+      padding: EdgeInsets.zero,
       textStyle: xterm.TerminalStyle(
         fontSize: settings.fontSize,
         fontFamily: settings.fontFamily,
