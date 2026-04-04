@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,6 +9,7 @@ import '../../platform/paste_service.dart';
 import '../../platform/volume_keys.dart';
 import '../../platform/terminal_backend.dart';
 import '../../utils/session_display.dart';
+import '../../utils/session_interaction.dart';
 import 'terminal_controller.dart';
 import 'mobile_key_bar.dart';
 import '../tool_state_dot.dart';
@@ -27,7 +27,8 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
   final Map<String, TerminalController> _terminalControllers = {};
   final VolumeKeyService _volumeKeys = VolumeKeyService();
   final PasteService _pasteService = PasteService();
-  Set<String> _lastValidSessionIds = {};
+  Set<String>? _pendingInteractiveSessionIds;
+  bool _interactiveTabSyncScheduled = false;
   // OSC title per session — used for tab display only, NOT persisted to server.
   // The stored session.name stays as session-<hash> unless the user renames it.
   final Map<String, String> _sessionTitles = {};
@@ -67,12 +68,14 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       _terminalControllers[activeId]?.paste(text);
     };
 
+    final initialServerState = ref.read(serverProvider);
+    if (initialServerState.sessions.isNotEmpty ||
+        initialServerState.groups.isNotEmpty) {
+      _scheduleInteractiveTabSync(initialServerState);
+    }
+
     ref.listenManual(serverProvider, (previous, next) {
-      final validIds = next.sessions.map((e) => e.id).toSet();
-      if (!setEquals(_lastValidSessionIds, validIds)) {
-        _lastValidSessionIds = validIds;
-        ref.read(sessionProvider.notifier).cleanupStaleTabs(validIds);
-      }
+      _scheduleInteractiveTabSync(next);
     });
   }
 
@@ -259,6 +262,23 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     final activeId = ref.read(sessionProvider).activeSessionId;
     if (activeId == null) return;
     _terminalControllers[activeId]?.showSearch();
+  }
+
+  void _scheduleInteractiveTabSync(ServerState serverState) {
+    _pendingInteractiveSessionIds = interactiveSessionIds(
+      serverState.sessions,
+      serverState.groups,
+    );
+    if (_interactiveTabSyncScheduled) return;
+    _interactiveTabSyncScheduled = true;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _interactiveTabSyncScheduled = false;
+      if (!mounted) return;
+      final validIds = _pendingInteractiveSessionIds ?? const <String>{};
+      _pendingInteractiveSessionIds = null;
+      ref.read(sessionProvider.notifier).cleanupStaleTabs(validIds);
+    });
   }
 }
 

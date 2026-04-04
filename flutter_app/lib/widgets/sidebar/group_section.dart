@@ -7,6 +7,7 @@ import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_display.dart';
+import '../../utils/session_interaction.dart';
 import '../tool_state_dot.dart';
 import 'group_dialog.dart';
 
@@ -345,17 +346,24 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
     final activeId = ref.watch(sessionProvider).activeSessionId;
     final isActive = session.id == activeId;
     final display = getDisplayInfo(session, widget.allSessions);
+    final canOpen = isSessionInteractive(session, widget.allGroups);
+    final titleColor =
+        canOpen ? (isActive ? Colors.white : Colors.white60) : Colors.white38;
+    final subtitleColor = canOpen ? Colors.white38 : Colors.white24;
 
     final tile = GestureDetector(
       onSecondaryTapDown:
           (details) => _showSessionContextMenu(session, details.globalPosition),
       child: InkWell(
-        onTap: () {
-          ref.read(sessionProvider.notifier).openTab(session.id);
-          if (ref.read(uiProvider).isMobile) {
-            ref.read(uiProvider.notifier).setSidebarOpen(false);
-          }
-        },
+        onTap:
+            canOpen
+                ? () {
+                  ref.read(sessionProvider.notifier).openTab(session.id);
+                  if (ref.read(uiProvider).isMobile) {
+                    ref.read(uiProvider.notifier).setSidebarOpen(false);
+                  }
+                }
+                : null,
         child: Container(
           padding: EdgeInsets.only(
             left: 28.0 + widget.depth * 16.0,
@@ -388,19 +396,13 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                   children: [
                     Text(
                       display.displayName,
-                      style: TextStyle(
-                        color: isActive ? Colors.white : Colors.white60,
-                        fontSize: 13,
-                      ),
+                      style: TextStyle(color: titleColor, fontSize: 13),
                       overflow: TextOverflow.ellipsis,
                     ),
                     if (display.subtitle != null)
                       Text(
                         display.subtitle!,
-                        style: const TextStyle(
-                          color: Colors.white38,
-                          fontSize: 11,
-                        ),
+                        style: TextStyle(color: subtitleColor, fontSize: 11),
                         overflow: TextOverflow.ellipsis,
                       ),
                   ],

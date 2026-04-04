@@ -8,6 +8,7 @@ import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_display.dart';
+import '../../utils/session_interaction.dart';
 import 'group_dialog.dart';
 import 'group_section.dart';
 import 'settings_dialog.dart';
@@ -253,6 +254,10 @@ class Sidebar extends ConsumerWidget {
     final isActive = session.id == activeId;
     final serverState = ref.read(serverProvider);
     final display = getDisplayInfo(session, serverState.sessions);
+    final canOpen = isSessionInteractive(session, serverState.groups);
+    final titleColor =
+        canOpen ? (isActive ? Colors.white : Colors.white70) : Colors.white38;
+    final subtitleColor = canOpen ? Colors.white38 : Colors.white24;
 
     return GestureDetector(
       onSecondaryTapDown:
@@ -279,17 +284,14 @@ class Sidebar extends ConsumerWidget {
                 : Icon(display.icon, size: 16, color: display.iconColor),
         title: Text(
           display.displayName,
-          style: TextStyle(
-            color: isActive ? Colors.white : Colors.white70,
-            fontSize: 13,
-          ),
+          style: TextStyle(color: titleColor, fontSize: 13),
           overflow: TextOverflow.ellipsis,
         ),
         subtitle:
             display.subtitle != null
                 ? Text(
                   display.subtitle!,
-                  style: const TextStyle(color: Colors.white38, fontSize: 11),
+                  style: TextStyle(color: subtitleColor, fontSize: 11),
                   overflow: TextOverflow.ellipsis,
                 )
                 : null,
@@ -307,13 +309,16 @@ class Sidebar extends ConsumerWidget {
             },
           ),
         ),
-        onTap: () {
-          ref.read(sessionProvider.notifier).openTab(session.id);
-          final ui = ref.read(uiProvider);
-          if (ui.isMobile) {
-            ref.read(uiProvider.notifier).setSidebarOpen(false);
-          }
-        },
+        onTap:
+            canOpen
+                ? () {
+                  ref.read(sessionProvider.notifier).openTab(session.id);
+                  final ui = ref.read(uiProvider);
+                  if (ui.isMobile) {
+                    ref.read(uiProvider.notifier).setSidebarOpen(false);
+                  }
+                }
+                : null,
       ),
     );
   }
