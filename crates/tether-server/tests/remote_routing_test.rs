@@ -107,12 +107,22 @@ fn cleanup(state: &AppState) {
     let _ = std::fs::remove_dir_all(&state.inner.config.persistence.data_dir);
 }
 
-/// Helper: POST /api/groups and return the group id.
-async fn create_group(app: &Router, name: &str, ssh_host: Option<&str>) -> String {
-    let mut body = serde_json::json!({"name": name});
-    if let Some(h) = ssh_host {
-        body["ssh_host"] = serde_json::Value::String(h.to_string());
+/// Helper: create a group and return the group id.
+async fn create_group(
+    app: &Router,
+    state: &AppState,
+    name: &str,
+    ssh_host: Option<&str>,
+) -> String {
+    if let Some(host) = ssh_host {
+        return state
+            .inner
+            .db
+            .create_group(name, "~", None, Some(host))
+            .unwrap()
+            .id;
     }
+    let body = serde_json::json!({"name": name});
     let resp = app
         .clone()
         .oneshot(
@@ -187,7 +197,7 @@ async fn create_session_in_ssh_group_returns_503_when_tunnel_not_ready() {
     let state = test_state();
     let app = test_router(state.clone());
 
-    let gid = create_group(&app, "remote-group", Some("myhost")).await;
+    let gid = create_group(&app, &state, "remote-group", Some("myhost")).await;
 
     let resp = app
         .clone()
@@ -222,7 +232,7 @@ async fn create_session_in_ssh_group_does_not_leave_db_record_on_503() {
     let state = test_state();
     let app = test_router(state.clone());
 
-    let gid = create_group(&app, "remote-group", Some("myhost")).await;
+    let gid = create_group(&app, &state, "remote-group", Some("myhost")).await;
 
     // Attempt creation — will fail with 503
     app.clone()
@@ -255,7 +265,7 @@ async fn create_session_in_local_group_succeeds_with_local_true() {
     let app = test_router(state.clone());
 
     // No ssh_host → local group
-    let gid = create_group(&app, "local-group", None).await;
+    let gid = create_group(&app, &state, "local-group", None).await;
 
     let resp = app
         .clone()
@@ -288,7 +298,7 @@ async fn delete_ssh_group_session_returns_503_without_tunnel() {
     let state = test_state();
     let app = test_router(state.clone());
 
-    let gid = create_group(&app, "remote-group", Some("myhost")).await;
+    let gid = create_group(&app, &state, "remote-group", Some("myhost")).await;
 
     // Insert a session record manually (simulates a session that existed before tunnel dropped)
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -331,7 +341,7 @@ async fn get_scrollback_for_ssh_session_returns_503_when_no_tunnel() {
     let state = test_state();
     let app = test_router(state.clone());
 
-    let gid = create_group(&app, "remote-group", Some("myhost")).await;
+    let gid = create_group(&app, &state, "remote-group", Some("myhost")).await;
     let session_id = uuid::Uuid::new_v4().to_string();
     state
         .inner
@@ -366,8 +376,8 @@ async fn list_sessions_includes_ssh_group_sessions_from_db() {
     let state = test_state();
     let app = test_router(state.clone());
 
-    let local_gid = create_group(&app, "local", None).await;
-    let remote_gid = create_group(&app, "remote", Some("myhost")).await;
+    let local_gid = create_group(&app, &state, "local", None).await;
+    let remote_gid = create_group(&app, &state, "remote", Some("myhost")).await;
 
     // Local session via API
     app.clone()
@@ -440,7 +450,7 @@ async fn get_scrollback_for_dead_local_session_returns_empty_data() {
     let state = test_state();
     let app = test_router(state.clone());
 
-    let gid = create_group(&app, "local", None).await;
+    let gid = create_group(&app, &state, "local", None).await;
 
     // Create via local=true so no PTY is spawned
     let resp = app
@@ -495,7 +505,7 @@ async fn get_scrollback_for_dead_session_serves_existing_disk_data() {
     let state = test_state();
     let app = test_router(state.clone());
 
-    let gid = create_group(&app, "local", None).await;
+    let gid = create_group(&app, &state, "local", None).await;
     let resp = app
         .clone()
         .oneshot(
@@ -546,6 +556,120 @@ async fn get_scrollback_for_dead_session_serves_existing_disk_data() {
     cleanup(&state);
 }
 
+#[tokio::test]
+async fn moving_local_session_into_ssh_group_returns_400() {
+    let state = test_state();
+    let app = test_router(state.clone());
+
+    let local_gid = create_group(&app, &state, "local", None).await;
+    let remote_gid = create_group(&app, &state, "remote", Some("myhost")).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/sessions?local=true")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"group_id": local_gid, "name": "local-only"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let session: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let session_id = session["id"].as_str().unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/sessions/{}", session_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"group_id": remote_gid}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let sessions = state.inner.db.list_sessions().unwrap();
+    assert_eq!(sessions[0].group_id, local_gid);
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn moving_ssh_session_into_local_group_returns_400() {
+    let state = test_state();
+    let app = test_router(state.clone());
+
+    let local_gid = create_group(&app, &state, "local", None).await;
+    let remote_gid = create_group(&app, &state, "remote", Some("myhost")).await;
+    let session_id = uuid::Uuid::new_v4().to_string();
+    state
+        .inner
+        .db
+        .create_session(&session_id, &remote_gid, "remote", "/bin/sh", "~", None)
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/sessions/{}", session_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"group_id": local_gid}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let sessions = state.inner.db.list_sessions().unwrap();
+    assert_eq!(sessions[0].group_id, remote_gid);
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn remote_group_host_cannot_be_changed_via_patch() {
+    let state = test_state();
+    let app = test_router(state.clone());
+
+    let remote_gid = create_group(&app, &state, "remote", Some("myhost")).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/groups/{}", remote_gid))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"ssh_host": "otherhost"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let group = state.inner.db.get_group(&remote_gid).unwrap().unwrap();
+    assert_eq!(group.ssh_host.as_deref(), Some("myhost"));
+
+    cleanup(&state);
+}
+
 // ─── Store helpers ─────────────────────────────────────────────────────────────
 //
 // Verify the SQL helpers used to drive routing decisions.
@@ -555,7 +679,7 @@ async fn store_get_session_ssh_host_via_api_created_group() {
     let state = test_state();
     let app = test_router(state.clone());
 
-    let gid = create_group(&app, "ssh-group", Some("prod.server.example")).await;
+    let gid = create_group(&app, &state, "ssh-group", Some("prod.server.example")).await;
     let session_id = uuid::Uuid::new_v4().to_string();
     state
         .inner
@@ -574,7 +698,7 @@ async fn store_get_group_ssh_host_via_api_created_group() {
     let state = test_state();
     let app = test_router(state.clone());
 
-    let gid = create_group(&app, "ssh-group", Some("build-server")).await;
+    let gid = create_group(&app, &state, "ssh-group", Some("build-server")).await;
     let ssh_host = state.inner.db.get_group_ssh_host(&gid).unwrap();
     assert_eq!(ssh_host, Some("build-server".to_string()));
 
@@ -586,7 +710,7 @@ async fn store_get_group_ssh_host_returns_none_for_local_group() {
     let state = test_state();
     let app = test_router(state.clone());
 
-    let gid = create_group(&app, "local-group", None).await;
+    let gid = create_group(&app, &state, "local-group", None).await;
     let ssh_host = state.inner.db.get_group_ssh_host(&gid).unwrap();
     assert_eq!(ssh_host, None);
 

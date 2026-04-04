@@ -19,6 +19,17 @@ bool get _isDesktop =>
         defaultTargetPlatform == TargetPlatform.windows ||
         defaultTargetPlatform == TargetPlatform.linux);
 
+String? _normalizedHost(String? host) {
+  if (host == null || host.isEmpty) {
+    return null;
+  }
+  return host;
+}
+
+bool _sameGroupScope(Group first, Group second) {
+  return _normalizedHost(first.sshHost) == _normalizedHost(second.sshHost);
+}
+
 class Sidebar extends ConsumerWidget {
   const Sidebar({super.key});
 
@@ -27,7 +38,8 @@ class Sidebar extends ConsumerWidget {
     final serverState = ref.watch(serverProvider);
     final uiState = ref.watch(uiProvider);
     final screenWidth = MediaQuery.of(context).size.width;
-    final sidebarWidth = uiState.isMobile ? min(280.0, screenWidth * 0.85) : 280.0;
+    final sidebarWidth =
+        uiState.isMobile ? min(280.0, screenWidth * 0.85) : 280.0;
     final safeTop = uiState.isMobile ? MediaQuery.of(context).padding.top : 0.0;
 
     return Container(
@@ -39,9 +51,10 @@ class Sidebar extends ConsumerWidget {
           _buildHeader(context, ref, serverState),
           const Divider(height: 1, color: Colors.white12),
           Expanded(
-            child: serverState.isConnected
-                ? _buildContent(context, ref, serverState)
-                : _buildDisconnected(context, ref, serverState),
+            child:
+                serverState.isConnected
+                    ? _buildContent(context, ref, serverState)
+                    : _buildDisconnected(context, ref, serverState),
           ),
         ],
       ),
@@ -101,19 +114,25 @@ class Sidebar extends ConsumerWidget {
     final groups = state.groups;
     final sessions = state.sessions;
 
-    final rootGroups = groups.where((g) => g.parentId == null).toList()
-      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    final rootGroups =
+        groups.where((g) => g.parentId == null).toList()
+          ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
 
     return ListView(
       children: [
         if (state.sshHosts.any((h) => h.reachable == true)) ...[
-          SshHostList(hosts: state.sshHosts.where((h) => h.reachable == true).toList()),
+          SshHostList(
+            hosts: state.sshHosts.where((h) => h.reachable == true).toList(),
+          ),
           const Divider(height: 1, color: Colors.white12),
         ],
         for (final group in rootGroups)
           DragTarget<Group>(
-            onWillAcceptWithDetails: (details) =>
-                details.data.id != group.id && details.data.parentId == null,
+            onWillAcceptWithDetails:
+                (details) =>
+                    details.data.id != group.id &&
+                    details.data.parentId == null &&
+                    _sameGroupScope(details.data, group),
             onAcceptWithDetails: (details) {
               _handleGroupDrop(ref, details.data, group, rootGroups);
             },
@@ -122,63 +141,71 @@ class Sidebar extends ConsumerWidget {
               return Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (isDropTarget)
-                    Container(height: 2, color: Colors.blue),
-                  Builder(builder: (context) {
-                    final feedback = Material(
-                      elevation: 4,
-                      color: const Color(0xFF2A2A2A),
-                      borderRadius: BorderRadius.circular(4),
-                      child: SizedBox(
-                        width: 220,
-                        child: Padding(
-                          padding: const EdgeInsets.all(8),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.folder, size: 16, color: Colors.white54),
-                              const SizedBox(width: 6),
-                              Flexible(
-                                child: Text(
-                                  group.name,
-                                  style: const TextStyle(color: Colors.white70, fontSize: 12),
-                                  overflow: TextOverflow.ellipsis,
+                  if (isDropTarget) Container(height: 2, color: Colors.blue),
+                  Builder(
+                    builder: (context) {
+                      final feedback = Material(
+                        elevation: 4,
+                        color: const Color(0xFF2A2A2A),
+                        borderRadius: BorderRadius.circular(4),
+                        child: SizedBox(
+                          width: 220,
+                          child: Padding(
+                            padding: const EdgeInsets.all(8),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.folder,
+                                  size: 16,
+                                  color: Colors.white54,
                                 ),
-                              ),
-                            ],
+                                const SizedBox(width: 6),
+                                Flexible(
+                                  child: Text(
+                                    group.name,
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 12,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
-                    );
-                    final childWhenDragging = Opacity(
-                      opacity: 0.3,
-                      child: GroupSection(
+                      );
+                      final childWhenDragging = Opacity(
+                        opacity: 0.3,
+                        child: GroupSection(
+                          group: group,
+                          allGroups: groups,
+                          allSessions: sessions,
+                          depth: 0,
+                        ),
+                      );
+                      final child = GroupSection(
                         group: group,
                         allGroups: groups,
                         allSessions: sessions,
                         depth: 0,
-                      ),
-                    );
-                    final child = GroupSection(
-                      group: group,
-                      allGroups: groups,
-                      allSessions: sessions,
-                      depth: 0,
-                    );
-                    return _isDesktop
-                        ? Draggable<Group>(
+                      );
+                      return _isDesktop
+                          ? Draggable<Group>(
                             data: group,
                             feedback: feedback,
                             childWhenDragging: childWhenDragging,
                             child: child,
                           )
-                        : LongPressDraggable<Group>(
+                          : LongPressDraggable<Group>(
                             data: group,
                             feedback: feedback,
                             childWhenDragging: childWhenDragging,
                             child: child,
                           );
-                  }),
+                    },
+                  ),
                 ],
               );
             },
@@ -191,7 +218,16 @@ class Sidebar extends ConsumerWidget {
     );
   }
 
-  void _handleGroupDrop(WidgetRef ref, Group dragged, Group target, List<Group> rootGroups) {
+  void _handleGroupDrop(
+    WidgetRef ref,
+    Group dragged,
+    Group target,
+    List<Group> rootGroups,
+  ) {
+    if (!_sameGroupScope(dragged, target)) {
+      return;
+    }
+
     final groups = List<Group>.from(rootGroups);
     groups.removeWhere((g) => g.id == dragged.id);
     final targetIdx = groups.indexWhere((g) => g.id == target.id);
@@ -203,30 +239,44 @@ class Sidebar extends ConsumerWidget {
 
     final items = <Map<String, dynamic>>[];
     for (int i = 0; i < groups.length; i++) {
-      items.add({
-        'id': groups[i].id,
-        'sort_order': i,
-      });
+      items.add({'id': groups[i].id, 'sort_order': i});
     }
     ref.read(serverProvider.notifier).reorderGroups(items);
   }
 
-  Widget _buildSessionTile(BuildContext context, WidgetRef ref, Session session) {
+  Widget _buildSessionTile(
+    BuildContext context,
+    WidgetRef ref,
+    Session session,
+  ) {
     final activeId = ref.watch(sessionProvider).activeSessionId;
     final isActive = session.id == activeId;
     final serverState = ref.read(serverProvider);
     final display = getDisplayInfo(session, serverState.sessions);
 
     return GestureDetector(
-      onSecondaryTapDown: (details) => _showSessionContextMenu(context, ref, session, details.globalPosition),
-      onLongPressStart: (details) => _showSessionContextMenu(context, ref, session, details.globalPosition),
+      onSecondaryTapDown:
+          (details) => _showSessionContextMenu(
+            context,
+            ref,
+            session,
+            details.globalPosition,
+          ),
+      onLongPressStart:
+          (details) => _showSessionContextMenu(
+            context,
+            ref,
+            session,
+            details.globalPosition,
+          ),
       child: ListTile(
         dense: true,
         selected: isActive,
         selectedTileColor: Colors.white.withValues(alpha: 0.08),
-        leading: display.iconAsset != null
-            ? Image.asset(display.iconAsset!, width: 16, height: 16)
-            : Icon(display.icon, size: 16, color: display.iconColor),
+        leading:
+            display.iconAsset != null
+                ? Image.asset(display.iconAsset!, width: 16, height: 16)
+                : Icon(display.icon, size: 16, color: display.iconColor),
         title: Text(
           display.displayName,
           style: TextStyle(
@@ -235,13 +285,14 @@ class Sidebar extends ConsumerWidget {
           ),
           overflow: TextOverflow.ellipsis,
         ),
-        subtitle: display.subtitle != null
-            ? Text(
-                display.subtitle!,
-                style: const TextStyle(color: Colors.white38, fontSize: 11),
-                overflow: TextOverflow.ellipsis,
-              )
-            : null,
+        subtitle:
+            display.subtitle != null
+                ? Text(
+                  display.subtitle!,
+                  style: const TextStyle(color: Colors.white38, fontSize: 11),
+                  overflow: TextOverflow.ellipsis,
+                )
+                : null,
         trailing: SizedBox(
           width: 24,
           height: 24,
@@ -267,7 +318,11 @@ class Sidebar extends ConsumerWidget {
     );
   }
 
-  Widget _buildDisconnected(BuildContext context, WidgetRef ref, ServerState state) {
+  Widget _buildDisconnected(
+    BuildContext context,
+    WidgetRef ref,
+    ServerState state,
+  ) {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -306,13 +361,15 @@ class Sidebar extends ConsumerWidget {
           final config = ServerConfig(
             host: hostController.text.trim(),
             port: int.tryParse(portController.text.trim()) ?? 7680,
-            token: tokenController.text.trim().isEmpty
-                ? null
-                : tokenController.text.trim(),
+            token:
+                tokenController.text.trim().isEmpty
+                    ? null
+                    : tokenController.text.trim(),
           );
           ref.read(serverProvider.notifier).connect(config);
           Navigator.pop(ctx);
         }
+
         return AlertDialog(
           title: const Text('Connect to Server'),
           content: Column(
@@ -329,7 +386,9 @@ class Sidebar extends ConsumerWidget {
               ),
               TextField(
                 controller: tokenController,
-                decoration: const InputDecoration(labelText: 'Auth Token (optional)'),
+                decoration: const InputDecoration(
+                  labelText: 'Auth Token (optional)',
+                ),
                 obscureText: true,
                 onSubmitted: (_) => doConnect(),
               ),
@@ -340,10 +399,7 @@ class Sidebar extends ConsumerWidget {
               onPressed: () => Navigator.pop(ctx),
               child: const Text('Cancel'),
             ),
-            ElevatedButton(
-              onPressed: doConnect,
-              child: const Text('Connect'),
-            ),
+            ElevatedButton(onPressed: doConnect, child: const Text('Connect')),
           ],
         );
       },
@@ -351,10 +407,7 @@ class Sidebar extends ConsumerWidget {
   }
 
   void _showCreateGroupDialog(BuildContext context, WidgetRef ref) {
-    showDialog(
-      context: context,
-      builder: (_) => const GroupDialog(),
-    );
+    showDialog(context: context, builder: (_) => const GroupDialog());
   }
 
   void _showCreateSessionDialog(BuildContext context, WidgetRef ref) async {
@@ -362,7 +415,9 @@ class Sidebar extends ConsumerWidget {
     final groups = state.groups;
     String groupId;
     if (groups.isEmpty) {
-      final group = await ref.read(serverProvider.notifier).createGroup(name: 'Default');
+      final group = await ref
+          .read(serverProvider.notifier)
+          .createGroup(name: 'Default');
       groupId = group.id;
     } else {
       groupId = groups.first.id;
@@ -371,7 +426,11 @@ class Sidebar extends ConsumerWidget {
     _showCreateSessionInGroup(context, ref, groupId);
   }
 
-  void _showCreateSessionInGroup(BuildContext context, WidgetRef ref, String groupId) {
+  void _showCreateSessionInGroup(
+    BuildContext context,
+    WidgetRef ref,
+    String groupId,
+  ) {
     final nameController = TextEditingController();
     final commandController = TextEditingController();
     final cwdController = TextEditingController();
@@ -380,15 +439,27 @@ class Sidebar extends ConsumerWidget {
       context: context,
       builder: (ctx) {
         Future<void> doCreate() async {
-          final session = await ref.read(serverProvider.notifier).createSession(
-            groupId: groupId,
-            name: nameController.text.trim().isEmpty ? null : nameController.text.trim(),
-            command: commandController.text.trim().isEmpty ? null : commandController.text.trim(),
-            cwd: cwdController.text.trim().isEmpty ? null : cwdController.text.trim(),
-          );
+          final session = await ref
+              .read(serverProvider.notifier)
+              .createSession(
+                groupId: groupId,
+                name:
+                    nameController.text.trim().isEmpty
+                        ? null
+                        : nameController.text.trim(),
+                command:
+                    commandController.text.trim().isEmpty
+                        ? null
+                        : commandController.text.trim(),
+                cwd:
+                    cwdController.text.trim().isEmpty
+                        ? null
+                        : cwdController.text.trim(),
+              );
           if (ctx.mounted) Navigator.pop(ctx);
           ref.read(sessionProvider.notifier).openTab(session.id);
         }
+
         return AlertDialog(
           title: const Text('New Session'),
           content: Column(
@@ -396,7 +467,9 @@ class Sidebar extends ConsumerWidget {
             children: [
               TextField(
                 controller: nameController,
-                decoration: const InputDecoration(labelText: 'Session Name (optional)'),
+                decoration: const InputDecoration(
+                  labelText: 'Session Name (optional)',
+                ),
                 onSubmitted: (_) => doCreate(),
               ),
               TextField(
@@ -422,29 +495,39 @@ class Sidebar extends ConsumerWidget {
               onPressed: () => Navigator.pop(ctx),
               child: const Text('Cancel'),
             ),
-            ElevatedButton(
-              onPressed: doCreate,
-              child: const Text('Create'),
-            ),
+            ElevatedButton(onPressed: doCreate, child: const Text('Create')),
           ],
         );
       },
     );
   }
 
-  void _showSessionContextMenu(BuildContext context, WidgetRef ref, Session session, Offset position) {
-    final rect = RelativeRect.fromLTRB(position.dx, position.dy, position.dx, position.dy);
+  void _showSessionContextMenu(
+    BuildContext context,
+    WidgetRef ref,
+    Session session,
+    Offset position,
+  ) {
+    final rect = RelativeRect.fromLTRB(
+      position.dx,
+      position.dy,
+      position.dx,
+      position.dy,
+    );
     showMenu<String>(
       context: context,
       position: rect,
       items: [
-        const PopupMenuItem(value: 'rename', child: Row(
-          children: [
-            Text('Rename'),
-            Spacer(),
-            Text('⌘R', style: TextStyle(fontSize: 12, color: Colors.white38)),
-          ],
-        )),
+        const PopupMenuItem(
+          value: 'rename',
+          child: Row(
+            children: [
+              Text('Rename'),
+              Spacer(),
+              Text('⌘R', style: TextStyle(fontSize: 12, color: Colors.white38)),
+            ],
+          ),
+        ),
         const PopupMenuItem(
           value: 'delete',
           child: Text('Delete', style: TextStyle(color: Colors.red)),
@@ -452,6 +535,7 @@ class Sidebar extends ConsumerWidget {
       ],
     ).then((value) {
       if (value == null) return;
+      if (!context.mounted) return;
       switch (value) {
         case 'rename':
           _showRenameSessionDialog(context, ref, session);
@@ -462,7 +546,11 @@ class Sidebar extends ConsumerWidget {
     });
   }
 
-  void _showRenameSessionDialog(BuildContext context, WidgetRef ref, Session session) {
+  void _showRenameSessionDialog(
+    BuildContext context,
+    WidgetRef ref,
+    Session session,
+  ) {
     final controller = TextEditingController(text: session.name);
 
     showDialog(
@@ -471,10 +559,13 @@ class Sidebar extends ConsumerWidget {
         void doRename() {
           final name = controller.text.trim();
           if (name.isNotEmpty) {
-            ref.read(serverProvider.notifier).updateSession(session.id, name: name);
+            ref
+                .read(serverProvider.notifier)
+                .updateSession(session.id, name: name);
             Navigator.pop(ctx);
           }
         }
+
         return AlertDialog(
           title: const Text('Rename Session'),
           content: TextField(
@@ -487,10 +578,7 @@ class Sidebar extends ConsumerWidget {
               onPressed: () => Navigator.pop(ctx),
               child: const Text('Cancel'),
             ),
-            ElevatedButton(
-              onPressed: doRename,
-              child: const Text('Rename'),
-            ),
+            ElevatedButton(onPressed: doRename, child: const Text('Rename')),
           ],
         );
       },

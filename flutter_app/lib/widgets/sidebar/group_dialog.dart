@@ -24,12 +24,15 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
   String? _nameError;
 
   bool get _isEdit => widget.group != null;
+  bool get _lockHostSelection => _isEdit;
 
   @override
   void initState() {
     super.initState();
     _nameController = TextEditingController(text: widget.group?.name ?? '');
-    _pathController = TextEditingController(text: widget.group?.defaultCwd ?? '~/');
+    _pathController = TextEditingController(
+      text: widget.group?.defaultCwd ?? '~/',
+    );
     _selectedSshHost = widget.group?.sshHost;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _fetchCompletions(_pathController.text);
@@ -109,25 +112,28 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
 
     try {
       if (_isEdit) {
-        await ref.read(serverProvider.notifier).updateGroup(
-          widget.group!.id,
-          name: name,
-          defaultCwd: defaultCwd,
-          sshHost: _selectedSshHost ?? '',
-        );
+        await ref
+            .read(serverProvider.notifier)
+            .updateGroup(widget.group!.id, name: name, defaultCwd: defaultCwd);
       } else {
-        await ref.read(serverProvider.notifier).createGroup(
-          name: name,
-          defaultCwd: defaultCwd,
-          sshHost: _selectedSshHost,
-        );
+        await ref
+            .read(serverProvider.notifier)
+            .createGroup(
+              name: name,
+              defaultCwd: defaultCwd,
+              sshHost: _selectedSshHost,
+            );
       }
       if (mounted) Navigator.pop(context);
     } catch (e) {
       if (mounted) {
         setState(() => _isSaving = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to ${_isEdit ? "update" : "create"} group: $e')),
+          SnackBar(
+            content: Text(
+              'Failed to ${_isEdit ? "update" : "create"} group: $e',
+            ),
+          ),
         );
       }
     }
@@ -163,8 +169,14 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String?>(
-                value: _selectedSshHost,
-                decoration: const InputDecoration(labelText: 'Host'),
+                initialValue: _selectedSshHost,
+                decoration: InputDecoration(
+                  labelText: 'Host',
+                  helperText:
+                      _lockHostSelection
+                          ? 'Host/locality is fixed after creation.'
+                          : null,
+                ),
                 isExpanded: true,
                 items: [
                   const DropdownMenuItem<String?>(
@@ -174,22 +186,22 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
                   for (final host in sshHosts)
                     DropdownMenuItem<String?>(
                       value: host.host,
-                      child: Text(
-                        host.host,
-                        overflow: TextOverflow.ellipsis,
-                      ),
+                      child: Text(host.host, overflow: TextOverflow.ellipsis),
                     ),
                 ],
-                onChanged: (value) {
-                  setState(() {
-                    _selectedSshHost = value;
-                    _completions = [];
-                    _showCompletions = false;
-                  });
-                  if (_pathController.text.isNotEmpty) {
-                    _fetchCompletions(_pathController.text);
-                  }
-                },
+                onChanged:
+                    _lockHostSelection
+                        ? null
+                        : (value) {
+                          setState(() {
+                            _selectedSshHost = value;
+                            _completions = [];
+                            _showCompletions = false;
+                          });
+                          if (_pathController.text.isNotEmpty) {
+                            _fetchCompletions(_pathController.text);
+                          }
+                        },
               ),
               const SizedBox(height: 12),
               TextField(
@@ -245,9 +257,11 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
         ),
         ElevatedButton(
           onPressed: _isSaving ? null : _save,
-          child: Text(_isSaving
-              ? (_isEdit ? 'Saving...' : 'Creating...')
-              : (_isEdit ? 'Save' : 'Create')),
+          child: Text(
+            _isSaving
+                ? (_isEdit ? 'Saving...' : 'Creating...')
+                : (_isEdit ? 'Save' : 'Create'),
+          ),
         ),
       ],
     );

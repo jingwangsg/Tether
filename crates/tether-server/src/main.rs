@@ -115,7 +115,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            let state = state::AppState::new(config).await?;
+            let state = state::AppState::new_with_remote_policy(config, restart_remote).await?;
             server::run(state, no_ssh_scan).await
         });
 

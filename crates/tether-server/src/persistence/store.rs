@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -6,6 +6,9 @@ use uuid::Uuid;
 pub struct Store {
     conn: Mutex<Connection>,
 }
+
+const SHARED_REMOTE_MODEL_VERSION_KEY: &str = "shared_remote_model_version";
+const SHARED_REMOTE_MODEL_VERSION: &str = "1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupRow {
@@ -30,9 +33,11 @@ pub struct SessionRow {
     pub cwd: String,
     pub created_at: String,
     pub last_active: String,
+    #[serde(default)]
+    pub sort_order: i32,
     pub is_alive: bool,
     /// Transient: detected foreground process (e.g. "claude", "codex")
-    #[serde(skip_deserializing)]
+    #[serde(default)]
     pub foreground_process: Option<String>,
     /// Persisted on the remote server: which local group this session belongs to.
     /// Set when a session is created via create_remote_session and kept in sync
@@ -107,6 +112,55 @@ impl Store {
         conn.execute_batch("ALTER TABLE sessions ADD COLUMN local_group_id TEXT;")
             .ok();
         Ok(())
+    }
+
+    pub fn mark_shared_remote_model_initialized(&self) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params![SHARED_REMOTE_MODEL_VERSION_KEY, SHARED_REMOTE_MODEL_VERSION],
+        )?;
+        Ok(())
+    }
+
+    /// One-time upgrade step for the old SSH-local-mapping model.
+    /// We intentionally discard stale SSH-backed local mirrors and let the
+    /// remote-authoritative sync rebuild them in the shared format.
+    pub fn migrate_legacy_shared_remote_model_if_needed(&self) -> anyhow::Result<bool> {
+        let mut conn = self.conn.lock().unwrap();
+        let current: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![SHARED_REMOTE_MODEL_VERSION_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current.as_deref() == Some(SHARED_REMOTE_MODEL_VERSION) {
+            return Ok(false);
+        }
+
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM session_group_registry
+             WHERE session_id IN (
+                 SELECT s.id FROM sessions s
+                 JOIN groups g ON s.group_id = g.id
+                 WHERE g.ssh_host IS NOT NULL
+             )",
+            [],
+        )?;
+        tx.execute(
+            "DELETE FROM sessions
+             WHERE group_id IN (SELECT id FROM groups WHERE ssh_host IS NOT NULL)",
+            [],
+        )?;
+        tx.execute("DELETE FROM groups WHERE ssh_host IS NOT NULL", [])?;
+        tx.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params![SHARED_REMOTE_MODEL_VERSION_KEY, SHARED_REMOTE_MODEL_VERSION],
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     // --- Groups ---
@@ -218,6 +272,37 @@ impl Store {
         Ok(())
     }
 
+    pub fn upsert_remote_group_mirror(
+        &self,
+        group: &GroupRow,
+        ssh_host: &str,
+    ) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO groups (id, name, default_cwd, sort_order, parent_id, ssh_host, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                 name = excluded.name,
+                 default_cwd = excluded.default_cwd,
+                 sort_order = excluded.sort_order,
+                 parent_id = excluded.parent_id,
+                 ssh_host = excluded.ssh_host,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
+            params![
+                group.id.as_str(),
+                group.name.as_str(),
+                group.default_cwd.as_str(),
+                group.sort_order,
+                group.parent_id.as_deref(),
+                ssh_host,
+                group.created_at.as_str(),
+                group.updated_at.as_str()
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Collect all descendant group IDs (recursive) including the given id itself
     pub fn collect_descendant_ids(&self, id: &str) -> anyhow::Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
@@ -321,7 +406,7 @@ impl Store {
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, is_alive, local_group_id FROM sessions ORDER BY sort_order, created_at",
+            "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id FROM sessions ORDER BY sort_order, created_at",
         )?;
         let rows = stmt
             .query_map([], |row| {
@@ -335,9 +420,10 @@ impl Store {
                     cwd: row.get(6)?,
                     created_at: row.get(7)?,
                     last_active: row.get(8)?,
-                    is_alive: row.get::<_, i32>(9)? != 0,
+                    sort_order: row.get(9)?,
+                    is_alive: row.get::<_, i32>(10)? != 0,
                     foreground_process: None,
-                    local_group_id: row.get(10)?,
+                    local_group_id: row.get(11)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -357,7 +443,7 @@ impl Store {
         let now = chrono::Utc::now().to_rfc3339();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, is_alive, local_group_id) VALUES (?1, ?2, ?3, ?4, 80, 24, ?5, ?6, ?7, 1, ?8)",
+            "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id) VALUES (?1, ?2, ?3, ?4, 80, 24, ?5, ?6, ?7, 0, 1, ?8)",
             params![id, group_id, name, shell, cwd, now, now, local_group_id],
         )?;
         tx.execute(
@@ -375,10 +461,80 @@ impl Store {
             cwd: cwd.to_string(),
             created_at: now.clone(),
             last_active: now,
+            sort_order: 0,
             is_alive: true,
             foreground_process: None,
             local_group_id: local_group_id.map(|s| s.to_string()),
         })
+    }
+
+    pub fn get_session(&self, id: &str) -> anyhow::Result<Option<SessionRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id \
+             FROM sessions WHERE id = ?1",
+        )?;
+        let row = stmt
+            .query_row(params![id], |row| {
+                Ok(SessionRow {
+                    id: row.get(0)?,
+                    group_id: row.get(1)?,
+                    name: row.get(2)?,
+                    shell: row.get(3)?,
+                    cols: row.get(4)?,
+                    rows: row.get(5)?,
+                    cwd: row.get(6)?,
+                    created_at: row.get(7)?,
+                    last_active: row.get(8)?,
+                    sort_order: row.get(9)?,
+                    is_alive: row.get::<_, i32>(10)? != 0,
+                    foreground_process: None,
+                    local_group_id: row.get(11)?,
+                })
+            })
+            .ok();
+        Ok(row)
+    }
+
+    pub fn upsert_remote_session_mirror(&self, session: &SessionRow) -> anyhow::Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(id) DO UPDATE SET
+                 group_id = excluded.group_id,
+                 name = excluded.name,
+                 shell = excluded.shell,
+                 cols = excluded.cols,
+                 rows = excluded.rows,
+                 cwd = excluded.cwd,
+                 created_at = excluded.created_at,
+                 last_active = excluded.last_active,
+                 sort_order = excluded.sort_order,
+                 is_alive = excluded.is_alive,
+                 local_group_id = excluded.local_group_id",
+            params![
+                session.id.as_str(),
+                session.group_id.as_str(),
+                session.name.as_str(),
+                session.shell.as_str(),
+                session.cols,
+                session.rows,
+                session.cwd.as_str(),
+                session.created_at.as_str(),
+                session.last_active.as_str(),
+                session.sort_order,
+                session.is_alive as i32,
+                session.local_group_id.as_deref()
+            ],
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO session_group_registry (session_id, group_id) VALUES (?1, ?2)",
+            params![session.id.as_str(), session.group_id.as_str()],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Returns the number of rows updated (0 means the session was not found).
@@ -510,6 +666,18 @@ impl Store {
         Ok(ids)
     }
 
+    pub fn get_remote_session_ids_by_host(&self, host_alias: &str) -> anyhow::Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT s.id FROM sessions s \
+             JOIN groups g ON s.group_id = g.id WHERE g.ssh_host = ?1",
+        )?;
+        let ids = stmt
+            .query_map(params![host_alias], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(ids)
+    }
+
     /// Delete all sessions belonging to SSH-backed groups.
     /// Called on startup; these sessions are re-imported by the sync mechanism when
     /// SSH tunnels reconnect. Intentionally does NOT touch `session_group_registry` —
@@ -538,7 +706,7 @@ impl Store {
             .join(", ");
         let sql = format!(
             "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, \
-             is_alive, local_group_id FROM sessions WHERE group_id IN ({})",
+             sort_order, is_alive, local_group_id FROM sessions WHERE group_id IN ({})",
             placeholders
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -554,9 +722,10 @@ impl Store {
                     cwd: row.get(6)?,
                     created_at: row.get(7)?,
                     last_active: row.get(8)?,
-                    is_alive: row.get::<_, i32>(9)? != 0,
+                    sort_order: row.get(9)?,
+                    is_alive: row.get::<_, i32>(10)? != 0,
                     foreground_process: None,
-                    local_group_id: row.get(10)?,
+                    local_group_id: row.get(11)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -574,6 +743,23 @@ impl Store {
             )?;
         }
         tx.commit()?;
+        Ok(())
+    }
+
+    pub fn prune_remote_session_mirrors(
+        &self,
+        host_alias: &str,
+        keep_ids: &[String],
+    ) -> anyhow::Result<()> {
+        let keep: std::collections::HashSet<&str> = keep_ids.iter().map(String::as_str).collect();
+        let stale_ids = self
+            .get_remote_session_ids_by_host(host_alias)?
+            .into_iter()
+            .filter(|id| !keep.contains(id.as_str()))
+            .collect::<Vec<_>>();
+        for id in stale_ids {
+            self.delete_session(&id)?;
+        }
         Ok(())
     }
 
@@ -624,6 +810,38 @@ impl Store {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    pub fn prune_remote_group_mirrors(
+        &self,
+        host_alias: &str,
+        keep_ids: &[String],
+    ) -> anyhow::Result<()> {
+        let keep: std::collections::HashSet<&str> = keep_ids.iter().map(String::as_str).collect();
+        let groups = self.get_groups_by_ssh_host(host_alias)?;
+        let stale: std::collections::HashSet<String> = groups
+            .iter()
+            .filter(|group| !keep.contains(group.id.as_str()))
+            .map(|group| group.id.clone())
+            .collect();
+
+        let stale_roots = groups
+            .into_iter()
+            .filter(|group| {
+                stale.contains(&group.id)
+                    && group
+                        .parent_id
+                        .as_deref()
+                        .map(|parent| !stale.contains(parent))
+                        .unwrap_or(true)
+            })
+            .map(|group| group.id)
+            .collect::<Vec<_>>();
+
+        for id in stale_roots {
+            self.delete_group(&id)?;
+        }
+        Ok(())
     }
 
     /// Insert a session record if no record with the same id already exists.
@@ -696,8 +914,8 @@ impl Store {
 
         let n = tx.execute(
             "INSERT OR IGNORE INTO sessions \
-             (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, is_alive, local_group_id) \
-             VALUES (?1, ?2, ?3, ?4, 80, 24, ?5, ?6, ?7, ?8, ?9)",
+             (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id) \
+             VALUES (?1, ?2, ?3, ?4, 80, 24, ?5, ?6, ?7, 0, ?8, ?9)",
             params![id, group_id, name, shell, cwd, now, now, is_alive as i32, local_group_id],
         )?;
         tx.commit()?;

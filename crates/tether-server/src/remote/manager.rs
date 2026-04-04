@@ -1,27 +1,24 @@
 use std::sync::Arc;
 use std::time::Duration;
+
+use dashmap::DashMap;
+use serde::Serialize;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 
-use dashmap::DashMap;
-use serde::Serialize;
-
 use super::client::SshClient;
-use super::deploy::ensure_deployed;
+use super::deploy::{ensure_deployed, ensure_started_without_restart, remote_binary_version};
 use super::tunnel::Tunnel;
 use crate::ssh_config::{parse_ssh_config, SshHost};
-
-// ── Public types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteStatus {
     Unreachable,
     Connecting,
-    #[allow(dead_code)]
-    Deploying,
     Ready,
+    UpgradeRequired,
     Failed(String),
 }
 
@@ -29,63 +26,59 @@ pub enum RemoteStatus {
 pub struct RemoteHostStatus {
     pub host: String,
     pub status: RemoteStatus,
-    /// Local port forwarded to remote:7680, present when status == Ready
     pub tunnel_port: Option<u16>,
 }
 
-// ── Internal state ────────────────────────────────────────────────────────────
-
 struct RemoteHostState {
-    #[allow(dead_code)]
     ssh_host: SshHost,
     status: RemoteStatus,
     client: Option<SshClient>,
     tunnel: Option<Tunnel>,
-    /// ID of the default group created on the remote tether-server.
-    remote_group_id: Option<String>,
 }
-
-// ── RemoteManager ─────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct RemoteManager {
     hosts: Arc<DashMap<String, RemoteHostState>>,
-    /// Fires (host_alias, tunnel_port, remote_group_id) when a host becomes Ready.
-    pub ready_tx: broadcast::Sender<(String, u16, String)>,
+    allow_deploy: bool,
+    /// Fires `(host_alias, tunnel_port)` whenever a host becomes Ready.
+    pub ready_tx: broadcast::Sender<(String, u16)>,
+}
+
+enum ConnectError {
+    UpgradeRequired,
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for ConnectError {
+    fn from(value: anyhow::Error) -> Self {
+        Self::Other(value)
+    }
 }
 
 impl RemoteManager {
     pub fn new() -> Self {
+        Self::new_with_deploy(false)
+    }
+
+    pub fn new_with_deploy(allow_deploy: bool) -> Self {
         let (ready_tx, _) = broadcast::channel(16);
         Self {
             hosts: Arc::new(DashMap::new()),
+            allow_deploy,
             ready_tx,
         }
     }
 
-    /// Return the remote default group ID for `host_alias` if it is Ready.
-    pub fn get_remote_group_id(&self, host_alias: &str) -> Option<String> {
-        self.hosts.get(host_alias).and_then(|s| {
-            if matches!(s.status, RemoteStatus::Ready) {
-                s.remote_group_id.clone()
-            } else {
-                None
-            }
-        })
-    }
-
-    /// Return the local tunnel port for `host_alias` if it is Ready.
     pub fn get_tunnel_port(&self, host_alias: &str) -> Option<u16> {
-        self.hosts.get(host_alias).and_then(|s| {
-            if matches!(s.status, RemoteStatus::Ready) {
-                s.tunnel.as_ref().map(|t| t.local_port)
+        self.hosts.get(host_alias).and_then(|entry| {
+            if matches!(entry.status, RemoteStatus::Ready) {
+                entry.tunnel.as_ref().map(|tunnel| tunnel.local_port)
             } else {
                 None
             }
         })
     }
 
-    /// Return a snapshot of all discovered hosts and their statuses.
     pub fn list_statuses(&self) -> Vec<RemoteHostStatus> {
         self.hosts
             .iter()
@@ -95,8 +88,24 @@ impl RemoteManager {
                 tunnel_port: entry
                     .tunnel
                     .as_ref()
-                    .map(|t| t.local_port)
+                    .map(|tunnel| tunnel.local_port)
                     .filter(|_| entry.status == RemoteStatus::Ready),
+            })
+            .collect()
+    }
+
+    pub fn list_ready_hosts(&self) -> Vec<(String, u16)> {
+        self.hosts
+            .iter()
+            .filter_map(|entry| {
+                if entry.status == RemoteStatus::Ready {
+                    entry
+                        .tunnel
+                        .as_ref()
+                        .map(|tunnel| (entry.key().clone(), tunnel.local_port))
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -106,18 +115,9 @@ impl RemoteManager {
             entry.status = status;
         }
     }
-}
 
-impl RemoteManager {
-    /// Inject a Ready host state pointing at an already-listening local port.
-    /// Only for use in tests — bypasses real SSH and deployment.
     #[allow(dead_code)]
-    pub fn inject_ready_for_testing(
-        &self,
-        host_alias: &str,
-        tunnel_port: u16,
-        remote_group_id: &str,
-    ) {
+    pub fn inject_ready_for_testing(&self, host_alias: &str, tunnel_port: u16) {
         self.hosts.insert(
             host_alias.to_string(),
             RemoteHostState {
@@ -131,33 +131,22 @@ impl RemoteManager {
                 status: RemoteStatus::Ready,
                 client: None,
                 tunnel: Some(Tunnel::new_for_testing(tunnel_port)),
-                remote_group_id: Some(remote_group_id.to_string()),
             },
         );
     }
 
-    /// Immediately mark the host as Unreachable and drop its tunnel/client state.
-    /// Called proactively when any handler detects that the tunnel port is dead,
-    /// so the scanner will trigger a reconnect on its next cycle.
     pub fn clear_dead_tunnel(&self, host_alias: &str) {
         if let Some(mut entry) = self.hosts.get_mut(host_alias) {
             entry.status = RemoteStatus::Unreachable;
             entry.tunnel = None;
             entry.client = None;
-            entry.remote_group_id = None;
         }
     }
 
-    /// Fire-and-forget: ensure a connect+deploy attempt is in flight for `host_alias`.
-    /// No-ops if the host is already Connecting or Ready.
-    /// If the host is not yet in the map, re-parses `~/.ssh/config` to find it.
-    /// Called when a session creation request arrives for a host that is not yet Ready,
-    /// so the client can retry after a few seconds instead of waiting 60 s for the scanner.
     pub fn trigger_connect_if_needed(&self, host_alias: &str) {
-        // If not in map, try to load from ssh config
         if !self.hosts.contains_key(host_alias) {
-            let hosts = crate::ssh_config::parse_ssh_config("~/.ssh/config");
-            if let Some(host) = hosts.into_iter().find(|h| h.host == host_alias) {
+            let hosts = parse_ssh_config("~/.ssh/config");
+            if let Some(host) = hosts.into_iter().find(|host| host.host == host_alias) {
                 self.hosts
                     .entry(host_alias.to_string())
                     .or_insert_with(|| RemoteHostState {
@@ -165,80 +154,54 @@ impl RemoteManager {
                         status: RemoteStatus::Unreachable,
                         client: None,
                         tunnel: None,
-                        remote_group_id: None,
                     });
             } else {
-                return; // unknown host, nothing we can do
+                return;
             }
         }
 
-        // Atomically check status and transition to Connecting in one lock hold,
-        // preventing TOCTOU races with concurrent requests or the 60-s scanner.
         let ssh_host = match self.hosts.get_mut(host_alias) {
             None => return,
             Some(mut entry) => {
                 if matches!(entry.status, RemoteStatus::Connecting | RemoteStatus::Ready) {
-                    return; // already in progress or ready
+                    return;
                 }
                 entry.status = RemoteStatus::Connecting;
                 entry.ssh_host.clone()
             }
         };
 
-        tracing::info!("Triggering on-demand connect to SSH host: {}", host_alias);
-
         let manager = self.clone();
         let alias = host_alias.to_string();
-        // Clone for the panic-recovery watcher spawned below.
         let manager_recovery = manager.clone();
         let alias_recovery = alias.clone();
 
         let handle = tokio::spawn(async move {
-            // Quick TCP reachability check (2 s timeout) before full SSH connect
-            let target = ssh_host.hostname.as_deref().unwrap_or(&ssh_host.host);
-            let port = ssh_host.port.unwrap_or(22);
-            let addr = format!("{}:{}", target, port);
-            let reachable = tokio::time::timeout(
-                Duration::from_secs(2),
-                tokio::net::TcpStream::connect(&addr),
-            )
-            .await
-            .map(|r| r.is_ok())
-            .unwrap_or(false);
-
-            if !reachable {
-                tracing::debug!("On-demand connect: {} unreachable", alias);
+            if !is_host_reachable(&ssh_host).await {
                 manager.set_status(&alias, RemoteStatus::Unreachable);
                 return;
             }
 
-            match connect_and_deploy(&ssh_host).await {
-                Ok((client, tunnel, remote_group_id)) => {
-                    tracing::info!(
-                        "On-demand connect: {} is Ready (tunnel port {})",
-                        alias,
-                        tunnel.local_port
-                    );
+            match connect_remote(&ssh_host, manager.allow_deploy).await {
+                Ok((client, tunnel)) => {
                     let tunnel_port = tunnel.local_port;
-                    let rg = remote_group_id.clone();
                     if let Some(mut entry) = manager.hosts.get_mut(&alias) {
                         entry.status = RemoteStatus::Ready;
                         entry.client = Some(client);
                         entry.tunnel = Some(tunnel);
-                        entry.remote_group_id = Some(remote_group_id);
                     }
-                    let _ = manager.ready_tx.send((alias.to_string(), tunnel_port, rg));
+                    let _ = manager.ready_tx.send((alias, tunnel_port));
                 }
-                Err(e) => {
-                    tracing::warn!("On-demand connect to {} failed: {}", alias, e);
-                    manager.set_status(&alias, RemoteStatus::Failed(e.to_string()));
+                Err(ConnectError::UpgradeRequired) => {
+                    manager.set_status(&alias, RemoteStatus::UpgradeRequired);
+                }
+                Err(ConnectError::Other(error)) => {
+                    tracing::warn!("On-demand connect to {} failed: {}", alias, error);
+                    manager.set_status(&alias, RemoteStatus::Failed(error.to_string()));
                 }
             }
         });
 
-        // If the task panics the host would be stuck in Connecting indefinitely
-        // (scanner and trigger both skip Connecting).  Reset to Unreachable so
-        // the scanner can retry on its next 60-second cycle.
         tokio::spawn(async move {
             if handle.await.is_err() {
                 tracing::warn!(
@@ -251,34 +214,143 @@ impl RemoteManager {
     }
 }
 
-// ── Background scanner ────────────────────────────────────────────────────────
-
 async fn is_port_alive(port: u16) -> bool {
     tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .is_ok()
 }
 
-/// Background task: scan `~/.ssh/config` on startup then every 60 s.
-/// For each reachable host that is not already Ready, connect + deploy + tunnel.
-pub async fn run_scanner(manager: RemoteManager) {
-    scan_and_deploy(&manager).await;
+async fn is_host_reachable(host: &SshHost) -> bool {
+    let target = host.hostname.as_deref().unwrap_or(&host.host);
+    let port = host.port.unwrap_or(22);
+    let addr = format!("{target}:{port}");
+    timeout(Duration::from_secs(2), TcpStream::connect(&addr))
+        .await
+        .map(|result| result.is_ok())
+        .unwrap_or(false)
+}
 
-    let mut interval = tokio::time::interval(Duration::from_secs(60));
-    interval.tick().await; // discard first immediate tick
-    loop {
-        interval.tick().await;
-        scan_and_deploy(&manager).await;
+#[derive(serde::Deserialize)]
+struct RemoteInfoResponse {
+    version: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RemoteProbe {
+    ReadyCurrentVersion,
+    ReadyStaleVersion,
+    Unreachable,
+}
+
+async fn probe_remote_server(tunnel_port: u16) -> RemoteProbe {
+    let Ok(response) = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{tunnel_port}/api/info"))
+        .send()
+        .await
+    else {
+        return RemoteProbe::Unreachable;
+    };
+
+    let Ok(response) = response.error_for_status() else {
+        return RemoteProbe::Unreachable;
+    };
+
+    let Ok(info) = response.json::<RemoteInfoResponse>().await else {
+        return RemoteProbe::Unreachable;
+    };
+
+    if info.version == env!("CARGO_PKG_VERSION") {
+        RemoteProbe::ReadyCurrentVersion
+    } else {
+        RemoteProbe::ReadyStaleVersion
     }
 }
 
-async fn scan_and_deploy(manager: &RemoteManager) {
+async fn connect_remote(
+    host: &SshHost,
+    allow_deploy: bool,
+) -> Result<(SshClient, Tunnel), ConnectError> {
+    let client = SshClient::connect(host).await?;
+
+    if allow_deploy {
+        ensure_deployed(&client).await?;
+        let tunnel = Tunnel::start(&client.host_alias, 7680).await?;
+        return Ok((client, tunnel));
+    }
+
+    let tunnel = Tunnel::start(&client.host_alias, 7680).await?;
+    connect_without_deploy(client, tunnel).await
+}
+
+async fn connect_without_deploy(
+    client: SshClient,
+    tunnel: Tunnel,
+) -> Result<(SshClient, Tunnel), ConnectError> {
+    match validate_existing_remote_tunnel(&client, tunnel.local_port).await {
+        Ok(()) => Ok((client, tunnel)),
+        Err(error) => {
+            tunnel.close().await;
+            Err(error)
+        }
+    }
+}
+
+async fn validate_existing_remote_tunnel(
+    client: &SshClient,
+    tunnel_port: u16,
+) -> Result<(), ConnectError> {
+    match probe_remote_server(tunnel_port).await {
+        RemoteProbe::ReadyCurrentVersion => return Ok(()),
+        RemoteProbe::ReadyStaleVersion => return Err(ConnectError::UpgradeRequired),
+        RemoteProbe::Unreachable => {}
+    }
+
+    if ensure_started_without_restart(&client).await.is_ok() {
+        return match probe_remote_server(tunnel_port).await {
+            RemoteProbe::ReadyCurrentVersion => Ok(()),
+            RemoteProbe::ReadyStaleVersion => Err(ConnectError::UpgradeRequired),
+            RemoteProbe::Unreachable => Err(ConnectError::Other(anyhow::anyhow!(
+                "remote daemon bootstrap finished but the server is still unreachable"
+            ))),
+        };
+    }
+
+    let version = remote_binary_version(&client).await?;
+    if version
+        .as_deref()
+        .map(|value| value.contains(env!("CARGO_PKG_VERSION")))
+        .unwrap_or(false)
+    {
+        return Err(ConnectError::Other(anyhow::anyhow!(
+            "remote daemon is not running and automatic bootstrap failed; use --restart-remote for a forced cleanup"
+        )));
+    }
+
+    match version {
+        Some(_) => Err(ConnectError::UpgradeRequired),
+        None => Err(ConnectError::Other(anyhow::anyhow!(
+            "remote daemon is not installed and automatic bootstrap failed"
+        ))),
+    }
+}
+
+pub async fn run_scanner(manager: RemoteManager) {
+    scan_hosts(&manager).await;
+
+    let mut interval = tokio::time::interval(Duration::from_secs(60));
+    interval.tick().await;
+    loop {
+        interval.tick().await;
+        scan_hosts(&manager).await;
+    }
+}
+
+async fn scan_hosts(manager: &RemoteManager) {
     let hosts = parse_ssh_config("~/.ssh/config");
     if hosts.is_empty() {
         return;
     }
 
-    // Ensure all hosts from config exist in the map
     for host in &hosts {
         manager
             .hosts
@@ -288,75 +360,50 @@ async fn scan_and_deploy(manager: &RemoteManager) {
                 status: RemoteStatus::Unreachable,
                 client: None,
                 tunnel: None,
-                remote_group_id: None,
             });
     }
 
-    // Check reachability and trigger connect for hosts that aren't Ready
     let mut tasks = Vec::new();
     for host in hosts {
         let manager = manager.clone();
-        let host_clone = host.clone();
         tasks.push(tokio::spawn(async move {
-            let alias = &host_clone.host;
+            let alias = host.host.clone();
 
-            // Skip if a connect is already in flight or the host is Ready with a live tunnel
-            if let Some(entry) = manager.hosts.get(alias) {
+            if let Some(entry) = manager.hosts.get(&alias) {
                 if entry.status == RemoteStatus::Connecting {
-                    return; // on-demand trigger already in progress
+                    return;
                 }
                 if entry.status == RemoteStatus::Ready {
-                    if let Some(t) = entry.tunnel.as_ref() {
-                        if is_port_alive(t.local_port).await {
+                    if let Some(tunnel) = entry.tunnel.as_ref() {
+                        if is_port_alive(tunnel.local_port).await {
                             return;
                         }
-                        tracing::info!(
-                            "Tunnel for {} is dead (port {} unreachable), reconnecting...",
-                            alias,
-                            t.local_port
-                        );
                     }
                 }
             }
 
-            // TCP reachability check (same pattern as api/ssh.rs)
-            let target = host_clone.hostname.as_deref().unwrap_or(&host_clone.host);
-            let port = host_clone.port.unwrap_or(22);
-            let addr = format!("{}:{}", target, port);
-            let reachable = timeout(Duration::from_secs(2), TcpStream::connect(&addr))
-                .await
-                .map(|r| r.is_ok())
-                .unwrap_or(false);
-
-            if !reachable {
-                manager.set_status(alias, RemoteStatus::Unreachable);
+            if !is_host_reachable(&host).await {
+                manager.set_status(&alias, RemoteStatus::Unreachable);
                 return;
             }
 
-            manager.set_status(alias, RemoteStatus::Connecting);
-            tracing::info!("Connecting to remote SSH host: {}", alias);
-
-            match connect_and_deploy(&host_clone).await {
-                Ok((client, tunnel, remote_group_id)) => {
-                    tracing::info!(
-                        "Remote host {} is Ready (tunnel port {}, group {})",
-                        alias,
-                        tunnel.local_port,
-                        remote_group_id
-                    );
+            manager.set_status(&alias, RemoteStatus::Connecting);
+            match connect_remote(&host, manager.allow_deploy).await {
+                Ok((client, tunnel)) => {
                     let tunnel_port = tunnel.local_port;
-                    let rg = remote_group_id.clone();
-                    if let Some(mut entry) = manager.hosts.get_mut(alias) {
+                    if let Some(mut entry) = manager.hosts.get_mut(&alias) {
                         entry.status = RemoteStatus::Ready;
                         entry.client = Some(client);
                         entry.tunnel = Some(tunnel);
-                        entry.remote_group_id = Some(remote_group_id);
                     }
-                    let _ = manager.ready_tx.send((alias.to_string(), tunnel_port, rg));
+                    let _ = manager.ready_tx.send((alias, tunnel_port));
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to connect/deploy to {}: {}", alias, e);
-                    manager.set_status(alias, RemoteStatus::Failed(e.to_string()));
+                Err(ConnectError::UpgradeRequired) => {
+                    manager.set_status(&alias, RemoteStatus::UpgradeRequired);
+                }
+                Err(ConnectError::Other(error)) => {
+                    tracing::warn!("Failed to connect to {}: {}", alias, error);
+                    manager.set_status(&alias, RemoteStatus::Failed(error.to_string()));
                 }
             }
         }));
@@ -367,51 +414,19 @@ async fn scan_and_deploy(manager: &RemoteManager) {
     }
 }
 
-async fn connect_and_deploy(host: &SshHost) -> anyhow::Result<(SshClient, Tunnel, String)> {
-    let client = SshClient::connect(host).await?;
-    ensure_deployed(&client).await?;
-    let tunnel = Tunnel::start(&client.host_alias, 7680).await?;
-    let remote_group_id = ensure_remote_default_group(tunnel.local_port).await?;
-    Ok((client, tunnel, remote_group_id))
-}
-
-/// Ensure a "tether-default" group exists on the remote server and return its ID.
-async fn ensure_remote_default_group(tunnel_port: u16) -> anyhow::Result<String> {
-    let base = format!("http://127.0.0.1:{}", tunnel_port);
-    let client = reqwest::Client::new();
-
-    // Check if a group named "tether-default" already exists
-    let groups: Vec<serde_json::Value> = client
-        .get(format!("{}/api/groups", base))
-        .send()
-        .await?
-        .json()
-        .await?;
-
-    if let Some(g) = groups.iter().find(|g| g["name"] == "tether-default") {
-        if let Some(id) = g["id"].as_str() {
-            return Ok(id.to_string());
-        }
-    }
-
-    // Create it
-    let created: serde_json::Value = client
-        .post(format!("{}/api/groups", base))
-        .json(&serde_json::json!({"name": "tether-default"}))
-        .send()
-        .await?
-        .json()
-        .await?;
-
-    created["id"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow::anyhow!("Remote group creation returned no id"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{routing::get, Json, Router};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[derive(serde::Serialize)]
+    struct MockInfo {
+        name: String,
+        version: String,
+        sessions_count: usize,
+    }
 
     fn make_host(alias: &str) -> SshHost {
         SshHost {
@@ -425,158 +440,123 @@ mod tests {
 
     #[test]
     fn new_manager_is_empty() {
-        let mgr = RemoteManager::new();
-        assert!(mgr.list_statuses().is_empty());
+        let manager = RemoteManager::new();
+        assert!(manager.list_statuses().is_empty());
     }
 
     #[test]
     fn get_tunnel_port_unknown_host_returns_none() {
-        let mgr = RemoteManager::new();
-        assert!(mgr.get_tunnel_port("nope").is_none());
+        let manager = RemoteManager::new();
+        assert!(manager.get_tunnel_port("nope").is_none());
     }
 
-    #[test]
-    fn get_tunnel_port_non_ready_host_returns_none() {
-        let mgr = RemoteManager::new();
-        mgr.hosts.insert(
-            "myhost".to_string(),
+    #[tokio::test]
+    async fn list_ready_hosts_only_returns_ready_entries() {
+        let manager = RemoteManager::new();
+        manager.hosts.insert(
+            "a".to_string(),
             RemoteHostState {
-                ssh_host: make_host("myhost"),
-                status: RemoteStatus::Connecting,
-                client: None,
-                tunnel: None,
-                remote_group_id: None,
-            },
-        );
-        assert!(mgr.get_tunnel_port("myhost").is_none());
-    }
-
-    #[test]
-    fn get_tunnel_port_ready_without_tunnel_returns_none() {
-        // Ready status but no tunnel object (shouldn't happen in practice, but defensive)
-        let mgr = RemoteManager::new();
-        mgr.hosts.insert(
-            "myhost".to_string(),
-            RemoteHostState {
-                ssh_host: make_host("myhost"),
+                ssh_host: make_host("a"),
                 status: RemoteStatus::Ready,
                 client: None,
-                tunnel: None,
-                remote_group_id: None,
+                tunnel: Some(Tunnel::new_for_testing(5555)),
             },
         );
-        assert!(mgr.get_tunnel_port("myhost").is_none());
-    }
-
-    #[test]
-    fn set_status_updates_existing_entry() {
-        let mgr = RemoteManager::new();
-        mgr.hosts.insert(
-            "h".to_string(),
+        manager.hosts.insert(
+            "b".to_string(),
             RemoteHostState {
-                ssh_host: make_host("h"),
-                status: RemoteStatus::Unreachable,
+                ssh_host: make_host("b"),
+                status: RemoteStatus::Failed("boom".to_string()),
                 client: None,
                 tunnel: None,
-                remote_group_id: None,
             },
         );
-        mgr.set_status("h", RemoteStatus::Deploying);
-        let statuses = mgr.list_statuses();
-        assert_eq!(statuses.len(), 1);
-        assert!(matches!(statuses[0].status, RemoteStatus::Deploying));
+        assert_eq!(manager.list_ready_hosts(), vec![("a".to_string(), 5555)]);
+    }
+
+    #[tokio::test]
+    async fn inject_ready_for_testing_exposes_port() {
+        let manager = RemoteManager::new();
+        manager.inject_ready_for_testing("myhost", 6000);
+        assert_eq!(manager.get_tunnel_port("myhost"), Some(6000));
+    }
+
+    #[tokio::test]
+    async fn clear_dead_tunnel_resets_ready_host() {
+        let manager = RemoteManager::new();
+        manager.inject_ready_for_testing("ready", 7000);
+        manager.clear_dead_tunnel("ready");
+        let statuses = manager.list_statuses();
+        assert!(matches!(statuses[0].status, RemoteStatus::Unreachable));
+        assert!(statuses[0].tunnel_port.is_none());
     }
 
     #[test]
-    fn set_status_noop_for_unknown_host() {
-        let mgr = RemoteManager::new();
-        // Should not panic
-        mgr.set_status("ghost", RemoteStatus::Ready);
-        assert!(mgr.list_statuses().is_empty());
+    fn new_with_deploy_sets_flag() {
+        let manager = RemoteManager::new_with_deploy(true);
+        assert!(manager.allow_deploy);
     }
 
-    #[test]
-    fn list_statuses_reflects_all_hosts() {
-        let mgr = RemoteManager::new();
-        for alias in &["a", "b", "c"] {
-            mgr.hosts.insert(
-                alias.to_string(),
-                RemoteHostState {
-                    ssh_host: make_host(alias),
-                    status: RemoteStatus::Unreachable,
-                    client: None,
-                    tunnel: None,
-                    remote_group_id: None,
-                },
-            );
+    async fn start_info_server(version: &str) -> u16 {
+        async fn info_handler(
+            axum::extract::State(version): axum::extract::State<String>,
+        ) -> Json<MockInfo> {
+            Json(MockInfo {
+                name: "tether".to_string(),
+                version,
+                sessions_count: 0,
+            })
         }
-        assert_eq!(mgr.list_statuses().len(), 3);
-    }
 
-    #[test]
-    fn failed_status_carries_message() {
-        let mgr = RemoteManager::new();
-        mgr.hosts.insert(
-            "bad".to_string(),
-            RemoteHostState {
-                ssh_host: make_host("bad"),
-                status: RemoteStatus::Failed("connection refused".to_string()),
-                client: None,
-                tunnel: None,
-                remote_group_id: None,
-            },
-        );
-        let s = mgr.list_statuses();
-        assert!(matches!(&s[0].status, RemoteStatus::Failed(msg) if msg == "connection refused"));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new()
+            .route("/api/info", get(info_handler))
+            .with_state(version.to_string());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        port
     }
 
     #[tokio::test]
-    async fn clear_dead_tunnel_marks_host_unreachable_and_clears_tunnel() {
-        let mgr = RemoteManager::new();
-        // Start a real listener so new_for_testing can reference a valid port
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener); // port is now dead
+    async fn probe_remote_server_rejects_stale_versions() {
+        let current_port = start_info_server(env!("CARGO_PKG_VERSION")).await;
+        let stale_port = start_info_server("0.0.1").await;
 
-        mgr.inject_ready_for_testing("myhost", port, "grp-1");
-        // Still reads as Ready + returns the port
-        assert_eq!(mgr.get_tunnel_port("myhost"), Some(port));
-
-        mgr.clear_dead_tunnel("myhost");
-
-        // After clearing: get_tunnel_port returns None (host is no longer Ready)
         assert_eq!(
-            mgr.get_tunnel_port("myhost"),
-            None,
-            "port should be unreachable after clear"
+            probe_remote_server(current_port).await,
+            RemoteProbe::ReadyCurrentVersion
         );
-        let statuses = mgr.list_statuses();
-        assert!(
-            matches!(statuses[0].status, RemoteStatus::Unreachable),
-            "status should be Unreachable"
+        assert_eq!(
+            probe_remote_server(stale_port).await,
+            RemoteProbe::ReadyStaleVersion
         );
-
-        // Simulating scanner reconnect: inject a new live tunnel
-        let new_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let new_port = new_listener.local_addr().unwrap().port();
-        mgr.inject_ready_for_testing("myhost", new_port, "grp-2");
-        assert_eq!(mgr.get_tunnel_port("myhost"), Some(new_port));
-        drop(new_listener);
     }
 
     #[tokio::test]
-    async fn is_port_alive_returns_true_for_bound_port() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        assert!(is_port_alive(port).await);
-        drop(listener);
-    }
+    async fn stale_remote_attempts_close_tunnel_every_time() {
+        let stale_port = start_info_server("0.0.1").await;
+        let close_counter = Arc::new(AtomicUsize::new(0));
 
-    #[tokio::test]
-    async fn is_port_alive_returns_false_for_closed_port() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        assert!(!is_port_alive(port).await);
+        let first = connect_without_deploy(
+            SshClient {
+                host_alias: "stale".to_string(),
+            },
+            Tunnel::new_for_testing_with_close_counter(stale_port, close_counter.clone()),
+        )
+        .await;
+        let second = connect_without_deploy(
+            SshClient {
+                host_alias: "stale".to_string(),
+            },
+            Tunnel::new_for_testing_with_close_counter(stale_port, close_counter.clone()),
+        )
+        .await;
+
+        assert!(matches!(first, Err(ConnectError::UpgradeRequired)));
+        assert!(matches!(second, Err(ConnectError::UpgradeRequired)));
+        assert_eq!(close_counter.load(Ordering::SeqCst), 2);
     }
 }

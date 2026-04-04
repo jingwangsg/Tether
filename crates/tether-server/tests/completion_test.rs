@@ -501,8 +501,19 @@ async fn local_completion_bare_tilde_equals_tilde_slash() {
     let body2 = resp2.into_body().collect().await.unwrap().to_bytes();
     let results_slash: Vec<String> = serde_json::from_slice(&body2).unwrap();
 
+    // Neighboring tests create `~/tether_*` directories under $HOME. Those may
+    // appear between the two requests above, so ignore them when comparing the
+    // normalization behavior of `~` vs `~/`.
+    let stable = |results: Vec<String>| {
+        results
+            .into_iter()
+            .filter(|entry| !entry.starts_with("~/tether_"))
+            .collect::<Vec<_>>()
+    };
+
     assert_eq!(
-        results_bare, results_slash,
+        stable(results_bare),
+        stable(results_slash),
         "bare ~ and ~/ should return identical completions"
     );
 

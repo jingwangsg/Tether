@@ -65,6 +65,7 @@ class ServerState {
 }
 
 class ServerNotifier extends StateNotifier<ServerState> {
+  static const _refreshInterval = Duration(seconds: 5);
   Timer? _refreshTimer;
 
   ServerNotifier() : super(const ServerState()) {
@@ -87,10 +88,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
   }
 
   Future<void> connect(ServerConfig config) async {
-    final api = ApiService(
-      baseUrl: config.baseUrl,
-      authToken: config.token,
-    );
+    final api = ApiService(baseUrl: config.baseUrl, authToken: config.token);
 
     try {
       await api.getInfo();
@@ -103,10 +101,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
       await refresh();
 
       _refreshTimer?.cancel();
-      _refreshTimer = Timer.periodic(
-        const Duration(seconds: 10),
-        (_) => refresh(),
-      );
+      _refreshTimer = Timer.periodic(_refreshInterval, (_) => refresh());
     } catch (e) {
       state = state.copyWith(
         config: config,
@@ -132,21 +127,23 @@ class ServerNotifier extends StateNotifier<ServerState> {
       // Preserve whatever the WebSocket last pushed so the HTTP refresh doesn't
       // wipe the foreground and leave the icon stuck as terminal during idle.
       final currentSessions = state.sessions;
-      final refreshed = (results[1] as List<Session>).map((s) {
-        final current = currentSessions.where((c) => c.id == s.id).firstOrNull;
-        if (s.foregroundProcess != null) {
-          // Server gave us foreground_process but not tool_state — preserve in-memory toolState.
-          if (current?.toolState != null) {
-            return s.copyWith(toolState: current!.toolState);
-          }
-          return s;
-        }
-        if (current?.foregroundProcess == null) return s;
-        return s.copyWith(
-          foregroundProcess: current!.foregroundProcess,
-          toolState: current.toolState,
-        );
-      }).toList();
+      final refreshed =
+          (results[1] as List<Session>).map((s) {
+            final current =
+                currentSessions.where((c) => c.id == s.id).firstOrNull;
+            if (s.foregroundProcess != null) {
+              // Server gave us foreground_process but not tool_state — preserve in-memory toolState.
+              if (current?.toolState != null) {
+                return s.copyWith(toolState: current!.toolState);
+              }
+              return s;
+            }
+            if (current?.foregroundProcess == null) return s;
+            return s.copyWith(
+              foregroundProcess: current!.foregroundProcess,
+              toolState: current.toolState,
+            );
+          }).toList();
 
       state = state.copyWith(
         groups: results[0] as List<Group>,
@@ -158,7 +155,12 @@ class ServerNotifier extends StateNotifier<ServerState> {
     }
   }
 
-  Future<Group> createGroup({required String name, String? parentId, String? defaultCwd, String? sshHost}) async {
+  Future<Group> createGroup({
+    required String name,
+    String? parentId,
+    String? defaultCwd,
+    String? sshHost,
+  }) async {
     final group = await state.api!.createGroup(
       name: name,
       parentId: parentId,
@@ -169,8 +171,18 @@ class ServerNotifier extends StateNotifier<ServerState> {
     return group;
   }
 
-  Future<void> updateGroup(String id, {String? name, int? sortOrder, String? defaultCwd, String? sshHost}) async {
-    await state.api!.updateGroup(id, name: name, sortOrder: sortOrder, defaultCwd: defaultCwd, sshHost: sshHost);
+  Future<void> updateGroup(
+    String id, {
+    String? name,
+    int? sortOrder,
+    String? defaultCwd,
+  }) async {
+    await state.api!.updateGroup(
+      id,
+      name: name,
+      sortOrder: sortOrder,
+      defaultCwd: defaultCwd,
+    );
     await refresh();
   }
 
@@ -196,8 +208,18 @@ class ServerNotifier extends StateNotifier<ServerState> {
     return session;
   }
 
-  Future<void> updateSession(String id, {String? name, int? sortOrder, String? groupId}) async {
-    await state.api!.updateSession(id, name: name, sortOrder: sortOrder, groupId: groupId);
+  Future<void> updateSession(
+    String id, {
+    String? name,
+    int? sortOrder,
+    String? groupId,
+  }) async {
+    await state.api!.updateSession(
+      id,
+      name: name,
+      sortOrder: sortOrder,
+      groupId: groupId,
+    );
     await refresh();
   }
 
@@ -216,17 +238,22 @@ class ServerNotifier extends StateNotifier<ServerState> {
     await refresh();
   }
 
-  void updateForegroundProcess(String sessionId, String? process, {String? toolState}) {
-    final sessions = state.sessions.map((s) {
-      if (s.id == sessionId) {
-        return s.copyWith(
-          foregroundProcess: process,
-          toolState: toolState,
-          clearForeground: process == null,
-        );
-      }
-      return s;
-    }).toList();
+  void updateForegroundProcess(
+    String sessionId,
+    String? process, {
+    String? toolState,
+  }) {
+    final sessions =
+        state.sessions.map((s) {
+          if (s.id == sessionId) {
+            return s.copyWith(
+              foregroundProcess: process,
+              toolState: toolState,
+              clearForeground: process == null,
+            );
+          }
+          return s;
+        }).toList();
     state = state.copyWith(sessions: sessions);
   }
 
@@ -244,6 +271,8 @@ class ServerNotifier extends StateNotifier<ServerState> {
   }
 }
 
-final serverProvider = StateNotifierProvider<ServerNotifier, ServerState>((ref) {
+final serverProvider = StateNotifierProvider<ServerNotifier, ServerState>((
+  ref,
+) {
   return ServerNotifier();
 });

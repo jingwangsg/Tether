@@ -23,7 +23,7 @@ use futures::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex};
 use tokio_tungstenite::tungstenite::Message as TungMessage;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -181,18 +181,26 @@ async fn start_mock_remote() -> (u16, oneshot::Sender<()>) {
 /// Handles POST /api/sessions and returns a fake 201 SessionRow response.
 /// Used by tests that exercise `create_remote_session` (not the WS proxy).
 async fn start_mock_remote_http(remote_group_id: String) -> u16 {
+    start_mock_remote_http_with_capture(remote_group_id).await.0
+}
+
+async fn start_mock_remote_http_with_capture(
+    remote_group_id: String,
+) -> (u16, Arc<Mutex<Vec<serde_json::Value>>>) {
     use axum::extract::{Json, State};
     use axum::http::StatusCode;
 
     #[derive(Clone)]
     struct MockState {
         group_id: String,
+        captured_requests: Arc<Mutex<Vec<serde_json::Value>>>,
     }
 
     async fn handle_create_session(
         State(s): State<MockState>,
         Json(body): Json<serde_json::Value>,
     ) -> (StatusCode, axum::Json<serde_json::Value>) {
+        s.captured_requests.lock().await.push(body.clone());
         let id = body["id"]
             .as_str()
             .map(|s| s.to_string())
@@ -219,12 +227,45 @@ async fn start_mock_remote_http(remote_group_id: String) -> u16 {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
+    let captured_requests = Arc::new(Mutex::new(Vec::new()));
 
     let app = Router::new()
         .route("/api/sessions", post(handle_create_session))
         .with_state(MockState {
             group_id: remote_group_id,
+            captured_requests: captured_requests.clone(),
         });
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    (port, captured_requests)
+}
+
+async fn start_mock_remote_session_mutation_server() -> u16 {
+    use axum::http::StatusCode;
+
+    async fn fail_sync_groups() -> StatusCode {
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
+
+    async fn patch_session() -> StatusCode {
+        StatusCode::OK
+    }
+
+    async fn reorder_sessions() -> StatusCode {
+        StatusCode::OK
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let app = Router::new()
+        .route("/api/groups", get(fail_sync_groups))
+        .route("/api/sessions/{id}", patch(patch_session))
+        .route("/api/sessions/reorder", post(reorder_sessions));
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.ok();
@@ -269,7 +310,7 @@ async fn ws_proxy_disconnects_when_remote_dies() {
     state
         .inner
         .remote_manager
-        .inject_ready_for_testing("testhost", mock_port, &group.id);
+        .inject_ready_for_testing("testhost", mock_port);
 
     // Connect a WS client through the local proxy
     let url = format!("ws://127.0.0.1:{}/ws/session/{}", local_port, session_id);
@@ -337,7 +378,7 @@ async fn ws_proxy_fails_fast_when_tunnel_port_dead() {
     state
         .inner
         .remote_manager
-        .inject_ready_for_testing("testhost", dead_port, &group.id);
+        .inject_ready_for_testing("testhost", dead_port);
 
     // ws_handler now returns HTTP 503 before upgrading when tunnel is dead,
     // so connect_async gets an HTTP error response rather than a 101+close.
@@ -381,7 +422,7 @@ async fn ws_proxy_recovers_after_ssh_reconnect() {
     state
         .inner
         .remote_manager
-        .inject_ready_for_testing("testhost", mock_port, &group.id);
+        .inject_ready_for_testing("testhost", mock_port);
 
     // ── Confirm initial connection works ─────────────────────────────────────
     let url = format!("ws://127.0.0.1:{}/ws/session/{}", local_port, session_id);
@@ -405,7 +446,7 @@ async fn ws_proxy_recovers_after_ssh_reconnect() {
     state
         .inner
         .remote_manager
-        .inject_ready_for_testing("testhost", new_mock_port, &group.id);
+        .inject_ready_for_testing("testhost", new_mock_port);
 
     // ── Confirm new WS connection reaches the new remote ─────────────────────
     let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -461,7 +502,7 @@ async fn ws_returns_503_before_upgrade_when_tunnel_dead() {
     state
         .inner
         .remote_manager
-        .inject_ready_for_testing("testhost", dead_port, &group.id);
+        .inject_ready_for_testing("testhost", dead_port);
 
     let local_port = start_local_server(state.clone()).await;
     let url = format!("ws://127.0.0.1:{}/ws/session/{}", local_port, session_id);
@@ -511,7 +552,7 @@ async fn session_post_returns_503_when_tunnel_dead_then_201_after_recovery() {
     state
         .inner
         .remote_manager
-        .inject_ready_for_testing("testhost", dead_port, &group.id);
+        .inject_ready_for_testing("testhost", dead_port);
 
     let app = full_test_router(state.clone());
 
@@ -557,7 +598,7 @@ async fn session_post_returns_503_when_tunnel_dead_then_201_after_recovery() {
     state
         .inner
         .remote_manager
-        .inject_ready_for_testing("testhost", mock_http_port, &group.id);
+        .inject_ready_for_testing("testhost", mock_http_port);
 
     let resp2 = app
         .clone()
@@ -587,6 +628,175 @@ async fn session_post_returns_503_when_tunnel_dead_then_201_after_recovery() {
     let bytes = resp2.into_body().collect().await.unwrap().to_bytes();
     let session: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(session["name"], "recovered-session");
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn remote_session_create_preserves_manual_nested_ssh_command() {
+    let state = test_state();
+    let app = full_test_router(state.clone());
+
+    let group = state
+        .inner
+        .db
+        .create_group("remote-group", "~", None, Some("testhost"))
+        .unwrap();
+    let (mock_http_port, captured_requests) =
+        start_mock_remote_http_with_capture(group.id.clone()).await;
+    state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("testhost", mock_http_port);
+
+    let resp = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/sessions")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({
+                        "group_id": group.id,
+                        "name": "nested-ssh",
+                        "command": "ssh otherbox"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+    let captured = captured_requests.lock().await;
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0]["command"], "ssh otherbox");
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn remote_session_mutations_succeed_when_followup_sync_fails() {
+    let state = test_state();
+    let app = full_test_router(state.clone());
+
+    let first_group = state
+        .inner
+        .db
+        .create_group("remote-group-a", "~", None, Some("testhost"))
+        .unwrap();
+    let second_group = state
+        .inner
+        .db
+        .create_group("remote-group-b", "~", None, Some("testhost"))
+        .unwrap();
+    state
+        .inner
+        .db
+        .create_session(
+            "11111111-1111-1111-1111-111111111111",
+            &first_group.id,
+            "alpha",
+            "/bin/bash",
+            "~",
+            None,
+        )
+        .unwrap();
+    state
+        .inner
+        .db
+        .create_session(
+            "22222222-2222-2222-2222-222222222222",
+            &first_group.id,
+            "beta",
+            "/bin/bash",
+            "~",
+            None,
+        )
+        .unwrap();
+
+    let port = start_mock_remote_session_mutation_server().await;
+    state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("testhost", port);
+
+    let update_resp = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("PATCH")
+                .uri("/api/sessions/11111111-1111-1111-1111-111111111111")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({
+                        "name": "alpha-renamed",
+                        "sort_order": 7,
+                        "group_id": second_group.id.clone()
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update_resp.status(), axum::http::StatusCode::OK);
+    let updated = state
+        .inner
+        .db
+        .get_session("11111111-1111-1111-1111-111111111111")
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.name, "alpha-renamed");
+    assert_eq!(updated.sort_order, 7);
+    assert_eq!(updated.group_id, second_group.id);
+
+    let reorder_resp = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/sessions/reorder")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!([
+                        {
+                            "id": "22222222-2222-2222-2222-222222222222",
+                            "sort_order": 0,
+                            "group_id": second_group.id.clone()
+                        },
+                        {
+                            "id": "11111111-1111-1111-1111-111111111111",
+                            "sort_order": 1,
+                            "group_id": second_group.id.clone()
+                        }
+                    ])
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reorder_resp.status(), axum::http::StatusCode::OK);
+
+    let reordered_alpha = state
+        .inner
+        .db
+        .get_session("11111111-1111-1111-1111-111111111111")
+        .unwrap()
+        .unwrap();
+    let reordered_beta = state
+        .inner
+        .db
+        .get_session("22222222-2222-2222-2222-222222222222")
+        .unwrap()
+        .unwrap();
+    assert_eq!(reordered_alpha.sort_order, 1);
+    assert_eq!(reordered_beta.sort_order, 0);
+    assert_eq!(reordered_alpha.group_id, second_group.id);
+    assert_eq!(reordered_beta.group_id, second_group.id);
 
     cleanup(&state);
 }

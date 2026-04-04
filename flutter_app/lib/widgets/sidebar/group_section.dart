@@ -37,17 +37,56 @@ class GroupSection extends ConsumerStatefulWidget {
 class _GroupSectionState extends ConsumerState<GroupSection> {
   bool _expanded = true;
 
+  String? _normalizedHost(String? host) {
+    if (host == null || host.isEmpty) {
+      return null;
+    }
+    return host;
+  }
+
+  Group? _findGroup(String groupId) {
+    for (final group in widget.allGroups) {
+      if (group.id == groupId) {
+        return group;
+      }
+    }
+    return null;
+  }
+
+  bool _sameGroupScope(Group first, Group second) {
+    return _normalizedHost(first.sshHost) == _normalizedHost(second.sshHost);
+  }
+
+  bool _canMoveSessionToGroup(Session session, Group targetGroup) {
+    final sourceGroup = _findGroup(session.groupId);
+    if (sourceGroup == null) {
+      return false;
+    }
+    return _sameGroupScope(sourceGroup, targetGroup);
+  }
+
+  bool _canMoveSessionBefore(Session dragged, Session target) {
+    if (dragged.id == target.id) {
+      return false;
+    }
+
+    final targetGroup = _findGroup(target.groupId);
+    if (targetGroup == null) {
+      return false;
+    }
+
+    return _canMoveSessionToGroup(dragged, targetGroup);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final childGroups = widget.allGroups
-        .where((g) => g.parentId == widget.group.id)
-        .toList()
-      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    final childGroups =
+        widget.allGroups.where((g) => g.parentId == widget.group.id).toList()
+          ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
 
-    final sessions = widget.allSessions
-        .where((s) => s.groupId == widget.group.id)
-        .toList()
-      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    final sessions =
+        widget.allSessions.where((s) => s.groupId == widget.group.id).toList()
+          ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -56,80 +95,93 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
         if (_expanded) ...[
           for (final childGroup in childGroups)
             DragTarget<Group>(
-              onWillAcceptWithDetails: (details) =>
-                  details.data.id != childGroup.id &&
-                  details.data.parentId == childGroup.parentId,
-              onAcceptWithDetails: (details) =>
-                  _handleChildGroupDrop(details.data, childGroup, childGroups),
+              onWillAcceptWithDetails:
+                  (details) =>
+                      details.data.id != childGroup.id &&
+                      details.data.parentId == childGroup.parentId &&
+                      _sameGroupScope(details.data, childGroup),
+              onAcceptWithDetails:
+                  (details) => _handleChildGroupDrop(
+                    details.data,
+                    childGroup,
+                    childGroups,
+                  ),
               builder: (context, candidateData, rejectedData) {
                 final isDropTarget = candidateData.isNotEmpty;
                 return Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (isDropTarget) Container(height: 2, color: Colors.blue),
-                    Builder(builder: (context) {
-                      final feedback = Material(
-                        elevation: 4,
-                        color: const Color(0xFF2A2A2A),
-                        borderRadius: BorderRadius.circular(4),
-                        child: SizedBox(
-                          width: 220,
-                          child: Padding(
-                            padding: const EdgeInsets.all(8),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(Icons.folder, size: 16, color: Colors.white54),
-                                const SizedBox(width: 6),
-                                Flexible(
-                                  child: Text(
-                                    childGroup.name,
-                                    style: const TextStyle(color: Colors.white70, fontSize: 12),
-                                    overflow: TextOverflow.ellipsis,
+                    Builder(
+                      builder: (context) {
+                        final feedback = Material(
+                          elevation: 4,
+                          color: const Color(0xFF2A2A2A),
+                          borderRadius: BorderRadius.circular(4),
+                          child: SizedBox(
+                            width: 220,
+                            child: Padding(
+                              padding: const EdgeInsets.all(8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(
+                                    Icons.folder,
+                                    size: 16,
+                                    color: Colors.white54,
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(width: 6),
+                                  Flexible(
+                                    child: Text(
+                                      childGroup.name,
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 12,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
-                        ),
-                      );
-                      final childWhenDragging = Opacity(
-                        opacity: 0.3,
-                        child: GroupSection(
+                        );
+                        final childWhenDragging = Opacity(
+                          opacity: 0.3,
+                          child: GroupSection(
+                            group: childGroup,
+                            allGroups: widget.allGroups,
+                            allSessions: widget.allSessions,
+                            depth: widget.depth + 1,
+                          ),
+                        );
+                        final child = GroupSection(
                           group: childGroup,
                           allGroups: widget.allGroups,
                           allSessions: widget.allSessions,
                           depth: widget.depth + 1,
-                        ),
-                      );
-                      final child = GroupSection(
-                        group: childGroup,
-                        allGroups: widget.allGroups,
-                        allSessions: widget.allSessions,
-                        depth: widget.depth + 1,
-                      );
-                      return _isDesktop
-                          ? Draggable<Group>(
+                        );
+                        return _isDesktop
+                            ? Draggable<Group>(
                               data: childGroup,
                               feedback: feedback,
                               childWhenDragging: childWhenDragging,
                               child: child,
                             )
-                          : LongPressDraggable<Group>(
+                            : LongPressDraggable<Group>(
                               data: childGroup,
                               feedback: feedback,
                               childWhenDragging: childWhenDragging,
                               child: child,
                             );
-                    }),
+                      },
+                    ),
                   ],
                 );
               },
             ),
-          if (childGroups.isNotEmpty)
-            _buildChildGroupEndDropZone(childGroups),
-          for (final session in sessions)
-            _buildSessionTile(session),
+          if (childGroups.isNotEmpty) _buildChildGroupEndDropZone(childGroups),
+          for (final session in sessions) _buildSessionTile(session),
           _buildEndDropZone(),
         ],
       ],
@@ -138,23 +190,28 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
 
   Widget _buildGroupHeader(List<Session> sessions) {
     return DragTarget<Session>(
-      onWillAcceptWithDetails: (_) => true,
+      onWillAcceptWithDetails:
+          (details) => _canMoveSessionToGroup(details.data, widget.group),
       onAcceptWithDetails: (details) {
         _handleSessionDropOnGroup(details.data);
       },
       builder: (context, candidateData, rejectedData) {
         final isDropTarget = candidateData.isNotEmpty;
         return GestureDetector(
-          onSecondaryTapDown: (details) => _showGroupContextMenu(details.globalPosition),
+          onSecondaryTapDown:
+              (details) => _showGroupContextMenu(details.globalPosition),
           child: InkWell(
             onTap: () => setState(() => _expanded = !_expanded),
             child: Container(
-              decoration: isDropTarget
-                  ? BoxDecoration(
-                      color: Colors.blue.withValues(alpha: 0.1),
-                      border: Border.all(color: Colors.blue.withValues(alpha: 0.4)),
-                    )
-                  : null,
+              decoration:
+                  isDropTarget
+                      ? BoxDecoration(
+                        color: Colors.blue.withValues(alpha: 0.1),
+                        border: Border.all(
+                          color: Colors.blue.withValues(alpha: 0.4),
+                        ),
+                      )
+                      : null,
               padding: EdgeInsets.only(
                 left: 8.0 + widget.depth * 16.0,
                 right: 8,
@@ -186,10 +243,14 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  if (widget.group.sshHost != null && widget.group.sshHost!.isNotEmpty) ...[
+                  if (widget.group.sshHost != null &&
+                      widget.group.sshHost!.isNotEmpty) ...[
                     const SizedBox(width: 4),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 5,
+                        vertical: 1,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.blue.withValues(alpha: 0.18),
                         borderRadius: BorderRadius.circular(4),
@@ -245,15 +306,22 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
         padding: EdgeInsets.zero,
         tooltip: 'Group Options',
         iconSize: 14,
-        itemBuilder: (_) => [
-          const PopupMenuItem(value: 'edit', child: Text('Edit Group')),
-          const PopupMenuItem(value: 'rename', child: Text('Rename Group')),
-          const PopupMenuItem(value: 'new_session', child: Text('New Session')),
-          const PopupMenuItem(
-            value: 'delete',
-            child: Text('Delete Group', style: TextStyle(color: Colors.red)),
-          ),
-        ],
+        itemBuilder:
+            (_) => [
+              const PopupMenuItem(value: 'edit', child: Text('Edit Group')),
+              const PopupMenuItem(value: 'rename', child: Text('Rename Group')),
+              const PopupMenuItem(
+                value: 'new_session',
+                child: Text('New Session'),
+              ),
+              const PopupMenuItem(
+                value: 'delete',
+                child: Text(
+                  'Delete Group',
+                  style: TextStyle(color: Colors.red),
+                ),
+              ),
+            ],
         onSelected: (value) {
           switch (value) {
             case 'edit':
@@ -279,7 +347,8 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
     final display = getDisplayInfo(session, widget.allSessions);
 
     final tile = GestureDetector(
-      onSecondaryTapDown: (details) => _showSessionContextMenu(session, details.globalPosition),
+      onSecondaryTapDown:
+          (details) => _showSessionContextMenu(session, details.globalPosition),
       child: InkWell(
         onTap: () {
           ref.read(sessionProvider.notifier).openTab(session.id);
@@ -359,7 +428,8 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
     );
 
     return DragTarget<Session>(
-      onWillAcceptWithDetails: (details) => details.data.id != session.id,
+      onWillAcceptWithDetails:
+          (details) => _canMoveSessionBefore(details.data, session),
       onAcceptWithDetails: (details) {
         _handleSessionDrop(details.data, session);
       },
@@ -368,50 +438,65 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (isDropTarget)
-              Container(height: 2, color: Colors.blue),
-            Builder(builder: (context) {
-              final feedback = Material(
-                elevation: 4,
-                color: const Color(0xFF2D2D2D),
-                borderRadius: BorderRadius.circular(4),
-                child: SizedBox(
-                  width: 220,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        display.iconAsset != null
-                            ? Image.asset(display.iconAsset!, width: 14, height: 14)
-                            : Icon(display.icon, size: 14, color: display.iconColor),
-                        const SizedBox(width: 6),
-                        Flexible(
-                          child: Text(
-                            display.displayName,
-                            style: const TextStyle(color: Colors.white70, fontSize: 13),
-                            overflow: TextOverflow.ellipsis,
+            if (isDropTarget) Container(height: 2, color: Colors.blue),
+            Builder(
+              builder: (context) {
+                final feedback = Material(
+                  elevation: 4,
+                  color: const Color(0xFF2D2D2D),
+                  borderRadius: BorderRadius.circular(4),
+                  child: SizedBox(
+                    width: 220,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          display.iconAsset != null
+                              ? Image.asset(
+                                display.iconAsset!,
+                                width: 14,
+                                height: 14,
+                              )
+                              : Icon(
+                                display.icon,
+                                size: 14,
+                                color: display.iconColor,
+                              ),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              display.displayName,
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                ),
-              );
-              return _isDesktop
-                  ? Draggable<Session>(
+                );
+                return _isDesktop
+                    ? Draggable<Session>(
                       data: session,
                       feedback: feedback,
                       childWhenDragging: Opacity(opacity: 0.3, child: tile),
                       child: tile,
                     )
-                  : LongPressDraggable<Session>(
+                    : LongPressDraggable<Session>(
                       data: session,
                       feedback: feedback,
                       childWhenDragging: Opacity(opacity: 0.3, child: tile),
                       child: tile,
                     );
-            }),
+              },
+            ),
           ],
         );
       },
@@ -428,19 +513,29 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
         padding: EdgeInsets.zero,
         tooltip: 'Session Options',
         iconSize: 14,
-        itemBuilder: (_) => [
-          const PopupMenuItem(value: 'rename', child: Row(
-            children: [
-              Text('Rename Session'),
-              Spacer(),
-              Text('⌘R', style: TextStyle(fontSize: 12, color: Colors.white38)),
+        itemBuilder:
+            (_) => [
+              const PopupMenuItem(
+                value: 'rename',
+                child: Row(
+                  children: [
+                    Text('Rename Session'),
+                    Spacer(),
+                    Text(
+                      '⌘R',
+                      style: TextStyle(fontSize: 12, color: Colors.white38),
+                    ),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'delete',
+                child: Text(
+                  'Delete Session',
+                  style: TextStyle(color: Colors.red),
+                ),
+              ),
             ],
-          )),
-          const PopupMenuItem(
-            value: 'delete',
-            child: Text('Delete Session', style: TextStyle(color: Colors.red)),
-          ),
-        ],
         onSelected: (value) {
           switch (value) {
             case 'rename':
@@ -456,9 +551,11 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
 
   Widget _buildChildGroupEndDropZone(List<Group> childGroups) {
     return DragTarget<Group>(
-      onWillAcceptWithDetails: (details) =>
-          details.data.parentId == widget.group.id &&
-          details.data.id != childGroups.last.id,
+      onWillAcceptWithDetails:
+          (details) =>
+              details.data.parentId == widget.group.id &&
+              details.data.id != childGroups.last.id &&
+              _sameGroupScope(details.data, widget.group),
       onAcceptWithDetails: (details) {
         final groups = List<Group>.from(childGroups);
         groups.removeWhere((g) => g.id == details.data.id);
@@ -473,10 +570,14 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
         final isDropTarget = candidateData.isNotEmpty;
         return Container(
           height: isDropTarget ? 24 : 4,
-          color: isDropTarget ? Colors.blue.withValues(alpha: 0.15) : Colors.transparent,
-          child: isDropTarget
-              ? Center(child: Container(height: 2, color: Colors.blue))
-              : null,
+          color:
+              isDropTarget
+                  ? Colors.blue.withValues(alpha: 0.15)
+                  : Colors.transparent,
+          child:
+              isDropTarget
+                  ? Center(child: Container(height: 2, color: Colors.blue))
+                  : null,
         );
       },
     );
@@ -484,7 +585,8 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
 
   Widget _buildEndDropZone() {
     return DragTarget<Session>(
-      onWillAcceptWithDetails: (_) => true,
+      onWillAcceptWithDetails:
+          (details) => _canMoveSessionToGroup(details.data, widget.group),
       onAcceptWithDetails: (details) {
         _handleSessionDropOnGroup(details.data);
       },
@@ -492,18 +594,28 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
         final isDropTarget = candidateData.isNotEmpty;
         return Container(
           height: isDropTarget ? 24 : 4,
-          color: isDropTarget ? Colors.blue.withValues(alpha: 0.15) : Colors.transparent,
-          child: isDropTarget
-              ? Center(
-                  child: Container(height: 2, color: Colors.blue),
-                )
-              : null,
+          color:
+              isDropTarget
+                  ? Colors.blue.withValues(alpha: 0.15)
+                  : Colors.transparent,
+          child:
+              isDropTarget
+                  ? Center(child: Container(height: 2, color: Colors.blue))
+                  : null,
         );
       },
     );
   }
 
-  void _handleChildGroupDrop(Group dragged, Group target, List<Group> siblingGroups) {
+  void _handleChildGroupDrop(
+    Group dragged,
+    Group target,
+    List<Group> siblingGroups,
+  ) {
+    if (!_sameGroupScope(dragged, target)) {
+      return;
+    }
+
     final groups = List<Group>.from(siblingGroups);
     groups.removeWhere((g) => g.id == dragged.id);
     final targetIdx = groups.indexWhere((g) => g.id == target.id);
@@ -521,11 +633,14 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
   }
 
   void _handleSessionDrop(Session dragged, Session target) {
+    if (!_canMoveSessionBefore(dragged, target)) {
+      return;
+    }
+
     final targetGroupId = target.groupId;
-    final sessions = widget.allSessions
-        .where((s) => s.groupId == targetGroupId)
-        .toList()
-      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    final sessions =
+        widget.allSessions.where((s) => s.groupId == targetGroupId).toList()
+          ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
 
     sessions.removeWhere((s) => s.id == dragged.id);
     final targetIdx = sessions.indexWhere((s) => s.id == target.id);
@@ -547,34 +662,30 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
   }
 
   void _handleSessionDropOnGroup(Session dragged) {
+    if (!_canMoveSessionToGroup(dragged, widget.group)) {
+      return;
+    }
+
     final groupId = widget.group.id;
-    final sessions = widget.allSessions
-        .where((s) => s.groupId == groupId)
-        .toList()
-      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    final sessions =
+        widget.allSessions.where((s) => s.groupId == groupId).toList()
+          ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
 
     sessions.removeWhere((s) => s.id == dragged.id);
     sessions.add(dragged);
 
     final items = <Map<String, dynamic>>[];
     for (int i = 0; i < sessions.length; i++) {
-      items.add({
-        'id': sessions[i].id,
-        'sort_order': i,
-        'group_id': groupId,
-      });
+      items.add({'id': sessions[i].id, 'sort_order': i, 'group_id': groupId});
     }
     ref.read(serverProvider.notifier).reorderSessions(items);
   }
 
   void _createSession() async {
     final group = widget.group;
-    final command = group.sshHost != null ? 'ssh ${group.sshHost}' : null;
-    final session = await ref.read(serverProvider.notifier).createSession(
-      groupId: group.id,
-      command: command,
-      cwd: group.defaultCwd,
-    );
+    final session = await ref
+        .read(serverProvider.notifier)
+        .createSession(groupId: group.id, cwd: group.defaultCwd);
     ref.read(sessionProvider.notifier).openTab(session.id);
     if (ref.read(uiProvider).isMobile) {
       ref.read(uiProvider.notifier).setSidebarOpen(false);
@@ -582,7 +693,12 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
   }
 
   void _showGroupContextMenu(Offset position) {
-    final rect = RelativeRect.fromLTRB(position.dx, position.dy, position.dx, position.dy);
+    final rect = RelativeRect.fromLTRB(
+      position.dx,
+      position.dy,
+      position.dx,
+      position.dy,
+    );
     showMenu<String>(
       context: context,
       position: rect,
@@ -597,6 +713,7 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
       ],
     ).then((value) {
       if (value == null) return;
+      if (!mounted) return;
       switch (value) {
         case 'edit':
           showDialog(
@@ -621,13 +738,13 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
         void doRename() {
           final name = controller.text.trim();
           if (name.isNotEmpty) {
-            ref.read(serverProvider.notifier).updateGroup(
-              widget.group.id,
-              name: name,
-            );
+            ref
+                .read(serverProvider.notifier)
+                .updateGroup(widget.group.id, name: name);
             Navigator.pop(ctx);
           }
         }
+
         return AlertDialog(
           title: const Text('Rename Group'),
           content: TextField(
@@ -640,10 +757,7 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
               onPressed: () => Navigator.pop(ctx),
               child: const Text('Cancel'),
             ),
-            ElevatedButton(
-              onPressed: doRename,
-              child: const Text('Rename'),
-            ),
+            ElevatedButton(onPressed: doRename, child: const Text('Rename')),
           ],
         );
       },
@@ -651,18 +765,26 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
   }
 
   void _showSessionContextMenu(Session session, Offset position) {
-    final rect = RelativeRect.fromLTRB(position.dx, position.dy, position.dx, position.dy);
+    final rect = RelativeRect.fromLTRB(
+      position.dx,
+      position.dy,
+      position.dx,
+      position.dy,
+    );
     showMenu<String>(
       context: context,
       position: rect,
       items: [
-        const PopupMenuItem(value: 'rename', child: Row(
-          children: [
-            Text('Rename Session'),
-            Spacer(),
-            Text('⌘R', style: TextStyle(fontSize: 12, color: Colors.white38)),
-          ],
-        )),
+        const PopupMenuItem(
+          value: 'rename',
+          child: Row(
+            children: [
+              Text('Rename Session'),
+              Spacer(),
+              Text('⌘R', style: TextStyle(fontSize: 12, color: Colors.white38)),
+            ],
+          ),
+        ),
         const PopupMenuItem(
           value: 'delete',
           child: Text('Delete Session', style: TextStyle(color: Colors.red)),
@@ -688,10 +810,13 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
         void doRename() {
           final name = controller.text.trim();
           if (name.isNotEmpty) {
-            ref.read(serverProvider.notifier).updateSession(session.id, name: name);
+            ref
+                .read(serverProvider.notifier)
+                .updateSession(session.id, name: name);
             Navigator.pop(ctx);
           }
         }
+
         return AlertDialog(
           title: const Text('Rename Session'),
           content: TextField(
@@ -704,10 +829,7 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
               onPressed: () => Navigator.pop(ctx),
               child: const Text('Cancel'),
             ),
-            ElevatedButton(
-              onPressed: doRename,
-              child: const Text('Rename'),
-            ),
+            ElevatedButton(onPressed: doRename, child: const Text('Rename')),
           ],
         );
       },

@@ -9,17 +9,19 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
+    if state
+        .inner
+        .db
+        .migrate_legacy_shared_remote_model_if_needed()?
+    {
+        tracing::info!(
+            "Cleared legacy SSH-backed local mirrors; remote-authoritative sync will rebuild them"
+        );
+    }
+
     // Mark local sessions dead (PTYs don't survive restart; keep records and scrollback
     // so the user can see their session list and history after restarting the server).
     state.inner.db.mark_local_sessions_dead()?;
-    // Remote sessions are re-imported by the sync mechanism when tunnels reconnect.
-    // Collect their IDs first so we can clean up their scrollback dirs before deletion.
-    let data_dir = state.inner.config.data_dir();
-    let remote_ids = state.inner.db.get_remote_session_ids()?;
-    state.inner.db.delete_remote_sessions()?;
-    for id in remote_ids {
-        std::fs::remove_dir_all(format!("{}/sessions/{}", data_dir, id)).ok();
-    }
 
     let addr = format!(
         "{}:{}",
@@ -99,43 +101,48 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
             use tokio::sync::broadcast::error::RecvError;
             loop {
                 match ready_rx.recv().await {
-                    Ok((host_alias, tunnel_port, _remote_group_id)) => {
-                        let local_groups = match inner_for_sync
-                            .db
-                            .get_groups_by_ssh_host(&host_alias)
+                    Ok((host_alias, tunnel_port)) => {
+                        if let Err(e) = crate::remote::sync::sync_remote_host(
+                            &inner_for_sync.db,
+                            &host_alias,
+                            tunnel_port,
+                            &inner_for_sync.ssh_fg,
+                        )
+                        .await
                         {
-                            Ok(g) => g,
-                            Err(e) => {
-                                tracing::warn!("session sync: DB error for {}: {}", host_alias, e);
-                                continue;
-                            }
-                        };
-                        for group in local_groups {
-                            match crate::remote::sync::sync_remote_sessions(
-                                &inner_for_sync.db,
-                                &host_alias,
-                                tunnel_port,
-                                &group.id,
-                                &inner_for_sync.ssh_fg,
-                            )
-                            .await
-                            {
-                                Ok(n) if n > 0 => tracing::info!(
-                                    "session sync: restored {} sessions for {}",
-                                    n,
-                                    host_alias
-                                ),
-                                Err(e) => {
-                                    tracing::warn!("session sync: failed for {}: {}", host_alias, e)
-                                }
-                                _ => {}
-                            }
+                            tracing::warn!("remote sync: failed for {}: {}", host_alias, e);
                         }
                     }
                     Err(RecvError::Lagged(n)) => {
-                        tracing::warn!("session sync: lagged by {} Ready events, continuing", n);
+                        tracing::warn!("remote sync: lagged by {} Ready events, continuing", n);
                     }
                     Err(RecvError::Closed) => break,
+                }
+            }
+        });
+
+        let manager_for_sync = state.inner.remote_manager.clone();
+        let inner_for_periodic_sync = state.inner.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                for (host_alias, tunnel_port) in manager_for_sync.list_ready_hosts() {
+                    if let Err(e) = crate::remote::sync::sync_remote_host(
+                        &inner_for_periodic_sync.db,
+                        &host_alias,
+                        tunnel_port,
+                        &inner_for_periodic_sync.ssh_fg,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            "remote sync: periodic sync failed for {}: {}",
+                            host_alias,
+                            e
+                        );
+                    }
                 }
             }
         });

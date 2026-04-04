@@ -26,6 +26,16 @@ class Group {
     );
   }
 
+  String? get normalizedSshHost {
+    final host = sshHost?.trim();
+    if (host == null || host.isEmpty) return null;
+    return host;
+  }
+
+  bool get isRemote => normalizedSshHost != null;
+
+  String get localityKey => isRemote ? 'ssh:$normalizedSshHost' : 'local';
+
   Group copyWith({
     String? name,
     String? parentId,

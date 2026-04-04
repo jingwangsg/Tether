@@ -69,12 +69,16 @@ class ApiService {
     return Group.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
   }
 
-  Future<void> updateGroup(String id, {String? name, int? sortOrder, String? defaultCwd, String? sshHost}) async {
+  Future<void> updateGroup(
+    String id, {
+    String? name,
+    int? sortOrder,
+    String? defaultCwd,
+  }) async {
     final body = <String, dynamic>{};
     if (name != null) body['name'] = name;
     if (sortOrder != null) body['sort_order'] = sortOrder;
     if (defaultCwd != null) body['default_cwd'] = defaultCwd;
-    if (sshHost != null) body['ssh_host'] = sshHost;
 
     final response = await _client.patch(
       _uri('/api/groups/$id'),

@@ -8,6 +8,16 @@ const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 /// Ensure `~/.tether/bin/tether-server` on the remote is present, up-to-date,
 /// and running as a daemon.
 pub async fn ensure_deployed(client: &SshClient) -> anyhow::Result<()> {
+    ensure_available(client, true).await
+}
+
+/// Ensure the remote daemon is available without tearing down an already-running
+/// daemon. Safe for normal startup: it may upload/start, but never kills.
+pub async fn ensure_started_without_restart(client: &SshClient) -> anyhow::Result<()> {
+    ensure_available(client, false).await
+}
+
+async fn ensure_available(client: &SshClient, allow_replace_running: bool) -> anyhow::Result<()> {
     // 1. Detect remote OS + arch
     let (_, uname, _) = client.exec("uname -sm").await?;
     let uname = uname.trim();
@@ -38,20 +48,22 @@ pub async fn ensure_deployed(client: &SshClient) -> anyhow::Result<()> {
         client.exec("chmod +x ~/.tether/bin/tether-server").await?;
         tracing::info!("Binary uploaded to {}", client.host_alias);
 
-        // Kill running daemon (if any), wait for it to exit, then remove the
-        // PID file so the liveness check below always starts a fresh daemon.
-        client
-            .exec(
-                "pid=$(cat ~/.tether/tether.pid 2>/dev/null); \
-                 if [ -n \"$pid\" ]; then \
-                     kill \"$pid\" 2>/dev/null; \
-                     for i in 1 2; do kill -0 \"$pid\" 2>/dev/null || break; sleep 1; done; \
-                 fi; \
-                 rm -f ~/.tether/tether.pid; \
-                 true",
-            )
-            .await
-            .ok();
+        if allow_replace_running {
+            // Kill running daemon (if any), wait for it to exit, then remove the
+            // PID file so the liveness check below always starts a fresh daemon.
+            client
+                .exec(
+                    "pid=$(cat ~/.tether/tether.pid 2>/dev/null); \
+                     if [ -n \"$pid\" ]; then \
+                         kill \"$pid\" 2>/dev/null; \
+                         for i in 1 2; do kill -0 \"$pid\" 2>/dev/null || break; sleep 1; done; \
+                     fi; \
+                     rm -f ~/.tether/tether.pid; \
+                     true",
+                )
+                .await
+                .ok();
+        }
     } else {
         tracing::debug!(
             "tether-server {} already up-to-date on {}",
@@ -83,6 +95,18 @@ pub async fn ensure_deployed(client: &SshClient) -> anyhow::Result<()> {
 
     // 4. Poll until the remote server responds on port 7680
     wait_for_ready(client).await
+}
+
+/// Return the remote `tether-server` version string if the binary exists.
+pub async fn remote_binary_version(client: &SshClient) -> anyhow::Result<Option<String>> {
+    let (_, remote_ver, _) = client
+        .exec("~/.tether/bin/tether-server --version 2>/dev/null || echo NOTFOUND")
+        .await?;
+    let remote_ver = remote_ver.trim();
+    if remote_ver == "NOTFOUND" {
+        return Ok(None);
+    }
+    Ok(Some(remote_ver.to_string()))
 }
 
 /// Kill any running tether-server processes and delete `~/.tether` on the remote host.
