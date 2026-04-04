@@ -73,6 +73,7 @@ fn test_state() -> AppState {
             fg_tx,
             remote_manager: RemoteManager::new(),
             ssh_fg: DashMap::new(),
+            ssh_live_sessions: DashMap::new(),
         }),
     }
 }

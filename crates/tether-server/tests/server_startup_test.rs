@@ -49,6 +49,7 @@ fn test_state() -> AppState {
             fg_tx,
             remote_manager: RemoteManager::new(),
             ssh_fg: DashMap::new(),
+            ssh_live_sessions: DashMap::new(),
         }),
     }
 }
@@ -304,6 +305,7 @@ async fn server_startup_clears_legacy_ssh_mirrors_and_sync_rebuilds_shared_state
         "shared-host",
         remote_port,
         &state.inner.ssh_fg,
+        &state.inner.ssh_live_sessions,
     )
     .await
     .unwrap();

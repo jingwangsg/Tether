@@ -24,6 +24,10 @@ pub struct AppStateInner {
     /// Cached foreground process for SSH-proxied sessions.
     /// Transient (not persisted). Updated by sync_remote_sessions and proxy_ws_to_remote.
     pub ssh_fg: DashMap<Uuid, SessionForeground>,
+    /// Number of active proxied SSH WebSocket clients per session. While a live
+    /// proxy exists, its foreground updates are more authoritative than periodic
+    /// HTTP sync snapshots.
+    pub ssh_live_sessions: DashMap<Uuid, usize>,
 }
 
 impl AppState {
@@ -55,6 +59,7 @@ impl AppState {
                 fg_tx,
                 remote_manager: RemoteManager::new_with_deploy(allow_remote_mutation),
                 ssh_fg: DashMap::new(),
+                ssh_live_sessions: DashMap::new(),
             }),
         })
     }

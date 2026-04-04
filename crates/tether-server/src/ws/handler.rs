@@ -1,3 +1,4 @@
+use crate::remote::foreground::update_ssh_foreground_cache;
 use crate::state::AppState;
 use crate::ws::protocol::{ClientMessage, ServerMessage};
 use axum::extract::ws::{Message, WebSocket};
@@ -400,6 +401,7 @@ async fn proxy_ws_to_remote(
 
     let (mut client_sink, mut client_stream) = client_ws.split();
     let (mut remote_sink, mut remote_stream) = remote_ws.split();
+    let _live_proxy_guard = ActiveSshProxyGuard::new(state.clone(), session_id);
 
     let client_to_remote = tokio::spawn(async move {
         while let Some(Ok(msg)) = client_stream.next().await {
@@ -424,24 +426,18 @@ async fn proxy_ws_to_remote(
                 // Update ssh_fg cache when remote sends a foreground_changed message.
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(t.as_str()) {
                     if v.get("type").and_then(|x| x.as_str()) == Some("foreground_changed") {
-                        match v.get("process").and_then(|x| x.as_str()) {
-                            Some(p) => {
-                                let tool_state = v
-                                    .get("tool_state")
-                                    .cloned()
-                                    .and_then(|value| serde_json::from_value(value).ok());
-                                state.inner.ssh_fg.insert(
-                                    session_id,
-                                    crate::pty::session::SessionForeground {
-                                        process: Some(p.to_string()),
-                                        tool_state,
-                                    },
-                                );
-                            }
-                            None => {
-                                state.inner.ssh_fg.remove(&session_id);
-                            }
-                        }
+                        let tool_state = v
+                            .get("tool_state")
+                            .cloned()
+                            .and_then(|value| serde_json::from_value(value).ok());
+                        update_ssh_foreground_cache(
+                            &state.inner.ssh_fg,
+                            session_id,
+                            v.get("process")
+                                .and_then(|x| x.as_str())
+                                .map(str::to_string),
+                            tool_state,
+                        );
                     }
                 }
                 Message::Text(t.to_string().into())
@@ -459,4 +455,34 @@ async fn proxy_ws_to_remote(
 
     client_to_remote.abort();
     tracing::debug!("WS proxy disconnected for remote session {}", session_id);
+}
+
+struct ActiveSshProxyGuard {
+    state: AppState,
+    session_id: Uuid,
+}
+
+impl ActiveSshProxyGuard {
+    fn new(state: AppState, session_id: Uuid) -> Self {
+        state
+            .inner
+            .ssh_live_sessions
+            .entry(session_id)
+            .and_modify(|count| *count += 1)
+            .or_insert(1usize);
+        Self { state, session_id }
+    }
+}
+
+impl Drop for ActiveSshProxyGuard {
+    fn drop(&mut self) {
+        if let Some(mut entry) = self.state.inner.ssh_live_sessions.get_mut(&self.session_id) {
+            if *entry > 1 {
+                *entry -= 1;
+            } else {
+                drop(entry);
+                self.state.inner.ssh_live_sessions.remove(&self.session_id);
+            }
+        }
+    }
 }

@@ -54,6 +54,7 @@ fn test_state() -> AppState {
             fg_tx,
             remote_manager: tether_server::remote::manager::RemoteManager::new(),
             ssh_fg: DashMap::new(),
+            ssh_live_sessions: DashMap::new(),
         }),
     }
 }
@@ -650,6 +651,7 @@ async fn test_auth_required_when_token_set() {
             fg_tx,
             remote_manager: tether_server::remote::manager::RemoteManager::new(),
             ssh_fg: DashMap::new(),
+            ssh_live_sessions: DashMap::new(),
         }),
     };
 

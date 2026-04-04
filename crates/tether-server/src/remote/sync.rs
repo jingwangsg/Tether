@@ -1,5 +1,6 @@
 use crate::persistence::store::{GroupRow, SessionRow, Store};
 use crate::pty::session::SessionForeground;
+use crate::remote::foreground::update_ssh_foreground_cache;
 use dashmap::DashMap;
 use uuid::Uuid;
 
@@ -11,6 +12,7 @@ pub async fn sync_remote_host(
     host_alias: &str,
     tunnel_port: u16,
     ssh_fg: &DashMap<Uuid, SessionForeground>,
+    ssh_live_sessions: &DashMap<Uuid, usize>,
 ) -> anyhow::Result<()> {
     let base = format!("http://127.0.0.1:{tunnel_port}");
     let client = reqwest::Client::new();
@@ -31,26 +33,13 @@ pub async fn sync_remote_host(
     for session in &remote_sessions {
         db.upsert_remote_session_mirror(session)?;
         if let Ok(id) = Uuid::parse_str(&session.id) {
-            match &session.foreground_process {
-                Some(process) => {
-                    let preserved_tool_state = ssh_fg.get(&id).and_then(|existing| {
-                        if existing.process.as_deref() == Some(process.as_str()) {
-                            existing.tool_state.clone()
-                        } else {
-                            None
-                        }
-                    });
-                    ssh_fg.insert(
-                        id,
-                        SessionForeground {
-                            process: Some(process.clone()),
-                            tool_state: session.tool_state.clone().or(preserved_tool_state),
-                        },
-                    );
-                }
-                None => {
-                    ssh_fg.remove(&id);
-                }
+            if !ssh_live_sessions.contains_key(&id) {
+                update_ssh_foreground_cache(
+                    ssh_fg,
+                    id,
+                    session.foreground_process.clone(),
+                    session.tool_state.clone(),
+                );
             }
         }
     }
@@ -213,6 +202,7 @@ mod tests {
     async fn sync_remote_host_upserts_and_prunes_mirrors() {
         let store = test_store();
         let ssh_fg = DashMap::new();
+        let ssh_live_sessions = DashMap::new();
         let host = "shared-host";
 
         let stale_group = store.create_group("stale", "~", None, Some(host)).unwrap();
@@ -262,7 +252,9 @@ mod tests {
         };
 
         let port = start_mock_remote(vec![group.clone()], vec![session.clone()]).await;
-        sync_remote_host(&store, host, port, &ssh_fg).await.unwrap();
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+            .await
+            .unwrap();
 
         let groups = store.get_groups_by_ssh_host(host).unwrap();
         assert_eq!(groups.len(), 1);
@@ -289,6 +281,7 @@ mod tests {
     async fn sync_remote_host_reconciles_nested_group_trees_and_out_of_band_changes() {
         let store = test_store();
         let ssh_fg = DashMap::new();
+        let ssh_live_sessions = DashMap::new();
         let host = "shared-host";
 
         let parent = group_row("11111111-1111-1111-1111-111111111111", "parent", None, 0);
@@ -320,7 +313,9 @@ mod tests {
         )
         .await;
 
-        sync_remote_host(&store, host, port, &ssh_fg).await.unwrap();
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+            .await
+            .unwrap();
 
         let parent_updated = GroupRow {
             name: "parent-renamed".to_string(),
@@ -363,7 +358,9 @@ mod tests {
         ];
         *sessions_state.lock().await = vec![session_a_moved.clone(), session_c.clone()];
 
-        sync_remote_host(&store, host, port, &ssh_fg).await.unwrap();
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+            .await
+            .unwrap();
 
         let groups = store.get_groups_by_ssh_host(host).unwrap();
         assert_eq!(groups.len(), 3);
@@ -426,9 +423,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_remote_host_preserves_cached_tool_state_when_remote_omits_it() {
+    async fn sync_remote_host_applies_remote_tool_state_verbatim_when_present() {
         let store = test_store();
         let ssh_fg = DashMap::new();
+        let ssh_live_sessions = DashMap::new();
         let host = "shared-host";
 
         let group = group_row("11111111-1111-1111-1111-111111111111", "remote", None, 0);
@@ -439,22 +437,149 @@ mod tests {
             0,
             Some("claude"),
         );
-        ssh_fg.insert(
-            Uuid::parse_str(&session.id).unwrap(),
-            SessionForeground {
-                process: Some("claude".to_string()),
-                tool_state: Some(crate::pty::session::ToolState::Running),
-            },
-        );
+        let session = SessionRow {
+            tool_state: Some(crate::pty::session::ToolState::Waiting),
+            ..session
+        };
 
         let port = start_mock_remote(vec![group], vec![session]).await;
-        sync_remote_host(&store, host, port, &ssh_fg).await.unwrap();
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+            .await
+            .unwrap();
 
         let fg = ssh_fg
             .get(&Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap())
             .map(|entry| entry.value().clone())
             .expect("expected cached foreground");
         assert_eq!(fg.process.as_deref(), Some("claude"));
+        assert_eq!(fg.tool_state, Some(crate::pty::session::ToolState::Waiting));
+    }
+
+    #[tokio::test]
+    async fn sync_remote_host_preserves_missing_remote_tool_state_as_none() {
+        let store = test_store();
+        let ssh_fg = DashMap::new();
+        let ssh_live_sessions = DashMap::new();
+        let host = "shared-host";
+
+        let group = group_row("11111111-1111-1111-1111-111111111111", "remote", None, 0);
+        let session = session_row(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            &group.id,
+            "alpha",
+            0,
+            Some("claude"),
+        );
+
+        let port = start_mock_remote(vec![group], vec![session]).await;
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+            .await
+            .unwrap();
+
+        let fg = ssh_fg
+            .get(&Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap())
+            .map(|entry| entry.value().clone())
+            .expect("expected cached foreground");
+        assert_eq!(fg.process.as_deref(), Some("claude"));
+        assert_eq!(fg.tool_state, None);
+    }
+
+    #[tokio::test]
+    async fn sync_remote_host_does_not_overwrite_live_proxy_cache() {
+        let store = test_store();
+        let ssh_fg = DashMap::new();
+        let ssh_live_sessions = DashMap::new();
+        let host = "shared-host";
+
+        let group = group_row("11111111-1111-1111-1111-111111111111", "remote", None, 0);
+        let session = SessionRow {
+            id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string(),
+            group_id: group.id.clone(),
+            name: "alpha".to_string(),
+            shell: "/bin/bash".to_string(),
+            cols: 120,
+            rows: 40,
+            cwd: "/srv/alpha".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            last_active: "2024-01-02T00:00:00Z".to_string(),
+            sort_order: 0,
+            is_alive: true,
+            foreground_process: Some("claude".to_string()),
+            tool_state: Some(crate::pty::session::ToolState::Waiting),
+            local_group_id: None,
+        };
+        let session_id = Uuid::parse_str(&session.id).unwrap();
+        ssh_fg.insert(
+            session_id,
+            SessionForeground {
+                process: Some("claude".to_string()),
+                tool_state: Some(crate::pty::session::ToolState::Running),
+            },
+        );
+        ssh_live_sessions.insert(session_id, 1usize);
+
+        let port = start_mock_remote(vec![group], vec![session]).await;
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+            .await
+            .unwrap();
+
+        let fg = ssh_fg
+            .get(&session_id)
+            .map(|entry| entry.value().clone())
+            .expect("expected cached foreground");
+        assert_eq!(fg.process.as_deref(), Some("claude"));
         assert_eq!(fg.tool_state, Some(crate::pty::session::ToolState::Running));
+    }
+
+    #[tokio::test]
+    async fn sync_remote_host_updates_cache_after_live_proxy_disconnects() {
+        let store = test_store();
+        let ssh_fg = DashMap::new();
+        let ssh_live_sessions = DashMap::new();
+        let host = "shared-host";
+
+        let group = group_row("11111111-1111-1111-1111-111111111111", "remote", None, 0);
+        let session = SessionRow {
+            id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string(),
+            group_id: group.id.clone(),
+            name: "alpha".to_string(),
+            shell: "/bin/bash".to_string(),
+            cols: 120,
+            rows: 40,
+            cwd: "/srv/alpha".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            last_active: "2024-01-02T00:00:00Z".to_string(),
+            sort_order: 0,
+            is_alive: true,
+            foreground_process: Some("claude".to_string()),
+            tool_state: Some(crate::pty::session::ToolState::Waiting),
+            local_group_id: None,
+        };
+        let session_id = Uuid::parse_str(&session.id).unwrap();
+        ssh_fg.insert(
+            session_id,
+            SessionForeground {
+                process: Some("claude".to_string()),
+                tool_state: Some(crate::pty::session::ToolState::Running),
+            },
+        );
+        ssh_live_sessions.insert(session_id, 1usize);
+
+        let port = start_mock_remote(vec![group.clone()], vec![session.clone()]).await;
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+            .await
+            .unwrap();
+        ssh_live_sessions.remove(&session_id);
+
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+            .await
+            .unwrap();
+
+        let fg = ssh_fg
+            .get(&session_id)
+            .map(|entry| entry.value().clone())
+            .expect("expected cached foreground");
+        assert_eq!(fg.process.as_deref(), Some("claude"));
+        assert_eq!(fg.tool_state, Some(crate::pty::session::ToolState::Waiting));
     }
 }

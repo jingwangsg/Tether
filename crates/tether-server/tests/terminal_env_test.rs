@@ -57,6 +57,7 @@ fn test_state_with_shell(default_shell: &str) -> AppState {
             fg_tx,
             remote_manager: RemoteManager::new(),
             ssh_fg: DashMap::new(),
+            ssh_live_sessions: DashMap::new(),
         }),
     }
 }

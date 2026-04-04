@@ -626,9 +626,15 @@ fn ready_tunnel_port(state: &AppState, host_alias: &str) -> Result<u16, StatusCo
 }
 
 async fn sync_remote_host(state: &AppState, host_alias: &str, port: u16) -> Result<(), StatusCode> {
-    crate::remote::sync::sync_remote_host(&state.inner.db, host_alias, port, &state.inner.ssh_fg)
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)
+    crate::remote::sync::sync_remote_host(
+        &state.inner.db,
+        host_alias,
+        port,
+        &state.inner.ssh_fg,
+        &state.inner.ssh_live_sessions,
+    )
+    .await
+    .map_err(|_| StatusCode::BAD_GATEWAY)
 }
 
 fn best_effort_sync_remote_host(state: &AppState, host_alias: &str, port: u16, operation: &str) {

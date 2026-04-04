@@ -107,6 +107,7 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
                             &host_alias,
                             tunnel_port,
                             &inner_for_sync.ssh_fg,
+                            &inner_for_sync.ssh_live_sessions,
                         )
                         .await
                         {
@@ -134,6 +135,7 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
                         &host_alias,
                         tunnel_port,
                         &inner_for_periodic_sync.ssh_fg,
+                        &inner_for_periodic_sync.ssh_live_sessions,
                     )
                     .await
                     {
