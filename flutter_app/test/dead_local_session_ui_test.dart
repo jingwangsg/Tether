@@ -168,9 +168,8 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('dead-local'));
-    await tester.pump();
-
+    expect(find.text('dead-local'), findsNothing);
+    expect(find.text('0'), findsOneWidget);
     expect(container.read(sessionProvider).openTabs, isEmpty);
   });
 
@@ -229,9 +228,7 @@ void main() {
 
     await _pumpWithContainer(tester, container, const Sidebar());
 
-    await tester.tap(find.text('dead-root'));
-    await tester.pump();
-
+    expect(find.text('dead-root'), findsNothing);
     expect(container.read(sessionProvider).openTabs, isEmpty);
   });
 

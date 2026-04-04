@@ -59,6 +59,20 @@ void main() {
         'remote',
       });
     });
+
+    test('visible sessions hide only dead local sessions', () {
+      final sessions = [
+        _session('alive-local', groupId: 'local', isAlive: true),
+        _session('dead-local', groupId: 'local', isAlive: false),
+        _session('remote', groupId: 'remote', isAlive: false),
+      ];
+      final groups = [_group('local'), _group('remote', sshHost: 'prod')];
+
+      expect(
+        visibleSessions(sessions, groups).map((session) => session.id).toList(),
+        ['alive-local', 'remote'],
+      );
+    });
   });
 
   group('session tab cleanup', () {

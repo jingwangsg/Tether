@@ -81,12 +81,18 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
 
   @override
   Widget build(BuildContext context) {
+    final visibleSessionsForSidebar = visibleSessions(
+      widget.allSessions,
+      widget.allGroups,
+    );
     final childGroups =
         widget.allGroups.where((g) => g.parentId == widget.group.id).toList()
           ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
 
     final sessions =
-        widget.allSessions.where((s) => s.groupId == widget.group.id).toList()
+        visibleSessionsForSidebar
+            .where((s) => s.groupId == widget.group.id)
+            .toList()
           ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
 
     return Column(
@@ -152,14 +158,14 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                           child: GroupSection(
                             group: childGroup,
                             allGroups: widget.allGroups,
-                            allSessions: widget.allSessions,
+                            allSessions: visibleSessionsForSidebar,
                             depth: widget.depth + 1,
                           ),
                         );
                         final child = GroupSection(
                           group: childGroup,
                           allGroups: widget.allGroups,
-                          allSessions: widget.allSessions,
+                          allSessions: visibleSessionsForSidebar,
                           depth: widget.depth + 1,
                         );
                         return _isDesktop

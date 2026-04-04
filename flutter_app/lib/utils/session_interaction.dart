@@ -23,3 +23,12 @@ Set<String> interactiveSessionIds(
       .map((session) => session.id)
       .toSet();
 }
+
+List<Session> visibleSessions(
+  Iterable<Session> sessions,
+  Iterable<Group> groups,
+) {
+  return sessions
+      .where((session) => !isDeadLocalSession(session, groups))
+      .toList();
+}

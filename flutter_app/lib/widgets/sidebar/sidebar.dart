@@ -113,7 +113,7 @@ class Sidebar extends ConsumerWidget {
 
   Widget _buildContent(BuildContext context, WidgetRef ref, ServerState state) {
     final groups = state.groups;
-    final sessions = state.sessions;
+    final sessions = visibleSessions(state.sessions, groups);
 
     final rootGroups =
         groups.where((g) => g.parentId == null).toList()
