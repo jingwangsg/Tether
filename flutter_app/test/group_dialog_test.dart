@@ -145,6 +145,43 @@ void main() {
     },
   );
 
+  testWidgets('remote host connecting shows neutral inline status', (
+    tester,
+  ) async {
+    final api = ApiService(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        expect(request.url.path, '/api/completions/remote');
+        return http.Response('remote_host_connecting', 503);
+      }),
+    );
+
+    await pumpDialog(
+      tester,
+      state: ServerState(
+        api: api,
+        isConnected: true,
+        sshHosts: [SshHost(host: 'slow-host', reachable: true)],
+      ),
+      group: makeGroup(defaultCwd: '', sshHost: 'slow-host'),
+    );
+
+    await tester.enterText(pathField(), '~/project');
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump();
+
+    expect(find.text('Remote host connecting…'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('group-dialog-completions')),
+      findsNothing,
+    );
+
+    final statusText = tester.widget<Text>(
+      find.byKey(const ValueKey('group-dialog-completion-status')),
+    );
+    expect(statusText.style?.color, Colors.white54);
+  });
+
   testWidgets('unreachable ssh host short-circuits before calling the API', (
     tester,
   ) async {

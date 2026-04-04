@@ -7,15 +7,18 @@
 //! - Edge cases (empty paths, bare ~, trailing slashes)
 
 use axum::body::Body;
+use axum::extract::{Query, State};
 use axum::http::{Request, StatusCode};
 use axum::middleware;
+use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::Router;
+use axum::{Json, Router};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use dashmap::DashMap;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use tether_server::api;
 use tether_server::auth;
@@ -80,6 +83,97 @@ fn test_router(state: AppState) -> Router {
 fn cleanup(state: &AppState) {
     let data_dir = state.inner.config.persistence.data_dir.clone();
     let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+#[derive(Clone)]
+struct MockRemoteCompletionState {
+    results: Vec<String>,
+    status: StatusCode,
+    text_body: Option<String>,
+    captured_paths: Arc<Mutex<Vec<String>>>,
+}
+
+#[derive(serde::Deserialize)]
+struct MockRemoteCompletionQuery {
+    path: String,
+}
+
+async fn mock_remote_completion_handler(
+    State(state): State<MockRemoteCompletionState>,
+    Query(query): Query<MockRemoteCompletionQuery>,
+) -> axum::response::Response {
+    state.captured_paths.lock().await.push(query.path);
+
+    match &state.text_body {
+        Some(body) => (state.status, body.clone()).into_response(),
+        None => (state.status, Json(state.results.clone())).into_response(),
+    }
+}
+
+async fn start_mock_remote_completion_server(
+    status: StatusCode,
+    results: Vec<String>,
+    text_body: Option<&str>,
+) -> (u16, Arc<Mutex<Vec<String>>>) {
+    let captured_paths = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route("/api/completions", get(mock_remote_completion_handler))
+        .with_state(MockRemoteCompletionState {
+            results,
+            status,
+            text_body: text_body.map(str::to_string),
+            captured_paths: captured_paths.clone(),
+        });
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    (port, captured_paths)
+}
+
+async fn reserve_dead_local_port() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    port
+}
+
+async fn start_stalled_remote_completion_server() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _stream = stream;
+                futures::future::pending::<()>().await;
+            });
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    port
+}
+
+async fn start_header_then_stall_remote_completion_server() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _ = tokio::io::AsyncWriteExt::write_all(
+                    &mut stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 32\r\n\r\n[",
+                )
+                .await;
+                futures::future::pending::<()>().await;
+            });
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    port
 }
 
 // --- Local path completion ---
@@ -398,9 +492,6 @@ async fn remote_completion_allows_clean_tilde_path() {
     let state = test_state();
     let app = test_router(state.clone());
 
-    // ~/projects is a clean path — it should pass the safety check and reach
-    // the SSH transport layer. Because the host does not exist, the endpoint
-    // should now surface a server error instead of silently returning [].
     let resp = app
         .oneshot(
             Request::builder()
@@ -411,10 +502,10 @@ async fn remote_completion_allows_clean_tilde_path() {
         .await
         .unwrap();
 
-    assert!(resp.status().is_server_error());
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let message = String::from_utf8(body.to_vec()).unwrap();
-    assert!(!message.trim().is_empty());
+    assert_eq!(message.trim(), "remote_host_connecting");
 
     cleanup(&state);
 }
@@ -424,7 +515,6 @@ async fn remote_completion_allows_bare_tilde() {
     let state = test_state();
     let app = test_router(state.clone());
 
-    // Bare ~ should be normalized to ~/ and not rejected
     let resp = app
         .oneshot(
             Request::builder()
@@ -435,10 +525,10 @@ async fn remote_completion_allows_bare_tilde() {
         .await
         .unwrap();
 
-    assert!(resp.status().is_server_error());
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let message = String::from_utf8(body.to_vec()).unwrap();
-    assert!(!message.trim().is_empty());
+    assert_eq!(message.trim(), "remote_host_connecting");
 
     cleanup(&state);
 }
@@ -458,10 +548,169 @@ async fn remote_completion_allows_tilde_trailing_slash() {
         .await
         .unwrap();
 
-    assert!(resp.status().is_server_error());
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let message = String::from_utf8(body.to_vec()).unwrap();
-    assert!(!message.trim().is_empty());
+    assert_eq!(message.trim(), "remote_host_connecting");
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn remote_completion_proxies_ready_tunnel_results() {
+    let state = test_state();
+    let app = test_router(state.clone());
+    let (remote_port, captured_paths) =
+        start_mock_remote_completion_server(StatusCode::OK, vec!["~/projects/".to_string()], None)
+            .await;
+
+    state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("devbox", remote_port);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/completions/remote?host=devbox&path=~/proj")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let results: Vec<String> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(results, vec!["~/projects/"]);
+    assert_eq!(captured_paths.lock().await.as_slice(), ["~/proj"]);
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn remote_completion_dead_tunnel_returns_connecting_and_clears_ready_state() {
+    let state = test_state();
+    let app = test_router(state.clone());
+    let dead_port = reserve_dead_local_port().await;
+
+    state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("deadbox", dead_port);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/completions/remote?host=deadbox&path=~/proj")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let message = String::from_utf8(body.to_vec()).unwrap();
+    assert_eq!(message.trim(), "remote_host_connecting");
+    assert_eq!(state.inner.remote_manager.get_tunnel_port("deadbox"), None);
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn remote_completion_upstream_error_returns_bad_gateway_with_body() {
+    let state = test_state();
+    let app = test_router(state.clone());
+    let (remote_port, _) = start_mock_remote_completion_server(
+        StatusCode::SERVICE_UNAVAILABLE,
+        Vec::new(),
+        Some("upstream broke"),
+    )
+    .await;
+
+    state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("brokenbox", remote_port);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/completions/remote?host=brokenbox&path=~/proj")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let message = String::from_utf8(body.to_vec()).unwrap();
+    assert_eq!(message.trim(), "upstream broke");
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn remote_completion_stalled_upstream_returns_connecting_and_clears_ready_state() {
+    let state = test_state();
+    let app = test_router(state.clone());
+    let remote_port = start_stalled_remote_completion_server().await;
+
+    state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("stallbox", remote_port);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/completions/remote?host=stallbox&path=~/proj")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let message = String::from_utf8(body.to_vec()).unwrap();
+    assert_eq!(message.trim(), "remote_host_connecting");
+    assert_eq!(state.inner.remote_manager.get_tunnel_port("stallbox"), None);
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn remote_completion_body_stall_returns_connecting_and_clears_ready_state() {
+    let state = test_state();
+    let app = test_router(state.clone());
+    let remote_port = start_header_then_stall_remote_completion_server().await;
+
+    state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("body-stall-box", remote_port);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/completions/remote?host=body-stall-box&path=~/proj")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let message = String::from_utf8(body.to_vec()).unwrap();
+    assert_eq!(message.trim(), "remote_host_connecting");
+    assert_eq!(
+        state.inner.remote_manager.get_tunnel_port("body-stall-box"),
+        None
+    );
 
     cleanup(&state);
 }

@@ -185,6 +185,17 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
     } catch (e) {
       if (!mounted || requestId != _completionRequestId) return;
 
+      final remoteStatus =
+          _selectedSshHost != null ? _remoteCompletionStatus(e) : null;
+      if (remoteStatus != null) {
+        _setCompletionState(
+          completions: const [],
+          showCompletions: false,
+          statusMessage: remoteStatus,
+        );
+        return;
+      }
+
       final statusMessage =
           _selectedSshHost != null
               ? 'Remote completion unavailable: ${_formatCompletionError(e)}'
@@ -206,6 +217,15 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
       return 'HTTP ${error.statusCode}';
     }
     return error.toString();
+  }
+
+  String? _remoteCompletionStatus(Object error) {
+    if (error is ApiException &&
+        error.statusCode == 503 &&
+        error.body.trim() == 'remote_host_connecting') {
+      return 'Remote host connecting…';
+    }
+    return null;
   }
 
   void _applyCompletion(String path) {
