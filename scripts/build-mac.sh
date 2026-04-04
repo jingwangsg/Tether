@@ -4,6 +4,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
+wait_for_flutter_macos_build_idle() {
+  local build_db="$PROJECT_DIR/flutter_app/build/macos/Build/Intermediates.noindex/XCBuildData/build.db"
+  local waited=0
+
+  while [ -f "$build_db" ] && lsof "$build_db" >/dev/null 2>&1; do
+    if [ "$waited" -eq 0 ]; then
+      echo "Waiting for previous macOS build process to release build.db..."
+    fi
+
+    sleep 1
+    waited=$((waited + 1))
+
+    if [ "$waited" -ge 30 ]; then
+      echo "Timed out waiting for previous macOS build process to finish" >&2
+      return 1
+    fi
+  done
+}
+
+build_flutter_macos() {
+  flutter build macos --release
+}
+
 echo "=== Building Rust binaries ==="
 cd "$PROJECT_DIR"
 cargo build --release -p tether-server -p tether-client
@@ -16,7 +39,19 @@ echo ""
 echo "=== Building macOS app (Flutter) ==="
 cd "$PROJECT_DIR/flutter_app"
 flutter pub get
-flutter build macos --release
+wait_for_flutter_macos_build_idle
+if ! build_flutter_macos; then
+  # `flutter build macos` can reuse stale Swift precompiled modules after
+  # Flutter/Xcode updates, causing header/module mismatches. Retry once from a
+  # clean Flutter state after any lingering xcodebuild process releases the
+  # derived data lock.
+  echo "Initial macOS build failed; cleaning Flutter outputs and retrying once..."
+  wait_for_flutter_macos_build_idle
+  flutter clean
+  flutter pub get
+  wait_for_flutter_macos_build_idle
+  build_flutter_macos
+fi
 APP_PATH="$PROJECT_DIR/flutter_app/build/macos/Build/Products/Release/Tether.app"
 
 echo ""
