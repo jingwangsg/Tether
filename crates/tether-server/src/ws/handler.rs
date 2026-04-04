@@ -13,6 +13,7 @@ use uuid::Uuid;
 #[derive(Deserialize)]
 pub struct WsQuery {
     pub token: Option<String>,
+    pub mode: Option<String>,
 }
 
 pub async fn ws_handler(
@@ -43,7 +44,10 @@ pub async fn ws_handler(
         match state.inner.remote_manager.get_tunnel_port(&ssh_host) {
             None => return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
             Some(port) => {
-                if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err() {
+                if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                    .await
+                    .is_err()
+                {
                     state.inner.remote_manager.clear_dead_tunnel(&ssh_host);
                     return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
                 }
@@ -51,18 +55,23 @@ pub async fn ws_handler(
         }
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, session_id, state))
+    let mode = query.mode.unwrap_or_default();
+    ws.on_upgrade(move |socket| handle_socket(socket, session_id, mode, state))
         .into_response()
 }
 
-async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AppState) {
+async fn handle_socket(socket: WebSocket, session_id: Uuid, mode: String, state: AppState) {
     // Route to remote tether-server if this session belongs to an SSH group
     if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&session_id.to_string()) {
         if let Some(port) = state.inner.remote_manager.get_tunnel_port(&ssh_host) {
-            proxy_ws_to_remote(socket, session_id, port, state).await;
+            proxy_ws_to_remote(socket, session_id, port, &mode, state).await;
             return;
         }
-        tracing::warn!("WS: remote host {} not ready for session {}", ssh_host, session_id);
+        tracing::warn!(
+            "WS: remote host {} not ready for session {}",
+            ssh_host,
+            session_id
+        );
         return;
     }
 
@@ -73,6 +82,11 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AppState) {
             return;
         }
     };
+
+    if mode == "events" {
+        handle_events_socket(socket, session_id, session, state).await;
+        return;
+    }
 
     let (mut ws_sink, mut ws_stream) = socket.split();
     let b64 = base64::engine::general_purpose::STANDARD;
@@ -105,6 +119,7 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AppState) {
     let mut output_rx = session.output_tx.subscribe();
 
     let session_for_input = session.clone();
+    let session_for_events = session.clone();
 
     // Dedicated PTY writer: one long-lived blocking task drains the channel so the
     // WS receive loop never blocks waiting for a PTY write to complete.
@@ -124,6 +139,7 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AppState) {
     // Spawn task to forward session output + control messages + foreground changes to WS
     let mut shutdown_rx = state.inner.shutdown_tx.subscribe();
     let mut fg_rx = state.inner.fg_tx.subscribe();
+    let mut exit_check = tokio::time::interval(std::time::Duration::from_millis(250));
     let send_task = tokio::spawn(async move {
         let b64_send = base64::engine::general_purpose::STANDARD;
         loop {
@@ -178,6 +194,18 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AppState) {
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
                     }
                 }
+                _ = exit_check.tick() => {
+                    if !session_for_events.is_alive() {
+                        let msg = ServerMessage::SessionEvent {
+                            event: "exited".to_string(),
+                            exit_code: None,
+                        };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = ws_sink.send(Message::Text(json.into())).await;
+                        }
+                        break;
+                    }
+                }
                 _ = shutdown_rx.recv() => {
                     break;
                 }
@@ -223,11 +251,145 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AppState) {
     tracing::debug!("WS client disconnected from session {}", session_id);
 }
 
+async fn handle_events_socket(
+    socket: WebSocket,
+    session_id: Uuid,
+    session: std::sync::Arc<crate::pty::session::PtySession>,
+    state: AppState,
+) {
+    let (mut ws_sink, mut ws_stream) = socket.split();
+
+    let current_fg = session.get_foreground();
+    let initial = ServerMessage::ForegroundChanged {
+        process: current_fg.process,
+        tool_state: current_fg.tool_state,
+    };
+    if let Ok(json) = serde_json::to_string(&initial) {
+        if ws_sink.send(Message::Text(json.into())).await.is_err() {
+            return;
+        }
+    }
+    if !session.is_alive() {
+        let msg = ServerMessage::SessionEvent {
+            event: "exited".to_string(),
+            exit_code: None,
+        };
+        if let Ok(json) = serde_json::to_string(&msg) {
+            let _ = ws_sink.send(Message::Text(json.into())).await;
+        }
+        return;
+    }
+    let session_for_events = session.clone();
+    drop(session);
+
+    let mut output_rx = match state.get_session(session_id) {
+        Some(session) => session.output_tx.subscribe(),
+        None => {
+            let msg = ServerMessage::SessionEvent {
+                event: "exited".to_string(),
+                exit_code: None,
+            };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = ws_sink.send(Message::Text(json.into())).await;
+            }
+            return;
+        }
+    };
+    let mut shutdown_rx = state.inner.shutdown_tx.subscribe();
+    let mut fg_rx = state.inner.fg_tx.subscribe();
+    let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let mut exit_check = tokio::time::interval(std::time::Duration::from_millis(250));
+
+    let send_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                result = output_rx.recv() => {
+                    match result {
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            let msg = ServerMessage::SessionEvent {
+                                event: "exited".to_string(),
+                                exit_code: None,
+                            };
+                            if let Ok(json) = serde_json::to_string(&msg) {
+                                let _ = ws_sink.send(Message::Text(json.into())).await;
+                            }
+                            break;
+                        }
+                    }
+                }
+                Some(json) = ctrl_rx.recv() => {
+                    if ws_sink.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
+                }
+                result = fg_rx.recv() => {
+                    match result {
+                        Ok((sid, fg)) if sid == session_id => {
+                            let msg = ServerMessage::ForegroundChanged {
+                                process: fg.process,
+                                tool_state: fg.tool_state,
+                            };
+                            if let Ok(json) = serde_json::to_string(&msg) {
+                                if ws_sink.send(Message::Text(json.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
+                    }
+                }
+                _ = exit_check.tick() => {
+                    if !session_for_events.is_alive() {
+                        let msg = ServerMessage::SessionEvent {
+                            event: "exited".to_string(),
+                            exit_code: None,
+                        };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = ws_sink.send(Message::Text(json.into())).await;
+                        }
+                        break;
+                    }
+                }
+                _ = shutdown_rx.recv() => break,
+            }
+        }
+    });
+
+    while let Some(Ok(msg)) = ws_stream.next().await {
+        match msg {
+            Message::Text(text) => {
+                if let Ok(ClientMessage::Ping) = serde_json::from_str::<ClientMessage>(&text) {
+                    if let Ok(json) = serde_json::to_string(&ServerMessage::Pong) {
+                        let _ = ctrl_tx.send(json);
+                    }
+                }
+            }
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+
+    send_task.abort();
+}
+
 /// Bidirectionally proxy a Flutter WebSocket connection to a remote tether-server
 /// session via the SSH tunnel. Also maintains `state.inner.ssh_fg` by intercepting
 /// `foreground_changed` messages from the remote.
-async fn proxy_ws_to_remote(client_ws: WebSocket, session_id: Uuid, tunnel_port: u16, state: AppState) {
-    let url = format!("ws://127.0.0.1:{}/ws/session/{}", tunnel_port, session_id);
+async fn proxy_ws_to_remote(
+    client_ws: WebSocket,
+    session_id: Uuid,
+    tunnel_port: u16,
+    mode: &str,
+    state: AppState,
+) {
+    let mut url = format!("ws://127.0.0.1:{}/ws/session/{}", tunnel_port, session_id);
+    if mode == "events" {
+        url.push_str("?mode=events");
+    }
     let remote_ws = match tokio_tungstenite::connect_async(&url).await {
         Ok((ws, _)) => ws,
         Err(e) => {
@@ -243,11 +405,11 @@ async fn proxy_ws_to_remote(client_ws: WebSocket, session_id: Uuid, tunnel_port:
         while let Some(Ok(msg)) = client_stream.next().await {
             // Translate axum WS message → tungstenite message
             let tung_msg = match msg {
-                Message::Text(t)   => tungstenite::Message::Text(t.to_string().into()),
+                Message::Text(t) => tungstenite::Message::Text(t.to_string().into()),
                 Message::Binary(b) => tungstenite::Message::Binary(b.to_vec().into()),
-                Message::Ping(p)   => tungstenite::Message::Ping(p.to_vec().into()),
-                Message::Pong(p)   => tungstenite::Message::Pong(p.to_vec().into()),
-                Message::Close(_)  => break,
+                Message::Ping(p) => tungstenite::Message::Ping(p.to_vec().into()),
+                Message::Pong(p) => tungstenite::Message::Pong(p.to_vec().into()),
+                Message::Close(_) => break,
             };
             if remote_sink.send(tung_msg).await.is_err() {
                 break;
@@ -263,18 +425,22 @@ async fn proxy_ws_to_remote(client_ws: WebSocket, session_id: Uuid, tunnel_port:
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(t.as_str()) {
                     if v.get("type").and_then(|x| x.as_str()) == Some("foreground_changed") {
                         match v.get("process").and_then(|x| x.as_str()) {
-                            Some(p) => { state.inner.ssh_fg.insert(session_id, p.to_string()); }
-                            None    => { state.inner.ssh_fg.remove(&session_id); }
+                            Some(p) => {
+                                state.inner.ssh_fg.insert(session_id, p.to_string());
+                            }
+                            None => {
+                                state.inner.ssh_fg.remove(&session_id);
+                            }
                         }
                     }
                 }
                 Message::Text(t.to_string().into())
             }
             tungstenite::Message::Binary(b) => Message::Binary(b.to_vec().into()),
-            tungstenite::Message::Ping(p)   => Message::Ping(p.to_vec().into()),
-            tungstenite::Message::Pong(p)   => Message::Pong(p.to_vec().into()),
-            tungstenite::Message::Close(_)  => break,
-            tungstenite::Message::Frame(_)  => continue,
+            tungstenite::Message::Ping(p) => Message::Ping(p.to_vec().into()),
+            tungstenite::Message::Pong(p) => Message::Pong(p.to_vec().into()),
+            tungstenite::Message::Close(_) => break,
+            tungstenite::Message::Frame(_) => continue,
         };
         if client_sink.send(axum_msg).await.is_err() {
             break;

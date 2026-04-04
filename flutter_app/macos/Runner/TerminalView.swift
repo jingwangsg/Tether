@@ -1,39 +1,238 @@
 import AppKit
 import FlutterMacOS
 
-/// NSView embedding a terminal surface (ghostty_surface_t, PTY + Metal renderer).
-///
-/// Keyboard input is handled entirely at the AppKit level (NOT via Flutter):
-///   - mouseDown: → become first responder so AppKit delivers keyDown to us
-///   - keyDown: → special keys (arrows, backspace, etc.) via ghostty_surface_key()
-///   - NSTextInputClient.insertText: → printable chars via ghostty_surface_text()
-///
-/// This mirrors Demo 3's approach and bypasses Flutter's keyboard system,
-/// which does not reliably deliver events when a PlatformView has AppKit focus.
-class TerminalView: NSView {
+struct TerminalScrollbarState {
+    let total: UInt64
+    let offset: UInt64
+    let len: UInt64
+}
+
+/// Platform view wrapper around a Ghostty surface view plus a native NSScrollView.
+final class TerminalView: NSView {
+    private let scrollView: NSScrollView
+    private let documentView: NSView
+    private let surfaceView: TerminalSurfaceView
+
+    private var scrollbarState: TerminalScrollbarState?
+    private var isLiveScrolling = false
+    private var lastSentRow: Int?
+
+    init(
+        sessionId: String,
+        serverBaseUrl: String?,
+        authToken: String?,
+        eventSink: FlutterEventSink? = nil
+    ) {
+        self.scrollView = NSScrollView()
+        self.documentView = NSView(frame: .zero)
+        self.surfaceView = TerminalSurfaceView(
+            sessionId: sessionId,
+            serverBaseUrl: serverBaseUrl,
+            authToken: authToken,
+            eventSink: eventSink
+        )
+        super.init(frame: .zero)
+
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.cgColor
+
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = false
+        scrollView.usesPredominantAxisScrolling = true
+        scrollView.scrollerStyle = .overlay
+        scrollView.drawsBackground = false
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        scrollView.documentView = documentView
+        documentView.addSubview(surfaceView)
+        addSubview(scrollView)
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleScrollChange),
+            name: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleWillStartLiveScroll),
+            name: NSScrollView.willStartLiveScrollNotification,
+            object: scrollView
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDidEndLiveScroll),
+            name: NSScrollView.didEndLiveScrollNotification,
+            object: scrollView
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDidLiveScroll),
+            name: NSScrollView.didLiveScrollNotification,
+            object: scrollView
+        )
+
+        surfaceView.scrollbarHandler = { [weak self] state in
+            self?.scrollbarState = state
+            self?.synchronizeScrollView()
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    override func layout() {
+        super.layout()
+        scrollView.frame = bounds
+        surfaceView.frame.size = scrollView.contentSize
+        documentView.frame.size.width = scrollView.contentSize.width
+        synchronizeScrollView()
+        synchronizeSurfaceView()
+    }
+
+    @objc private func handleScrollChange(_ notification: Notification) {
+        synchronizeSurfaceView()
+    }
+
+    @objc private func handleWillStartLiveScroll(_ notification: Notification) {
+        isLiveScrolling = true
+    }
+
+    @objc private func handleDidEndLiveScroll(_ notification: Notification) {
+        isLiveScrolling = false
+    }
+
+    @objc private func handleDidLiveScroll(_ notification: Notification) {
+        handleLiveScroll()
+    }
+
+    private func synchronizeSurfaceView() {
+        let visibleRect = scrollView.contentView.documentVisibleRect
+        surfaceView.frame.origin = visibleRect.origin
+    }
+
+    private func synchronizeScrollView() {
+        documentView.frame.size.height = Self.documentHeight(
+            contentHeight: scrollView.contentSize.height,
+            cellHeight: surfaceView.cellHeight,
+            scrollbarState: scrollbarState
+        )
+
+        guard !isLiveScrolling,
+              let scrollbarState,
+              surfaceView.cellHeight > 0 else {
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            return
+        }
+
+        let offsetY = CGFloat(scrollbarState.total - scrollbarState.offset - scrollbarState.len)
+            * surfaceView.cellHeight
+        scrollView.contentView.scroll(to: CGPoint(x: 0, y: offsetY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        lastSentRow = Int(scrollbarState.offset)
+    }
+
+    private func handleLiveScroll() {
+        let visibleRect = scrollView.contentView.documentVisibleRect
+        guard let action = Self.scrollActionForLiveScroll(
+            documentHeight: documentView.frame.height,
+            visibleOriginY: visibleRect.origin.y,
+            visibleHeight: visibleRect.height,
+            cellHeight: surfaceView.cellHeight,
+            lastSentRow: lastSentRow
+        ) else { return }
+
+        if let row = Int(action.split(separator: ":").last ?? "") {
+            lastSentRow = row
+        }
+        surfaceView.performAction(action)
+    }
+
+    func sendText(_ text: String) {
+        surfaceView.sendText(text)
+    }
+
+    func performAction(_ action: String) {
+        surfaceView.performAction(action)
+    }
+
+    func setActive(_ active: Bool) {
+        surfaceView.setActive(active)
+    }
+
+    func setEventSink(_ sink: FlutterEventSink?) {
+        surfaceView.setEventSink(sink)
+    }
+
+    static func buildAttachCommand(
+        sessionId: String,
+        serverBaseUrl: String?,
+        authToken: String?,
+        clientPath: String?
+    ) -> String {
+        TerminalSurfaceView.buildAttachCommand(
+            sessionId: sessionId,
+            serverBaseUrl: serverBaseUrl,
+            authToken: authToken,
+            clientPath: clientPath
+        )
+    }
+
+    static func documentHeight(
+        contentHeight: CGFloat,
+        cellHeight: CGFloat,
+        scrollbarState: TerminalScrollbarState?
+    ) -> CGFloat {
+        guard let scrollbarState, cellHeight > 0 else { return contentHeight }
+        let documentGridHeight = CGFloat(scrollbarState.total) * cellHeight
+        let padding = contentHeight - (CGFloat(scrollbarState.len) * cellHeight)
+        return max(contentHeight, documentGridHeight + padding)
+    }
+
+    static func scrollActionForLiveScroll(
+        documentHeight: CGFloat,
+        visibleOriginY: CGFloat,
+        visibleHeight: CGFloat,
+        cellHeight: CGFloat,
+        lastSentRow: Int?
+    ) -> String? {
+        guard cellHeight > 0 else { return nil }
+        let scrollOffset = documentHeight - visibleOriginY - visibleHeight
+        let row = Int(scrollOffset / cellHeight)
+        guard row != lastSentRow else { return nil }
+        return "scroll_to_row:\(row)"
+    }
+}
+
+/// NSView embedding a Ghostty surface whose child process is `tether-client attach`.
+private final class TerminalSurfaceView: NSView {
     private let sessionId: String
-    private let command: String?
-    private let cwd: String?
+    private let serverBaseUrl: String?
+    private let authToken: String?
 
     private(set) var surface: ghostty_surface_t?
     var eventSink: FlutterEventSink?
+    var scrollbarHandler: ((TerminalScrollbarState?) -> Void)?
 
-    private var titleObserver: NSObjectProtocol?
-    private var exitObserver: NSObjectProtocol?
-
-    // Accumulates text from NSTextInputClient.insertText() during a keyDown call.
-    // nil = not inside a keyDown; [] = inside keyDown but no text yet.
+    private var observers: [NSObjectProtocol] = []
+    private var eventMonitor: Any?
     private var keyTextAccumulator: [String]? = nil
-
-    // IME composing state: true while there is marked (pre-edit) text.
-    // When composing, individual keyDown events must NOT be forwarded to the
-    // terminal — only the final insertText: commit should be sent.
     private var isComposing = false
+    private var focused = false
+    private var suppressNextLeftMouseUp = false
 
-    init(sessionId: String, command: String?, cwd: String?, eventSink: FlutterEventSink? = nil) {
+    init(
+        sessionId: String,
+        serverBaseUrl: String?,
+        authToken: String?,
+        eventSink: FlutterEventSink?
+    ) {
         self.sessionId = sessionId
-        self.command = command
-        self.cwd = cwd
+        self.serverBaseUrl = serverBaseUrl
+        self.authToken = authToken
         self.eventSink = eventSink
         super.init(frame: .zero)
         wantsLayer = true
@@ -50,12 +249,10 @@ class TerminalView: NSView {
 
     private func createSurface() {
         guard let app = TerminalApp.shared.app, let window = window else {
-            print("[TerminalView] TerminalApp not ready or no window"); return
+            print("[TerminalSurfaceView] TerminalApp not ready or no window")
+            return
         }
 
-        // Set contentsScale NOW, before ghostty draws its first frame.
-        // Without this the CALayer defaults to 1.0 and scales the 2× framebuffer
-        // down by 2×, making everything appear at half the intended visual size.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer?.contentsScale = window.backingScaleFactor
@@ -67,71 +264,195 @@ class TerminalView: NSView {
         cfg.userdata = Unmanaged.passUnretained(self).toOpaque()
         cfg.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? window.backingScaleFactor)
 
-        let isSSH = command?.hasPrefix("ssh ") ?? false
-        // For SSH + remote cwd: embed cd directly in the command string.
-        // The C API always runs cfg.command via /bin/bash -c "..." (embedded.zig:529-535),
-        // so shell quoting is fully respected — no initial_input needed, cd is invisible.
-        // Format mirrors tether-server's resolve_ssh_command.
-        let effectiveCommand: String?
-        if isSSH, let cwd, !cwd.isEmpty {
-            let escapedCwd = cwd
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "\"", with: "\\\"")
-            effectiveCommand = "\(command!) -t \"cd \(escapedCwd) && exec \\$SHELL -l\""
-        } else {
-            effectiveCommand = command
-        }
-        // working_directory is local-only; SSH sessions use a remote cwd
-        let effectiveCwd: String? = isSSH ? nil : cwd
-
-        // Nest withCString closures so all C pointers are alive through ghostty_surface_new
-        surface = withOptCString(effectiveCommand) { cmdPtr in
+        let command = attachCommand()
+        surface = withOptCString(command) { cmdPtr in
             cfg.command = cmdPtr
-            return withOptCString(effectiveCwd) { cwdPtr in
-                cfg.working_directory = cwdPtr
-                return ghostty_surface_new(app, &cfg)
-            }
+            return ghostty_surface_new(app, &cfg)
         }
 
         guard let s = surface else {
-            print("[TerminalView] ghostty_surface_new failed"); return
+            print("[TerminalSurfaceView] ghostty_surface_new failed")
+            return
         }
-        // ghostty_surface_set_size expects physical pixels, not logical points.
-        // convertToBacking() multiplies by backingScaleFactor (2× on Retina).
+
         let scaledBounds = convertToBacking(bounds)
         ghostty_surface_set_size(s, UInt32(scaledBounds.width), UInt32(scaledBounds.height))
         TerminalApp.shared.registerSurface(s)
-        ghostty_surface_draw(s)  // render initial frame
+        ghostty_surface_draw(s)
         observeNotifications()
+        eventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyUp, .leftMouseDown]
+        ) { [weak self] in self?.localEventHandler($0) }
     }
 
-    /// Calls body(ptr) with a C string pointer for s, or body(nil) when s is nil/empty.
-    private func withOptCString<T>(_ s: String?, body: (UnsafePointer<CChar>?) -> T) -> T {
-        guard let s, !s.isEmpty else { return body(nil) }
-        return s.withCString(body)
+    private func attachCommand() -> String {
+        Self.buildAttachCommand(
+            sessionId: sessionId,
+            serverBaseUrl: serverBaseUrl,
+            authToken: authToken,
+            clientPath: resolveTetherClientPath()
+        )
+    }
+
+    static func buildAttachCommand(
+        sessionId: String,
+        serverBaseUrl: String?,
+        authToken: String?,
+        clientPath: String?
+    ) -> String {
+        guard let serverBaseUrl, !serverBaseUrl.isEmpty else {
+            return "printf 'tether-server is not connected\\n'; exit 1"
+        }
+
+        guard let clientPath, !clientPath.isEmpty else {
+            return "printf 'tether-client helper not found\\n'; exit 127"
+        }
+
+        var parts = [
+            shellQuote(clientPath),
+            "attach",
+            "--server",
+            shellQuote(serverBaseUrl),
+            "--session",
+            shellQuote(sessionId),
+        ]
+        if let authToken, !authToken.isEmpty {
+            parts.append("--token")
+            parts.append(shellQuote(authToken))
+        }
+        return parts.joined(separator: " ")
+    }
+
+    private func resolveTetherClientPath() -> String? {
+        let env = ProcessInfo.processInfo.environment
+        var candidates: [String] = []
+        if let envPath = env["TETHER_CLIENT_PATH"], !envPath.isEmpty {
+            candidates.append(envPath)
+        }
+        candidates.append(
+            Bundle.main.bundleURL
+                .appendingPathComponent("Contents/Helpers/tether-client")
+                .path
+        )
+        candidates.append("/usr/local/bin/tether-client")
+        candidates.append("/opt/homebrew/bin/tether-client")
+
+        for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
+            return candidate
+        }
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        task.arguments = ["tether-client"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        do {
+            try task.run()
+            task.waitUntilExit()
+            if task.terminationStatus == 0 {
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let rawPath = String(data: data, encoding: .utf8) {
+                    let path = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !path.isEmpty, FileManager.default.isExecutableFile(atPath: path) {
+                        return path
+                    }
+                }
+            }
+        } catch {
+            return nil
+        }
+
+        return nil
+    }
+
+    static func shellQuote(_ value: String) -> String {
+        return "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
+    private func withOptCString<T>(_ value: String?, body: (UnsafePointer<CChar>?) -> T) -> T {
+        guard let value, !value.isEmpty else { return body(nil) }
+        return value.withCString(body)
+    }
+
+    var cellHeight: CGFloat {
+        guard let surface else { return 0 }
+        let size = ghostty_surface_size(surface)
+        let scale = window?.backingScaleFactor ?? 1
+        return CGFloat(size.cell_height_px) / scale
     }
 
     private func observeNotifications() {
-        titleObserver = NotificationCenter.default.addObserver(
+        observers.append(NotificationCenter.default.addObserver(
             forName: .terminalTitleChanged, object: nil, queue: .main
         ) { [weak self] note in
-            guard let self,
-                  let surfacePtr = note.userInfo?["surface"] as? OpaquePointer,
-                  OpaquePointer(self.surface) == surfacePtr,
-                  let title = note.userInfo?["title"] as? String
-            else { return }
+            guard let self, self.matchesSurface(note),
+                  let title = note.userInfo?["title"] as? String else { return }
             self.eventSink?(["type": "title", "value": title])
-        }
+        })
 
-        exitObserver = NotificationCenter.default.addObserver(
+        observers.append(NotificationCenter.default.addObserver(
             forName: .terminalChildExited, object: nil, queue: .main
         ) { [weak self] note in
-            guard let self else { return }
-            if let surfacePtr = note.userInfo?["surface"] as? OpaquePointer {
-                guard OpaquePointer(self.surface) == surfacePtr else { return }
-            }
+            guard let self, self.matchesSurface(note) else { return }
             self.eventSink?(["type": "exited"])
-        }
+        })
+
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .terminalSearchStarted, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, self.matchesSurface(note) else { return }
+            var payload: [String: Any] = ["type": "search_start"]
+            if let needle = note.userInfo?["needle"] as? String {
+                payload["value"] = needle
+            }
+            self.eventSink?(payload)
+        })
+
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .terminalSearchEnded, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, self.matchesSurface(note) else { return }
+            self.eventSink?(["type": "search_end"])
+        })
+
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .terminalSearchTotalChanged, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, self.matchesSurface(note) else { return }
+            var payload: [String: Any] = ["type": "search_total"]
+            if let total = note.userInfo?["total"] as? Int {
+                payload["value"] = total
+            }
+            self.eventSink?(payload)
+        })
+
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .terminalSearchSelectionChanged, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, self.matchesSurface(note) else { return }
+            var payload: [String: Any] = ["type": "search_selected"]
+            if let selected = note.userInfo?["selected"] as? Int {
+                payload["value"] = selected
+            }
+            self.eventSink?(payload)
+        })
+
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .terminalScrollbarChanged, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, self.matchesSurface(note) else { return }
+            if let total = note.userInfo?["total"] as? UInt64,
+               let offset = note.userInfo?["offset"] as? UInt64,
+               let len = note.userInfo?["len"] as? UInt64 {
+                self.scrollbarHandler?(TerminalScrollbarState(total: total, offset: offset, len: len))
+            }
+        })
+    }
+
+    private func matchesSurface(_ note: Notification) -> Bool {
+        guard let surface else { return false }
+        guard let surfacePtr = note.userInfo?["surface"] as? OpaquePointer else { return false }
+        return OpaquePointer(surface) == surfacePtr
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -142,18 +463,17 @@ class TerminalView: NSView {
         ghostty_surface_draw(s)
     }
 
-    // layout() catches the case where setFrameSize fired before the surface existed.
     override func layout() {
         super.layout()
         guard let s = surface, bounds.width > 0, bounds.height > 0 else { return }
 
-        // Update DPI before size — mirrors Ghostty's viewDidChangeBackingProperties pattern.
-        // Fixes the case where cfg.scale_factor was initialised from an offscreen helper
-        // window (backingScaleFactor=1.0); layout() fires after the view is in the real
-        // window, so convertToBacking() reflects the true display DPI.
         if frame.width > 0 && frame.height > 0 {
             let fbFrame = convertToBacking(frame)
-            ghostty_surface_set_content_scale(s, fbFrame.width / frame.width, fbFrame.height / frame.height)
+            ghostty_surface_set_content_scale(
+                s,
+                fbFrame.width / frame.width,
+                fbFrame.height / frame.height
+            )
         }
 
         let scaled = convertToBacking(bounds)
@@ -162,8 +482,6 @@ class TerminalView: NSView {
         inputContext?.invalidateCharacterCoordinates()
     }
 
-    // Mirror viewDidChangeBackingProperties — keeps layer scale and
-    // surface DPI in sync when the window moves between displays.
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         if let window = window {
@@ -172,9 +490,10 @@ class TerminalView: NSView {
             layer?.contentsScale = window.backingScaleFactor
             CATransaction.commit()
         }
+
         guard let s = surface else { return }
         let fbFrame = convertToBacking(frame)
-        let xScale = frame.width  > 0 ? fbFrame.width  / frame.width  : 1
+        let xScale = frame.width > 0 ? fbFrame.width / frame.width : 1
         let yScale = frame.height > 0 ? fbFrame.height / frame.height : 1
         ghostty_surface_set_content_scale(s, xScale, yScale)
         let scaled = convertToBacking(bounds)
@@ -182,30 +501,253 @@ class TerminalView: NSView {
         ghostty_surface_draw(s)
     }
 
-    // MARK: - AppKit keyboard handling
+    override func updateTrackingAreas() {
+        trackingAreas.forEach { removeTrackingArea($0) }
+        super.updateTrackingAreas()
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [
+                .mouseEnteredAndExited,
+                .mouseMoved,
+                .inVisibleRect,
+                .activeAlways,
+            ],
+            owner: self,
+            userInfo: nil
+        ))
+    }
 
     override var acceptsFirstResponder: Bool { true }
 
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        if result { focusDidChange(true) }
+        return result
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        if result { focusDidChange(false) }
+        return result
+    }
+
+    private func focusDidChange(_ newValue: Bool) {
+        guard focused != newValue else { return }
+        focused = newValue
+        if let surface {
+            ghostty_surface_set_focus(surface, newValue)
+        }
+    }
+
+    private func localEventHandler(_ event: NSEvent) -> NSEvent? {
+        switch event.type {
+        case .keyUp:
+            return localEventKeyUp(event)
+        case .leftMouseDown:
+            return localEventLeftMouseDown(event)
+        default:
+            return event
+        }
+    }
+
+    private func localEventLeftMouseDown(_ event: NSEvent) -> NSEvent? {
+        guard let window,
+              let eventWindow = event.window,
+              window == eventWindow else { return event }
+
+        let location = convert(event.locationInWindow, from: nil)
+        guard hitTest(location) == self else { return event }
+
+        suppressNextLeftMouseUp = false
+        guard window.firstResponder !== self else { return event }
+
+        if NSApp.isActive && window.isKeyWindow {
+            window.makeFirstResponder(self)
+            suppressNextLeftMouseUp = true
+            return nil
+        }
+
+        window.makeFirstResponder(self)
+        return event
+    }
+
+    private func localEventKeyUp(_ event: NSEvent) -> NSEvent? {
+        guard event.modifierFlags.contains(.command) else { return event }
+        guard focused else { return event }
+        keyUp(with: event)
+        return nil
+    }
+
     override func mouseDown(with event: NSEvent) {
-        super.mouseDown(with: event)
         window?.makeFirstResponder(self)
+        guard let s = surface else { return }
+        _ = ghostty_surface_mouse_button(
+            s,
+            GHOSTTY_MOUSE_PRESS,
+            GHOSTTY_MOUSE_LEFT,
+            modsFromEvent(event)
+        )
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if suppressNextLeftMouseUp {
+            suppressNextLeftMouseUp = false
+            return
+        }
+        guard let s = surface else { return }
+        _ = ghostty_surface_mouse_button(
+            s,
+            GHOSTTY_MOUSE_RELEASE,
+            GHOSTTY_MOUSE_LEFT,
+            modsFromEvent(event)
+        )
+        ghostty_surface_mouse_pressure(s, 0, 0)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let s = surface else { return }
+        _ = ghostty_surface_mouse_button(
+            s,
+            GHOSTTY_MOUSE_PRESS,
+            GHOSTTY_MOUSE_RIGHT,
+            modsFromEvent(event)
+        )
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        guard let s = surface else { return }
+        _ = ghostty_surface_mouse_button(
+            s,
+            GHOSTTY_MOUSE_RELEASE,
+            GHOSTTY_MOUSE_RIGHT,
+            modsFromEvent(event)
+        )
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard let s = surface else { return }
+        _ = ghostty_surface_mouse_button(
+            s,
+            GHOSTTY_MOUSE_PRESS,
+            mouseButton(from: event.buttonNumber),
+            modsFromEvent(event)
+        )
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        guard let s = surface else { return }
+        _ = ghostty_surface_mouse_button(
+            s,
+            GHOSTTY_MOUSE_RELEASE,
+            mouseButton(from: event.buttonNumber),
+            modsFromEvent(event)
+        )
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        sendMousePosition(event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        guard let s = surface else { return }
+        ghostty_surface_mouse_pos(s, -1, -1, modsFromEvent(event))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        sendMousePosition(event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        sendMousePosition(event)
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        sendMousePosition(event)
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        sendMousePosition(event)
+    }
+
+    private func sendMousePosition(_ event: NSEvent) {
+        guard let s = surface else { return }
+        let pos = convert(event.locationInWindow, from: nil)
+        ghostty_surface_mouse_pos(s, pos.x, frame.height - pos.y, modsFromEvent(event))
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard let s = surface else { return }
+        var x = event.scrollingDeltaX
+        var y = event.scrollingDeltaY
+        if event.hasPreciseScrollingDeltas {
+            x *= 2
+            y *= 2
+        }
+        ghostty_surface_mouse_scroll(s, x, y, scrollModsFromEvent(event))
+    }
+
+    override func pressureChange(with event: NSEvent) {
+        guard let s = surface else { return }
+        ghostty_surface_mouse_pressure(s, UInt32(event.stage), Double(event.pressure))
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        guard let s = surface, !hasMarkedText() else { return }
+        let mod: UInt32
+        switch event.keyCode {
+        case 0x39: mod = GHOSTTY_MODS_CAPS.rawValue
+        case 0x38, 0x3C: mod = GHOSTTY_MODS_SHIFT.rawValue
+        case 0x3B, 0x3E: mod = GHOSTTY_MODS_CTRL.rawValue
+        case 0x3A, 0x3D: mod = GHOSTTY_MODS_ALT.rawValue
+        case 0x37, 0x36: mod = GHOSTTY_MODS_SUPER.rawValue
+        default: return
+        }
+
+        let mods = modsFromEvent(event)
+        let action: ghostty_input_action_e =
+            (mods.rawValue & mod) != 0 ? GHOSTTY_ACTION_PRESS : GHOSTTY_ACTION_RELEASE
+        _ = sendKeyEvent(s, action: action, event: event, text: nil)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.type == .keyDown, focused else { return false }
+        guard let s = surface else { return false }
+
+        if !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.control) {
+            return false
+        }
+
+        var ev = ghostty_input_key_s()
+        ev.action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
+        ev.keycode = UInt32(event.keyCode)
+        ev.mods = modsFromEvent(event)
+        let text = event.characters ?? ""
+        let handled = text.withCString { ptr in
+            ev.text = ptr
+            return ghostty_surface_key_is_binding(s, ev, nil)
+        }
+        guard handled || event.modifierFlags.contains(.control) else { return false }
+
+        keyDown(with: event)
+        return true
     }
 
     override func keyDown(with event: NSEvent) {
         guard let s = surface else { return }
-        let action: ghostty_input_action_e = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
+        let action: ghostty_input_action_e =
+            event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         keyTextAccumulator = []
         defer { keyTextAccumulator = nil }
-        self.interpretKeyEvents([event])
+        interpretKeyEvents([event])
 
         if let list = keyTextAccumulator, !list.isEmpty {
-            isComposing = false  // IME committed
+            isComposing = false
             for text in list {
                 _ = sendKeyEvent(s, action: action, event: event, text: text)
             }
         } else if !isComposing {
-            // Skip while IME has marked text — individual key presses are
-            // buffered by the IME and will be delivered via insertText: on commit.
             _ = sendKeyEvent(s, action: action, event: event, text: keyCharacters(event))
         }
     }
@@ -216,24 +758,24 @@ class TerminalView: NSView {
     }
 
     override func doCommand(by selector: Selector) {
-        // Prevent NSBeep for unhandled commands (e.g. arrow keys, escape)
+        // Prevent NSBeep for unhandled commands.
     }
 
-    private func sendKeyEvent(_ s: ghostty_surface_t,
-                              action: ghostty_input_action_e,
-                              event: NSEvent,
-                              text: String?) -> Bool {
+    private func sendKeyEvent(
+        _ s: ghostty_surface_t,
+        action: ghostty_input_action_e,
+        event: NSEvent,
+        text: String?
+    ) -> Bool {
         var ev = ghostty_input_key_s()
         ev.action = action
         ev.keycode = UInt32(event.keyCode)
         ev.mods = modsFromEvent(event)
-        // consumed_mods: everything except control and command (per Ghostty source)
-        let flags = event.modifierFlags
         var consumedRaw: UInt32 = 0
-        if flags.contains(.shift)  { consumedRaw |= GHOSTTY_MODS_SHIFT.rawValue }
+        let flags = event.modifierFlags
+        if flags.contains(.shift) { consumedRaw |= GHOSTTY_MODS_SHIFT.rawValue }
         if flags.contains(.option) { consumedRaw |= GHOSTTY_MODS_ALT.rawValue }
         ev.consumed_mods = ghostty_input_mods_e(rawValue: consumedRaw)
-        // unshifted_codepoint: char with no modifiers applied
         if #available(macOS 10.15, *) {
             if let chars = event.characters(byApplyingModifiers: []),
                let cp = chars.unicodeScalars.first {
@@ -242,31 +784,31 @@ class TerminalView: NSView {
         }
         ev.composing = false
 
-        // Only attach text if first byte >= 0x20 (non-control, non-PUA)
-        if let t = text, !t.isEmpty,
-           let first = t.utf8.first, first >= 0x20 {
-            return t.withCString { ptr in
+        if let text, !text.isEmpty, let first = text.utf8.first, first >= 0x20 {
+            return text.withCString { ptr in
                 ev.text = ptr
                 return ghostty_surface_key(s, ev)
             }
-        } else {
-            ev.text = nil
-            return ghostty_surface_key(s, ev)
         }
+
+        ev.text = nil
+        return ghostty_surface_key(s, ev)
     }
 
-    /// Returns printable text for the key event.
-    /// Returns nil for PUA function keys (arrows, F-keys). Returns stripped text for control chars.
     private func keyCharacters(_ event: NSEvent) -> String? {
         guard let characters = event.characters else { return nil }
         if characters.count == 1, let scalar = characters.unicodeScalars.first {
             if scalar.value < 0x20 {
                 if #available(macOS 10.15, *) {
-                    return event.characters(byApplyingModifiers: event.modifierFlags.subtracting(.control))
+                    return event.characters(
+                        byApplyingModifiers: event.modifierFlags.subtracting(.control)
+                    )
                 }
                 return nil
             }
-            if scalar.value >= 0xF700 && scalar.value <= 0xF8FF { return nil }
+            if scalar.value >= 0xF700 && scalar.value <= 0xF8FF {
+                return nil
+            }
         }
         return characters
     }
@@ -274,78 +816,136 @@ class TerminalView: NSView {
     private func modsFromEvent(_ event: NSEvent) -> ghostty_input_mods_e {
         let flags = event.modifierFlags
         var raw: UInt32 = 0
-        if flags.contains(.shift)   { raw |= GHOSTTY_MODS_SHIFT.rawValue }
+        if flags.contains(.shift) { raw |= GHOSTTY_MODS_SHIFT.rawValue }
         if flags.contains(.control) { raw |= GHOSTTY_MODS_CTRL.rawValue }
-        if flags.contains(.option)  { raw |= GHOSTTY_MODS_ALT.rawValue }
+        if flags.contains(.option) { raw |= GHOSTTY_MODS_ALT.rawValue }
         if flags.contains(.command) { raw |= GHOSTTY_MODS_SUPER.rawValue }
         return ghostty_input_mods_e(rawValue: raw)
     }
 
-    // MARK: - MethodChannel input (paste from Flutter PasteService)
+    private func scrollModsFromEvent(_ event: NSEvent) -> ghostty_input_scroll_mods_t {
+        var raw: Int32 = 0
+        if event.hasPreciseScrollingDeltas {
+            raw |= 1
+        }
+
+        let momentum: Int32
+        switch event.momentumPhase {
+        case .began: momentum = Int32(GHOSTTY_MOUSE_MOMENTUM_BEGAN.rawValue)
+        case .stationary: momentum = Int32(GHOSTTY_MOUSE_MOMENTUM_STATIONARY.rawValue)
+        case .changed: momentum = Int32(GHOSTTY_MOUSE_MOMENTUM_CHANGED.rawValue)
+        case .ended: momentum = Int32(GHOSTTY_MOUSE_MOMENTUM_ENDED.rawValue)
+        case .cancelled: momentum = Int32(GHOSTTY_MOUSE_MOMENTUM_CANCELLED.rawValue)
+        case .mayBegin: momentum = Int32(GHOSTTY_MOUSE_MOMENTUM_MAY_BEGIN.rawValue)
+        default: momentum = Int32(GHOSTTY_MOUSE_MOMENTUM_NONE.rawValue)
+        }
+
+        raw |= momentum << 1
+        return raw
+    }
+
+    private func mouseButton(from buttonNumber: Int) -> ghostty_input_mouse_button_e {
+        switch buttonNumber {
+        case 0: return GHOSTTY_MOUSE_LEFT
+        case 1: return GHOSTTY_MOUSE_RIGHT
+        case 2: return GHOSTTY_MOUSE_MIDDLE
+        case 3: return GHOSTTY_MOUSE_EIGHT
+        case 4: return GHOSTTY_MOUSE_NINE
+        case 5: return GHOSTTY_MOUSE_SIX
+        case 6: return GHOSTTY_MOUSE_SEVEN
+        case 7: return GHOSTTY_MOUSE_FOUR
+        case 8: return GHOSTTY_MOUSE_FIVE
+        case 9: return GHOSTTY_MOUSE_TEN
+        case 10: return GHOSTTY_MOUSE_ELEVEN
+        default: return GHOSTTY_MOUSE_UNKNOWN
+        }
+    }
 
     func sendText(_ text: String) {
         guard let s = surface else { return }
         ghostty_surface_text(s, text, UInt(text.utf8.count))
     }
 
+    func performAction(_ action: String) {
+        guard let s = surface else { return }
+        _ = action.withCString { ptr in
+            ghostty_surface_binding_action(s, ptr, UInt(action.utf8.count))
+        }
+    }
+
     func setActive(_ active: Bool) {
         guard let s = surface else { return }
         TerminalApp.shared.setSurfaceDrawable(s, drawable: active)
+        ghostty_surface_set_occlusion(s, active)
+        if !active {
+            focusDidChange(false)
+        }
     }
 
     func setEventSink(_ sink: FlutterEventSink?) {
         eventSink = sink
     }
 
-    // MARK: - Cleanup
-
     deinit {
-        titleObserver.map { NotificationCenter.default.removeObserver($0) }
-        exitObserver.map  { NotificationCenter.default.removeObserver($0) }
-        surface.map { TerminalApp.shared.unregisterSurface($0) }
-        surface.map { ghostty_surface_free($0) }
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        if let eventMonitor {
+            NSEvent.removeMonitor(eventMonitor)
+        }
+        if let surface {
+            TerminalApp.shared.unregisterSurface(surface)
+            ghostty_surface_free(surface)
+        }
     }
 }
 
-// MARK: - NSTextInputClient (printable characters + IME)
-extension TerminalView: NSTextInputClient {
+extension TerminalSurfaceView: NSTextInputClient {
     func insertText(_ string: Any, replacementRange: NSRange) {
         let chars: String
-        if let attr = string as? NSAttributedString { chars = attr.string }
-        else if let str = string as? String { chars = str }
-        else { return }
-
-        // If called during keyDown, accumulate for key event
-        if keyTextAccumulator != nil {
-            keyTextAccumulator!.append(chars)
+        if let attr = string as? NSAttributedString {
+            chars = attr.string
+        } else if let str = string as? String {
+            chars = str
+        } else {
             return
         }
-        // Otherwise: direct programmatic insertion (paste, IME)
+
+        if keyTextAccumulator != nil {
+            keyTextAccumulator?.append(chars)
+            return
+        }
+
         guard let s = surface else { return }
         ghostty_surface_text(s, chars, UInt(chars.utf8.count))
     }
 
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         let str: String
-        if let attr = string as? NSAttributedString { str = attr.string }
-        else if let s = string as? String { str = s }
-        else { return }
+        if let attr = string as? NSAttributedString {
+            str = attr.string
+        } else if let value = string as? String {
+            str = value
+        } else {
+            return
+        }
         isComposing = !str.isEmpty
     }
+
     func unmarkText() { isComposing = false }
     func selectedRange() -> NSRange { .init(location: NSNotFound, length: 0) }
     func markedRange() -> NSRange { .init(location: NSNotFound, length: 0) }
     func hasMarkedText() -> Bool { isComposing }
-    func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
+    func attributedSubstring(
+        forProposedRange range: NSRange,
+        actualRange: NSRangePointer?
+    ) -> NSAttributedString? { nil }
     func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
+
     func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
-        // Return the view's bottom-left corner in screen coordinates.
-        // This gives the IMK a valid mach port target for its candidate window,
-        // preventing the "error messaging the mach port for IMKCFRunLoopWakeUpReliable" log.
         guard let window = window else { return .zero }
         let localRect = NSRect(x: 0, y: 0, width: 0, height: 0)
         let windowRect = convert(localRect, to: nil)
         return window.convertToScreen(windowRect)
     }
+
     func characterIndex(for point: NSPoint) -> Int { 0 }
 }

@@ -16,8 +16,10 @@ impl SshClient {
     pub async fn connect(host: &SshHost) -> anyhow::Result<Self> {
         let output = tokio::process::Command::new("ssh")
             .args([
-                "-o", "BatchMode=yes",
-                "-o", "ConnectTimeout=10",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
                 &host.host,
                 "true",
             ])
@@ -33,7 +35,9 @@ impl SshClient {
         }
 
         tracing::info!("SSH connected to {}", host.host);
-        Ok(Self { host_alias: host.host.clone() })
+        Ok(Self {
+            host_alias: host.host.clone(),
+        })
     }
 
     /// Run a command on the remote and return `(exit_code, stdout, stderr)`.
@@ -56,7 +60,8 @@ impl SshClient {
 
         let mut child = tokio::process::Command::new("ssh")
             .args([
-                "-o", "BatchMode=yes",
+                "-o",
+                "BatchMode=yes",
                 &self.host_alias,
                 &format!("cat > {}", remote_path),
             ])

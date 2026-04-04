@@ -13,7 +13,11 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "tether-server", version, about = "Tether — web-based terminal multiplexer")]
+#[command(
+    name = "tether-server",
+    version,
+    about = "Tether — web-based terminal multiplexer"
+)]
 struct Cli {
     /// Path to config file
     #[arg(short, long, default_value = "~/.tether/config.toml")]
@@ -89,11 +93,19 @@ fn main() -> anyhow::Result<()> {
                         match remote::client::SshClient::connect(&host).await {
                             Ok(client) => {
                                 if let Err(e) = remote::deploy::restart_remote(&client).await {
-                                    tracing::warn!("restart_remote failed for {}: {}", host.host, e);
+                                    tracing::warn!(
+                                        "restart_remote failed for {}: {}",
+                                        host.host,
+                                        e
+                                    );
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!("Could not connect to {} for restart: {}", host.host, e);
+                                tracing::warn!(
+                                    "Could not connect to {} for restart: {}",
+                                    host.host,
+                                    e
+                                );
                             }
                         }
                     }));
@@ -124,7 +136,11 @@ fn check_running(pid_file: &str) -> Option<u32> {
     let pid: u32 = content.trim().parse().ok()?;
     // kill(pid, 0) probes liveness without sending a real signal
     let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
-    if alive { Some(pid) } else { None }
+    if alive {
+        Some(pid)
+    } else {
+        None
+    }
 }
 
 /// Fork the process, detach from the controlling terminal, redirect stdio,

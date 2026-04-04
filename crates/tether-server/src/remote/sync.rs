@@ -23,18 +23,33 @@ pub async fn sync_remote_sessions(
 
     let mut restored = 0usize;
     for s in &remote_sessions {
-        if db.try_insert_remote_session(&s.id, local_group_id, s.local_group_id.as_deref(), &s.name, &s.shell, &s.cwd, s.is_alive)? {
+        if db.try_insert_remote_session(
+            &s.id,
+            local_group_id,
+            s.local_group_id.as_deref(),
+            &s.name,
+            &s.shell,
+            &s.cwd,
+            s.is_alive,
+        )? {
             restored += 1;
             tracing::info!(
                 "Restored remote session {} ({}) for host {} (alive={})",
-                s.name, s.id, host_alias, s.is_alive
+                s.name,
+                s.id,
+                host_alias,
+                s.is_alive
             );
         }
         // Update fg cache regardless of whether the session was newly inserted.
         if let Ok(id) = Uuid::parse_str(&s.id) {
             match &s.foreground_process {
-                Some(fp) => { ssh_fg.insert(id, fp.clone()); }
-                None => { ssh_fg.remove(&id); }
+                Some(fp) => {
+                    ssh_fg.insert(id, fp.clone());
+                }
+                None => {
+                    ssh_fg.remove(&id);
+                }
             }
         }
     }

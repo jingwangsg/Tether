@@ -32,7 +32,10 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
         .route("/api/groups", post(api::groups::create_group))
         .route("/api/groups/{id}", patch(api::groups::update_group))
         .route("/api/groups/{id}", delete(api::groups::delete_group))
-        .route("/api/groups/reorder", post(api::groups::batch_reorder_groups))
+        .route(
+            "/api/groups/reorder",
+            post(api::groups::batch_reorder_groups),
+        )
         .route("/api/sessions", get(api::sessions::list_sessions))
         .route("/api/sessions", post(api::sessions::create_session))
         .route("/api/sessions/{id}", patch(api::sessions::update_session))
@@ -41,12 +44,21 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
             "/api/sessions/{id}/scrollback",
             get(api::sessions::get_scrollback),
         )
-        .route("/api/sessions/reorder", post(api::sessions::batch_reorder_sessions))
+        .route(
+            "/api/sessions/reorder",
+            post(api::sessions::batch_reorder_sessions),
+        )
         .route("/api/completions", get(api::completions::complete_path))
-        .route("/api/completions/remote", get(api::completions::complete_remote_path))
+        .route(
+            "/api/completions/remote",
+            get(api::completions::complete_remote_path),
+        )
         .route("/api/ssh/hosts", get(api::ssh::list_ssh_hosts))
         .route("/api/remote/hosts", get(api::remote::list_remote_hosts))
-        .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::auth_middleware,
+        ));
 
     let app = Router::new()
         // Public: server info (needed for hub discovery)
@@ -61,9 +73,7 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
                     // (with any port or none). Prefix matching is insufficient —
                     // "http://localhost.evil.com" would pass a starts_with check.
                     let s = origin.to_str().unwrap_or("");
-                    let host_part = s
-                        .strip_prefix("http://")
-                        .unwrap_or("");
+                    let host_part = s.strip_prefix("http://").unwrap_or("");
                     let host = host_part.split(':').next().unwrap_or(host_part);
                     host == "localhost" || host == "127.0.0.1"
                 }))
@@ -90,7 +100,10 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
             loop {
                 match ready_rx.recv().await {
                     Ok((host_alias, tunnel_port, _remote_group_id)) => {
-                        let local_groups = match inner_for_sync.db.get_groups_by_ssh_host(&host_alias) {
+                        let local_groups = match inner_for_sync
+                            .db
+                            .get_groups_by_ssh_host(&host_alias)
+                        {
                             Ok(g) => g,
                             Err(e) => {
                                 tracing::warn!("session sync: DB error for {}: {}", host_alias, e);
@@ -99,15 +112,22 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
                         };
                         for group in local_groups {
                             match crate::remote::sync::sync_remote_sessions(
-                                &inner_for_sync.db, &host_alias, tunnel_port, &group.id,
+                                &inner_for_sync.db,
+                                &host_alias,
+                                tunnel_port,
+                                &group.id,
                                 &inner_for_sync.ssh_fg,
-                            ).await {
+                            )
+                            .await
+                            {
                                 Ok(n) if n > 0 => tracing::info!(
-                                    "session sync: restored {} sessions for {}", n, host_alias
+                                    "session sync: restored {} sessions for {}",
+                                    n,
+                                    host_alias
                                 ),
-                                Err(e) => tracing::warn!(
-                                    "session sync: failed for {}: {}", host_alias, e
-                                ),
+                                Err(e) => {
+                                    tracing::warn!("session sync: failed for {}: {}", host_alias, e)
+                                }
                                 _ => {}
                             }
                         }
@@ -135,10 +155,9 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
         .with_graceful_shutdown(async move {
             #[cfg(unix)]
             {
-                let mut sigterm = tokio::signal::unix::signal(
-                    tokio::signal::unix::SignalKind::terminate(),
-                )
-                .unwrap();
+                let mut sigterm =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .unwrap();
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => {}
                     _ = sigterm.recv() => {}

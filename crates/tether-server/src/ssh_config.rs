@@ -358,7 +358,12 @@ Host myserver
 
         let hosts = parse_ssh_config_file(&main_config);
         // Both the included host and the main host should appear
-        assert_eq!(hosts.len(), 2, "hosts = {:?}", hosts.iter().map(|h| &h.host).collect::<Vec<_>>());
+        assert_eq!(
+            hosts.len(),
+            2,
+            "hosts = {:?}",
+            hosts.iter().map(|h| &h.host).collect::<Vec<_>>()
+        );
         assert!(hosts.iter().any(|h| h.host == "extra-host"));
         assert!(hosts.iter().any(|h| h.host == "main-host"));
     }
@@ -385,7 +390,12 @@ Host myserver
         writeln!(f, "    HostName 10.0.0.1").unwrap();
 
         let hosts = parse_ssh_config_file(&main_config);
-        assert_eq!(hosts.len(), 2, "hosts = {:?}", hosts.iter().map(|h| &h.host).collect::<Vec<_>>());
+        assert_eq!(
+            hosts.len(),
+            2,
+            "hosts = {:?}",
+            hosts.iter().map(|h| &h.host).collect::<Vec<_>>()
+        );
         assert!(hosts.iter().any(|h| h.host == "relative-host"));
         assert!(hosts.iter().any(|h| h.host == "base-host"));
     }

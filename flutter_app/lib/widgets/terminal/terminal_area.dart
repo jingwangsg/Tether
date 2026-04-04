@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,7 +10,7 @@ import '../../platform/paste_service.dart';
 import '../../platform/volume_keys.dart';
 import '../../platform/terminal_backend.dart';
 import '../../utils/session_display.dart';
-import 'xterm_terminal_view.dart';
+import 'terminal_controller.dart';
 import 'mobile_key_bar.dart';
 import '../tool_state_dot.dart';
 
@@ -25,17 +24,13 @@ class TerminalArea extends ConsumerStatefulWidget {
 }
 
 class TerminalAreaState extends ConsumerState<TerminalArea> {
-  final Map<String, GlobalKey<XtermTerminalViewState>> _terminalKeys = {};
+  final Map<String, TerminalController> _terminalControllers = {};
   final VolumeKeyService _volumeKeys = VolumeKeyService();
   final PasteService _pasteService = PasteService();
   Set<String> _lastValidSessionIds = {};
   // OSC title per session — used for tab display only, NOT persisted to server.
   // The stored session.name stays as session-<hash> unless the user renames it.
   final Map<String, String> _sessionTitles = {};
-  // Debounce timers for clearing foregroundProcess.
-  // Claude Code sends various non-"claude" titles during normal operation;
-  // we wait 3 seconds before clearing so transient titles don't flicker the icon.
-  final Map<String, Timer> _clearDebounceTimers = {};
 
   @override
   void initState() {
@@ -57,7 +52,9 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       // without taking keyboard focus, so Cmd+V still reaches the terminal normally.
       if (focusCtx != null && ModalRoute.of(focusCtx) is DialogRoute) {
         Actions.maybeInvoke(
-            focusCtx, const PasteTextIntent(SelectionChangedCause.keyboard));
+          focusCtx,
+          const PasteTextIntent(SelectionChangedCause.keyboard),
+        );
         return;
       }
 
@@ -67,7 +64,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       // Strategy C: normal terminal paste.
       final activeId = ref.read(sessionProvider).activeSessionId;
       if (activeId == null) return;
-      _terminalKeys[activeId]?.currentState?.paste(text);
+      _terminalControllers[activeId]?.paste(text);
     };
 
     ref.listenManual(serverProvider, (previous, next) {
@@ -81,7 +78,6 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
 
   @override
   void dispose() {
-    for (final t in _clearDebounceTimers.values) t.cancel();
     _pasteService.dispose();
     _volumeKeys.dispose();
     super.dispose();
@@ -95,16 +91,12 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     final openTabs = sessState.openTabs;
     final activeId = sessState.activeSessionId;
     final sessions = ref.watch(serverProvider.select((s) => s.sessions));
+    final serverConfig = ref.watch(serverProvider.select((s) => s.config));
 
     // Prune maps for sessions that are no longer open to prevent unbounded growth.
     final openIds = openTabs.map((t) => t.sessionId).toSet();
-    _terminalKeys.removeWhere((id, _) => !openIds.contains(id));
+    _terminalControllers.removeWhere((id, _) => !openIds.contains(id));
     _sessionTitles.removeWhere((id, _) => !openIds.contains(id));
-    _clearDebounceTimers.removeWhere((id, timer) {
-      if (openIds.contains(id)) return false;
-      timer.cancel();
-      return true;
-    });
 
     Widget content;
     if (openTabs.isEmpty) {
@@ -142,78 +134,73 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
               child: ClipRect(
                 child: Stack(
                   fit: StackFit.expand,
-                  children: openTabs.map((tab) {
-                    final isActive = tab.sessionId == activeId;
-                    final session = sessions
-                        .where((s) => s.id == tab.sessionId)
-                        .firstOrNull;
+                  children:
+                      openTabs.map((tab) {
+                        final isActive = tab.sessionId == activeId;
+                        final session =
+                            sessions
+                                .where((s) => s.id == tab.sessionId)
+                                .firstOrNull;
 
-                    final terminalKey = _terminalKeys.putIfAbsent(
-                      tab.sessionId,
-                      () => GlobalKey<XtermTerminalViewState>(),
-                    );
+                        final terminalController = _terminalControllers
+                            .putIfAbsent(tab.sessionId, TerminalController.new);
 
-                    return Offstage(
-                      offstage: !isActive,
-                      child: widget.backend.createTerminalWidget(
-                        key: terminalKey,
-                        sessionId: tab.sessionId,
-                        command: session?.shell,
-                        cwd: session?.cwd,
-                        isActive: isActive,
-                        onSessionExited: () {
-                          _clearDebounceTimers.remove(tab.sessionId)?.cancel();
-                          ref.read(sessionProvider.notifier).closeTab(tab.sessionId);
-                        },
-                        onTitleChanged: (title) {
-                          if (title == null || title.isEmpty) return;
-                          // Strip control chars and Private Use Area (nerd font glyphs → renders as 〓)
-                          final clean = title
-                              .replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '')
-                              .replaceAll(RegExp(r'[\uE000-\uF8FF]'), '')
-                              .replaceAll(RegExp(r'[\uDB80-\uDBFF][\uDC00-\uDFFF]'), '')
-                              .trim();
-                          if (clean.isEmpty) return;
+                        return Offstage(
+                          offstage: !isActive,
+                          child: widget.backend.createTerminalWidget(
+                            key: ValueKey(
+                              '${widget.backend.platformId}:${tab.sessionId}',
+                            ),
+                            sessionId: tab.sessionId,
+                            controller: terminalController,
+                            serverConfig: serverConfig,
+                            command: session?.shell,
+                            cwd: session?.cwd,
+                            isActive: isActive,
+                            onSessionExited: () {
+                              ref
+                                  .read(sessionProvider.notifier)
+                                  .closeTab(tab.sessionId);
+                            },
+                            onTitleChanged: (title) {
+                              if (title == null || title.isEmpty) return;
+                              // Strip control chars and Private Use Area (nerd font glyphs → renders as 〓)
+                              final clean =
+                                  title
+                                      .replaceAll(
+                                        RegExp(r'[\x00-\x1F\x7F]'),
+                                        '',
+                                      )
+                                      .replaceAll(
+                                        RegExp(r'[\uE000-\uF8FF]'),
+                                        '',
+                                      )
+                                      .replaceAll(
+                                        RegExp(
+                                          r'[\uDB80-\uDBFF][\uDC00-\uDFFF]',
+                                        ),
+                                        '',
+                                      )
+                                      .trim();
+                              if (clean.isEmpty) return;
 
-                          // Detect foreground tool from OSC title (mirrors Tether's sticky-OSC logic).
-                          // Empty titles are already filtered above — they won't clear an active process.
-                          final lower = clean.toLowerCase();
-                          String? detectedProcess;
-                          if (lower.contains('claude')) detectedProcess = 'claude';
-                          else if (lower.contains('codex')) detectedProcess = 'codex';
-
-                          final currentProcess = ref.read(serverProvider)
-                              .sessions.where((s) => s.id == tab.sessionId).firstOrNull?.foregroundProcess;
-
-                          if (detectedProcess != null) {
-                            // Tool confirmed — cancel any pending clear
-                            _clearDebounceTimers.remove(tab.sessionId)?.cancel();
-                            if (detectedProcess != currentProcess) {
-                              ref.read(serverProvider.notifier)
-                                  .updateForegroundProcess(tab.sessionId, detectedProcess);
-                            }
-                          } else if (currentProcess != null) {
-                            // Non-tool title while process is active — debounce before clearing.
-                            // Claude Code sends various non-"claude" titles during normal operation;
-                            // only clear if no tool title comes back within 3 seconds.
-                            if (!_clearDebounceTimers.containsKey(tab.sessionId)) {
-                              _clearDebounceTimers[tab.sessionId] = Timer(
-                                const Duration(seconds: 3),
-                                () {
-                                  _clearDebounceTimers.remove(tab.sessionId);
-                                  ref.read(serverProvider.notifier)
-                                      .updateForegroundProcess(tab.sessionId, null);
-                                },
-                              );
-                            }
-                          }
-
-                          // Store locally for tab display when no process is active
-                          setState(() { _sessionTitles[tab.sessionId] = clean; });
-                        },
-                      ),
-                    );
-                  }).toList(),
+                              // Store locally for tab display when no process is active
+                              setState(() {
+                                _sessionTitles[tab.sessionId] = clean;
+                              });
+                            },
+                            onForegroundChanged: (process, toolState) {
+                              ref
+                                  .read(serverProvider.notifier)
+                                  .updateForegroundProcess(
+                                    tab.sessionId,
+                                    process,
+                                    toolState: toolState,
+                                  );
+                            },
+                          ),
+                        );
+                      }).toList(),
                 ),
               ),
             ),
@@ -246,7 +233,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                   onKeyPress: (data) {
                     final id = ref.read(sessionProvider).activeSessionId;
                     if (id != null) {
-                      _terminalKeys[id]?.currentState?.sendText(data);
+                      _terminalControllers[id]?.sendText(data);
                     }
                   },
                   onCopy: () {},
@@ -264,14 +251,14 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     if (activeId == null) return;
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data?.text != null) {
-      _terminalKeys[activeId]?.currentState?.paste(data!.text!);
+      _terminalControllers[activeId]?.paste(data!.text!);
     }
   }
 
   void showSearchForActiveSession() {
     final activeId = ref.read(sessionProvider).activeSessionId;
     if (activeId == null) return;
-    _terminalKeys[activeId]?.currentState?.showSearch();
+    _terminalControllers[activeId]?.showSearch();
   }
 }
 
@@ -313,9 +300,8 @@ class _TerminalTabBar extends ConsumerWidget {
           itemBuilder: (context, index) {
             final tab = openTabs[index];
             final isActive = tab.sessionId == activeId;
-            final session = sessions
-                .where((s) => s.id == tab.sessionId)
-                .firstOrNull;
+            final session =
+                sessions.where((s) => s.id == tab.sessionId).firstOrNull;
 
             if (session == null) {
               return SizedBox.shrink(key: ValueKey('missing_${tab.sessionId}'));
@@ -326,20 +312,31 @@ class _TerminalTabBar extends ConsumerWidget {
             final hasProcess = session.foregroundProcess != null;
             // When a process (claude/codex) is active: getDisplayInfo() already shows the right name+icon.
             // When no process: use OSC title (directory) or session-<hash> as fallback.
-            final tabDisplayName = hasProcess ? display.displayName : (oscTitle ?? display.displayName);
-            final tabSubtitle = hasProcess ? session.name : (oscTitle != null ? session.name : display.subtitle);
+            final tabDisplayName =
+                hasProcess
+                    ? display.displayName
+                    : (oscTitle ?? display.displayName);
+            final tabSubtitle =
+                hasProcess
+                    ? session.name
+                    : (oscTitle != null ? session.name : display.subtitle);
 
             return ReorderableDelayedDragStartListener(
               key: ValueKey(tab.sessionId),
               index: index,
               child: GestureDetector(
                 onTap: () {
-                  ref.read(sessionProvider.notifier).setActiveSession(tab.sessionId);
+                  ref
+                      .read(sessionProvider.notifier)
+                      .setActiveSession(tab.sessionId);
                 },
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   decoration: BoxDecoration(
-                    color: isActive ? const Color(0xFF2D2D2D) : const Color(0xFF1E1E1E),
+                    color:
+                        isActive
+                            ? const Color(0xFF2D2D2D)
+                            : const Color(0xFF1E1E1E),
                     border: Border(
                       bottom: BorderSide(
                         color: isActive ? Colors.blue : Colors.transparent,
@@ -356,14 +353,23 @@ class _TerminalTabBar extends ConsumerWidget {
                         children: [
                           display.iconAsset != null
                               ? Opacity(
-                                  opacity: isActive ? 1.0 : 0.5,
-                                  child: Image.asset(display.iconAsset!, width: 14, height: 14),
-                                )
-                              : Icon(
-                                  display.icon,
-                                  size: 14,
-                                  color: isActive ? display.iconColor : display.iconColor.withValues(alpha: 0.5),
+                                opacity: isActive ? 1.0 : 0.5,
+                                child: Image.asset(
+                                  display.iconAsset!,
+                                  width: 14,
+                                  height: 14,
                                 ),
+                              )
+                              : Icon(
+                                display.icon,
+                                size: 14,
+                                color:
+                                    isActive
+                                        ? display.iconColor
+                                        : display.iconColor.withValues(
+                                          alpha: 0.5,
+                                        ),
+                              ),
                           if (session.toolState != null)
                             Positioned(
                               right: -3,
@@ -388,7 +394,8 @@ class _TerminalTabBar extends ConsumerWidget {
                             Text(
                               tabSubtitle,
                               style: TextStyle(
-                                color: isActive ? Colors.white38 : Colors.white24,
+                                color:
+                                    isActive ? Colors.white38 : Colors.white24,
                                 fontSize: 10,
                               ),
                             ),
@@ -405,9 +412,14 @@ class _TerminalTabBar extends ConsumerWidget {
                             color: isActive ? Colors.white54 : Colors.white24,
                           ),
                           padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                          constraints: const BoxConstraints(
+                            minWidth: 28,
+                            minHeight: 28,
+                          ),
                           onPressed: () {
-                            ref.read(sessionProvider.notifier).closeTab(tab.sessionId);
+                            ref
+                                .read(sessionProvider.notifier)
+                                .closeTab(tab.sessionId);
                           },
                         ),
                       ),

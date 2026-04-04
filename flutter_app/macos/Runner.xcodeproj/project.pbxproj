@@ -252,6 +252,7 @@
 				33CC10EB2044A3C60003C045 /* Resources */,
 				33CC110E2044A8840003C045 /* Bundle Framework */,
 				3399D490228B24CF009A79C7 /* ShellScript */,
+				TG003333AAA00001 /* Bundle tether-client */,
 				TG002222AAA00001 /* Copy libghostty dylib */,
 				73418F0A1CDE8518FCFD2B36 /* [CP] Embed Pods Frameworks */,
 			);
@@ -453,6 +454,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "mkdir -p \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME/Contents/Frameworks\"\ncp \"$SRCROOT/Runner/ghostty/libghostty.dylib\" \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME/Contents/Frameworks/\"\n";
+		};
+		TG003333AAA00001 /* Bundle tether-client */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle tether-client";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nREPO_ROOT=\"$SRCROOT/../..\"\nPROFILE_ARGS=\"\"\nBINARY_SUBDIR=\"debug\"\nif [ \"$CONFIGURATION\" = \"Release\" ] || [ \"$CONFIGURATION\" = \"Profile\" ]; then\n  PROFILE_ARGS=\"--release\"\n  BINARY_SUBDIR=\"release\"\nfi\ncd \"$REPO_ROOT\"\ncargo build $PROFILE_ARGS -p tether-client\nmkdir -p \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME/Contents/Helpers\"\ncp \"$REPO_ROOT/target/$BINARY_SUBDIR/tether-client\" \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME/Contents/Helpers/tether-client\"\nchmod +x \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME/Contents/Helpers/tether-client\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

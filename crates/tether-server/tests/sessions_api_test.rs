@@ -74,15 +74,27 @@ fn test_router(state: AppState) -> Router {
         .route("/api/groups", post(api::groups::create_group))
         .route("/api/groups/{id}", patch(api::groups::update_group))
         .route("/api/groups/{id}", delete(api::groups::delete_group))
-        .route("/api/groups/reorder", post(api::groups::batch_reorder_groups))
+        .route(
+            "/api/groups/reorder",
+            post(api::groups::batch_reorder_groups),
+        )
         .route("/api/sessions", get(api::sessions::list_sessions))
         .route("/api/sessions", post(api::sessions::create_session))
         .route("/api/sessions/{id}", patch(api::sessions::update_session))
         .route("/api/sessions/{id}", delete(api::sessions::delete_session))
-        .route("/api/sessions/{id}/scrollback", get(api::sessions::get_scrollback))
-        .route("/api/sessions/reorder", post(api::sessions::batch_reorder_sessions))
+        .route(
+            "/api/sessions/{id}/scrollback",
+            get(api::sessions::get_scrollback),
+        )
+        .route(
+            "/api/sessions/reorder",
+            post(api::sessions::batch_reorder_sessions),
+        )
         .route("/api/completions", get(api::completions::complete_path))
-        .route("/api/completions/remote", get(api::completions::complete_remote_path))
+        .route(
+            "/api/completions/remote",
+            get(api::completions::complete_remote_path),
+        )
         .route("/api/ssh/hosts", get(api::ssh::list_ssh_hosts))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -111,9 +123,7 @@ async fn create_group(app: &Router, name: &str) -> String {
                 .method("POST")
                 .uri("/api/groups")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({"name": name}).to_string(),
-                ))
+                .body(Body::from(serde_json::json!({"name": name}).to_string()))
                 .unwrap(),
         )
         .await
@@ -132,9 +142,15 @@ async fn create_local_session(
     cwd: Option<&str>,
 ) -> serde_json::Value {
     let mut body = serde_json::json!({"group_id": group_id});
-    if let Some(n) = name { body["name"] = serde_json::Value::String(n.to_string()); }
-    if let Some(c) = command { body["command"] = serde_json::Value::String(c.to_string()); }
-    if let Some(w) = cwd { body["cwd"] = serde_json::Value::String(w.to_string()); }
+    if let Some(n) = name {
+        body["name"] = serde_json::Value::String(n.to_string());
+    }
+    if let Some(c) = command {
+        body["command"] = serde_json::Value::String(c.to_string());
+    }
+    if let Some(w) = cwd {
+        body["cwd"] = serde_json::Value::String(w.to_string());
+    }
 
     let resp = app
         .clone()
@@ -333,9 +349,21 @@ async fn test_list_sessions_in_sort_order_after_reorder() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let sessions = list_sessions(&app).await;
-    assert_eq!(sessions[0]["id"].as_str().unwrap(), id3, "c should be first");
-    assert_eq!(sessions[1]["id"].as_str().unwrap(), id1, "a should be second");
-    assert_eq!(sessions[2]["id"].as_str().unwrap(), id2, "b should be third");
+    assert_eq!(
+        sessions[0]["id"].as_str().unwrap(),
+        id3,
+        "c should be first"
+    );
+    assert_eq!(
+        sessions[1]["id"].as_str().unwrap(),
+        id1,
+        "a should be second"
+    );
+    assert_eq!(
+        sessions[2]["id"].as_str().unwrap(),
+        id2,
+        "b should be third"
+    );
 
     cleanup_state(&state);
 }
@@ -548,9 +576,21 @@ async fn test_batch_reorder_sessions() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let sessions = list_sessions(&app).await;
-    assert_eq!(sessions[0]["id"].as_str().unwrap(), id_c, "c should be first");
-    assert_eq!(sessions[1]["id"].as_str().unwrap(), id_b, "b should be second");
-    assert_eq!(sessions[2]["id"].as_str().unwrap(), id_a, "a should be third");
+    assert_eq!(
+        sessions[0]["id"].as_str().unwrap(),
+        id_c,
+        "c should be first"
+    );
+    assert_eq!(
+        sessions[1]["id"].as_str().unwrap(),
+        id_b,
+        "b should be second"
+    );
+    assert_eq!(
+        sessions[2]["id"].as_str().unwrap(),
+        id_a,
+        "a should be third"
+    );
 
     cleanup_state(&state);
 }

@@ -50,7 +50,13 @@ pub async fn create_group(
     // (For new groups this is a no-op since the group doesn't exist yet,
     //  but we validate parent_id actually exists)
     if let Some(ref parent_id) = req.parent_id {
-        if state.inner.db.get_group(parent_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.is_none() {
+        if state
+            .inner
+            .db
+            .get_group(parent_id)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .is_none()
+        {
             return Err(StatusCode::BAD_REQUEST);
         }
     }
@@ -58,7 +64,12 @@ pub async fn create_group(
     state
         .inner
         .db
-        .create_group(&req.name, &req.default_cwd, req.parent_id.as_deref(), req.ssh_host.as_deref())
+        .create_group(
+            &req.name,
+            &req.default_cwd,
+            req.parent_id.as_deref(),
+            req.ssh_host.as_deref(),
+        )
         .map(|g| (StatusCode::CREATED, Json(g)))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
@@ -68,21 +79,20 @@ pub async fn update_group(
     Path(id): Path<String>,
     Json(req): Json<UpdateGroupRequest>,
 ) -> StatusCode {
-    match state
-        .inner
-        .db
-        .update_group(&id, req.name.as_deref(), req.default_cwd.as_deref(), req.sort_order, req.ssh_host.as_deref())
-    {
+    match state.inner.db.update_group(
+        &id,
+        req.name.as_deref(),
+        req.default_cwd.as_deref(),
+        req.sort_order,
+        req.ssh_host.as_deref(),
+    ) {
         Ok(_) => StatusCode::OK,
         Err(e) if e.to_string().contains("not_found") => StatusCode::NOT_FOUND,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
-pub async fn delete_group(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> StatusCode {
+pub async fn delete_group(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
     // Collect all descendant group IDs (recursive)
     let group_ids = match state.inner.db.collect_descendant_ids(&id) {
         Ok(ids) => ids,

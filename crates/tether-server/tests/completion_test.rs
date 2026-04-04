@@ -105,7 +105,11 @@ async fn local_completion_with_tilde_returns_home_dirs() {
 
     // Should return directories under home; all should start with ~/
     for r in &results {
-        assert!(r.starts_with("~/"), "completion should start with ~/: {}", r);
+        assert!(
+            r.starts_with("~/"),
+            "completion should start with ~/: {}",
+            r
+        );
         assert!(r.ends_with('/'), "completion should end with /: {}", r);
     }
 
@@ -132,9 +136,16 @@ async fn local_completion_bare_tilde() {
     let results: Vec<String> = serde_json::from_slice(&body).unwrap();
 
     // Bare ~ should now return home directory contents (normalized to ~/)
-    assert!(!results.is_empty(), "bare ~ should return home directory contents");
+    assert!(
+        !results.is_empty(),
+        "bare ~ should return home directory contents"
+    );
     for r in &results {
-        assert!(r.starts_with("~/"), "completion should start with ~/: {}", r);
+        assert!(
+            r.starts_with("~/"),
+            "completion should start with ~/: {}",
+            r
+        );
         assert!(r.ends_with('/'), "completion should end with /: {}", r);
     }
 
@@ -160,10 +171,7 @@ async fn local_completion_with_prefix() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/api/completions?path={}/subdir_a",
-                    &tilde_path
-                ))
+                .uri(format!("/api/completions?path={}/subdir_a", &tilde_path))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -182,10 +190,7 @@ async fn local_completion_with_prefix() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/api/completions?path={}/",
-                    &tilde_path
-                ))
+                .uri(format!("/api/completions?path={}/", &tilde_path))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -606,7 +611,11 @@ async fn local_completion_excludes_files() {
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let results: Vec<String> = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(results.len(), 1, "should only return directories, not files");
+    assert_eq!(
+        results.len(),
+        1,
+        "should only return directories, not files"
+    );
     assert!(results[0].contains("real_dir"));
 
     let _ = std::fs::remove_dir_all(&test_dir);
@@ -633,7 +642,10 @@ async fn local_completion_nonexistent_path_returns_empty() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let results: Vec<String> = serde_json::from_slice(&body).unwrap();
-    assert!(results.is_empty(), "nonexistent path should return empty, not error");
+    assert!(
+        results.is_empty(),
+        "nonexistent path should return empty, not error"
+    );
 
     cleanup(&state);
 }
@@ -665,7 +677,11 @@ async fn local_completion_all_results_end_with_slash() {
     let results: Vec<String> = serde_json::from_slice(&body).unwrap();
 
     for r in &results {
-        assert!(r.ends_with('/'), "every completion should end with /: {}", r);
+        assert!(
+            r.ends_with('/'),
+            "every completion should end with /: {}",
+            r
+        );
     }
 
     let _ = std::fs::remove_dir_all(&test_dir);

@@ -21,18 +21,25 @@ impl Tunnel {
         let mut child = tokio::process::Command::new("ssh")
             .args([
                 "-N",
-                "-L", &format!("127.0.0.1:{}:127.0.0.1:{}", local_port, remote_port),
-                "-o", "ExitOnForwardFailure=yes",
-                "-o", "BatchMode=yes",
-                "-o", "ServerAliveInterval=10",
-                "-o", "ServerAliveCountMax=3",
+                "-L",
+                &format!("127.0.0.1:{}:127.0.0.1:{}", local_port, remote_port),
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ServerAliveInterval=10",
+                "-o",
+                "ServerAliveCountMax=3",
                 &host,
             ])
             .spawn()?;
 
         tracing::info!(
             "SSH tunnel for {}: 127.0.0.1:{} → remote:{}",
-            host, local_port, remote_port
+            host,
+            local_port,
+            remote_port
         );
 
         // Wait for the port to become reachable before declaring success.
@@ -42,10 +49,17 @@ impl Tunnel {
             let _ = child.wait().await;
             // With ControlMaster the -L client exits quickly after delegating the
             // port-forward to the master; the forwarding stays alive via the master.
-            tracing::debug!("SSH tunnel client for {} on port {} exited (ControlMaster keeps port alive)", host, local_port);
+            tracing::debug!(
+                "SSH tunnel client for {} on port {} exited (ControlMaster keeps port alive)",
+                host,
+                local_port
+            );
         });
 
-        Ok(Self { local_port, _task: task })
+        Ok(Self {
+            local_port,
+            _task: task,
+        })
     }
 }
 
@@ -53,12 +67,18 @@ impl Tunnel {
 async fn wait_for_port(local_port: u16) -> anyhow::Result<()> {
     for attempt in 1..=20 {
         tokio::time::sleep(Duration::from_millis(500)).await;
-        if tokio::net::TcpStream::connect(("127.0.0.1", local_port)).await.is_ok() {
+        if tokio::net::TcpStream::connect(("127.0.0.1", local_port))
+            .await
+            .is_ok()
+        {
             return Ok(());
         }
         tracing::debug!("Waiting for tunnel port {} ({}/20)...", local_port, attempt);
     }
-    anyhow::bail!("SSH tunnel port {} did not become available in time", local_port)
+    anyhow::bail!(
+        "SSH tunnel port {} did not become available in time",
+        local_port
+    )
 }
 
 impl Tunnel {

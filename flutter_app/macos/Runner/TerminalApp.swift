@@ -183,6 +183,79 @@ class TerminalApp {
                 userInfo: ["surface": OpaquePointer(surface)]
             )
 
+        case GHOSTTY_ACTION_START_SEARCH:
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface
+            else { return }
+            let needle = action.action.start_search.needle.flatMap {
+                String(cString: $0, encoding: .utf8)
+            }
+            NotificationCenter.default.post(
+                name: .terminalSearchStarted,
+                object: nil,
+                userInfo: [
+                    "surface": OpaquePointer(surface),
+                    "needle": needle as Any,
+                ]
+            )
+
+        case GHOSTTY_ACTION_END_SEARCH:
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface
+            else { return }
+            NotificationCenter.default.post(
+                name: .terminalSearchEnded,
+                object: nil,
+                userInfo: ["surface": OpaquePointer(surface)]
+            )
+
+        case GHOSTTY_ACTION_SEARCH_TOTAL:
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface
+            else { return }
+            let total = action.action.search_total.total >= 0
+                ? Int(action.action.search_total.total)
+                : nil
+            NotificationCenter.default.post(
+                name: .terminalSearchTotalChanged,
+                object: nil,
+                userInfo: [
+                    "surface": OpaquePointer(surface),
+                    "total": total as Any,
+                ]
+            )
+
+        case GHOSTTY_ACTION_SEARCH_SELECTED:
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface
+            else { return }
+            let selected = action.action.search_selected.selected >= 0
+                ? Int(action.action.search_selected.selected)
+                : nil
+            NotificationCenter.default.post(
+                name: .terminalSearchSelectionChanged,
+                object: nil,
+                userInfo: [
+                    "surface": OpaquePointer(surface),
+                    "selected": selected as Any,
+                ]
+            )
+
+        case GHOSTTY_ACTION_SCROLLBAR:
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface
+            else { return }
+            NotificationCenter.default.post(
+                name: .terminalScrollbarChanged,
+                object: nil,
+                userInfo: [
+                    "surface": OpaquePointer(surface),
+                    "total": action.action.scrollbar.total,
+                    "offset": action.action.scrollbar.offset,
+                    "len": action.action.scrollbar.len,
+                ]
+            )
+
         default:
             break
         }
@@ -196,4 +269,9 @@ class TerminalApp {
 extension Notification.Name {
     static let terminalTitleChanged = Notification.Name("TerminalTitleChanged")
     static let terminalChildExited  = Notification.Name("TerminalChildExited")
+    static let terminalSearchStarted = Notification.Name("TerminalSearchStarted")
+    static let terminalSearchEnded = Notification.Name("TerminalSearchEnded")
+    static let terminalSearchTotalChanged = Notification.Name("TerminalSearchTotalChanged")
+    static let terminalSearchSelectionChanged = Notification.Name("TerminalSearchSelectionChanged")
+    static let terminalScrollbarChanged = Notification.Name("TerminalScrollbarChanged")
 }

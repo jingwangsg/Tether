@@ -4,11 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-echo "=== Building tether-server (Rust) ==="
+echo "=== Building Rust binaries ==="
 cd "$PROJECT_DIR"
-cargo build --release
+cargo build --release -p tether-server -p tether-client
 SERVER_BIN="$PROJECT_DIR/target/release/tether-server"
+CLIENT_BIN="$PROJECT_DIR/target/release/tether-client"
 echo "Server binary: $SERVER_BIN"
+echo "Client binary: $CLIENT_BIN"
 
 echo ""
 echo "=== Building macOS app (Flutter) ==="

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
-use tether_server::pty::session::PtySession;
+use tether_server::pty::session::{PtySession, PtyTerminalEnv};
 use uuid::Uuid;
 
 /// Create a temp directory for scrollback storage.
@@ -36,6 +36,7 @@ fn spawn_session(script: &str, dir: &str) -> Arc<PtySession> {
         dir,
         64,
         1,
+        PtyTerminalEnv::default(),
     )
     .unwrap()
 }
@@ -109,7 +110,10 @@ async fn test_osc_no_false_positive() {
 
     wait_for_output(&session).await;
     let fg = session.detect_foreground();
-    assert_eq!(fg.process, None, "should not detect a tool from unrelated title");
+    assert_eq!(
+        fg.process, None,
+        "should not detect a tool from unrelated title"
+    );
 
     session.kill();
     let _ = std::fs::remove_dir_all(&dir);
@@ -265,10 +269,7 @@ async fn test_output_detection_cleared_on_alt_screen_exit() {
 async fn test_output_detection_no_false_positive_outside_alt_screen() {
     let dir = temp_dir();
     // Print "Claude Code" WITHOUT entering alternate screen — should NOT detect
-    let script = write_script(
-        &dir,
-        "#!/bin/sh\nprintf 'Claude Code v2\\n'\nsleep 30\n",
-    );
+    let script = write_script(&dir, "#!/bin/sh\nprintf 'Claude Code v2\\n'\nsleep 30\n");
     let session = spawn_session(&script, &dir);
 
     wait_for_output(&session).await;

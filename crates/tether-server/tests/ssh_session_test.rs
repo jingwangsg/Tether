@@ -49,7 +49,10 @@ fn ssh_with_home_cwd_skips_cd() {
     let (shell, cwd) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~");
 
     // When cwd is ~, no cd wrapper needed (but keepalive is still injected)
-    assert_eq!(shell, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox", "should be ssh command with keepalive");
+    assert_eq!(
+        shell, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox",
+        "should be ssh command with keepalive"
+    );
     let home = shellexpand::tilde("~").to_string();
     assert_eq!(cwd, home);
 }
@@ -58,7 +61,10 @@ fn ssh_with_home_cwd_skips_cd() {
 fn ssh_with_empty_cwd_skips_cd() {
     let (shell, cwd) = resolve_ssh_command(Some("devbox"), "ssh devbox", "");
 
-    assert_eq!(shell, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox", "empty cwd should skip cd");
+    assert_eq!(
+        shell, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox",
+        "empty cwd should skip cd"
+    );
     let home = shellexpand::tilde("~").to_string();
     assert_eq!(cwd, home);
 }
@@ -76,8 +82,7 @@ fn ssh_with_absolute_remote_path() {
 
 #[test]
 fn ssh_with_deep_nested_path() {
-    let (shell, _) =
-        resolve_ssh_command(Some("devbox"), "ssh devbox", "~/a/b/c/d");
+    let (shell, _) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~/a/b/c/d");
 
     assert!(
         shell.contains("cd ~/'a/b/c/d'"),
@@ -88,8 +93,7 @@ fn ssh_with_deep_nested_path() {
 
 #[test]
 fn ssh_preserves_host_with_user() {
-    let (shell, _) =
-        resolve_ssh_command(Some("myhost"), "ssh user@myhost", "~/work");
+    let (shell, _) = resolve_ssh_command(Some("myhost"), "ssh user@myhost", "~/work");
 
     assert!(
         shell.contains("user@myhost"),
@@ -101,8 +105,7 @@ fn ssh_preserves_host_with_user() {
 
 #[test]
 fn ssh_preserves_host_with_port() {
-    let (shell, _) =
-        resolve_ssh_command(Some("myhost"), "ssh -p 2222 myhost", "~/work");
+    let (shell, _) = resolve_ssh_command(Some("myhost"), "ssh -p 2222 myhost", "~/work");
 
     assert!(
         shell.contains("-p 2222") && shell.contains("myhost"),
@@ -206,8 +209,7 @@ fn full_command_format_with_absolute_path() {
 
 #[test]
 fn path_with_spaces() {
-    let (shell, _) =
-        resolve_ssh_command(Some("devbox"), "ssh devbox", "~/my projects");
+    let (shell, _) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~/my projects");
 
     assert!(
         shell.contains("cd ~/'my projects'"),
@@ -218,8 +220,7 @@ fn path_with_spaces() {
 
 #[test]
 fn path_with_shell_metacharacters() {
-    let (shell, _) =
-        resolve_ssh_command(Some("devbox"), "ssh devbox", "~/projects/$(evil)");
+    let (shell, _) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~/projects/$(evil)");
 
     assert!(
         shell.contains("cd ~/'projects/$(evil)'"),
@@ -249,8 +250,7 @@ fn bare_tilde_slash_produces_valid_shell() {
 
 #[test]
 fn path_with_embedded_single_quote() {
-    let (shell, _) =
-        resolve_ssh_command(Some("devbox"), "ssh devbox", "~/it's a path");
+    let (shell, _) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~/it's a path");
 
     // Single quote inside the path component must be escaped via '\''
     // ~/ stays unquoted; the rest is: 'it'\''s a path'

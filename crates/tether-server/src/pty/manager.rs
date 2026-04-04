@@ -1,4 +1,4 @@
-use crate::pty::session::PtySession;
+use crate::pty::session::{PtySession, PtyTerminalEnv};
 use crate::state::AppState;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -30,11 +30,7 @@ fn single_quote(s: &str) -> String {
 /// For SSH groups with a non-home remote cwd, wraps the ssh command
 /// to cd into the remote path. Returns (effective_shell, effective_cwd)
 /// for spawning, plus the original (shell, cwd) for DB storage.
-pub fn resolve_ssh_command(
-    ssh_host: Option<&str>,
-    shell: &str,
-    cwd: &str,
-) -> (String, String) {
+pub fn resolve_ssh_command(ssh_host: Option<&str>, shell: &str, cwd: &str) -> (String, String) {
     if ssh_host.is_some() && shell.starts_with("ssh ") {
         let shell_with_keepalive = shell.replacen(
             "ssh ",
@@ -42,7 +38,11 @@ pub fn resolve_ssh_command(
             1,
         );
         let ssh_cmd = if cwd != "~" && !cwd.is_empty() {
-            format!("{} -t \"cd {} && exec \\$SHELL -l\"", shell_with_keepalive, shell_quote(cwd))
+            format!(
+                "{} -t \"cd {} && exec \\$SHELL -l\"",
+                shell_with_keepalive,
+                shell_quote(cwd)
+            )
         } else {
             shell_with_keepalive
         };
@@ -81,6 +81,9 @@ impl AppState {
         // For SSH sessions: embed remote cwd into SSH command, use local home for process cwd
         let (effective_shell, effective_cwd) =
             resolve_ssh_command(group.ssh_host.as_deref(), &shell, &cwd);
+        let terminal_env = PtyTerminalEnv {
+            vars: inner.config.ghostty_terminal_env()?,
+        };
 
         let session = PtySession::spawn(
             id,
@@ -93,6 +96,7 @@ impl AppState {
             &data_dir,
             inner.config.terminal.scrollback_memory_kb,
             inner.config.terminal.scrollback_disk_max_mb,
+            terminal_env,
         )?;
 
         // Persist to DB
@@ -117,11 +121,7 @@ impl AppState {
         }
         self.inner.db.delete_session(&session_id.to_string())?;
         // Clean up scrollback files
-        let session_dir = format!(
-            "{}/sessions/{}",
-            self.inner.config.data_dir(),
-            session_id
-        );
+        let session_dir = format!("{}/sessions/{}", self.inner.config.data_dir(), session_id);
         std::fs::remove_dir_all(&session_dir).ok();
         tracing::info!("Killed and removed session {}", session_id);
         Ok(())

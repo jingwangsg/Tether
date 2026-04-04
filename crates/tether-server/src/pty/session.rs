@@ -28,7 +28,10 @@ pub struct SessionForeground {
 
 impl Default for SessionForeground {
     fn default() -> Self {
-        Self { process: None, tool_state: None }
+        Self {
+            process: None,
+            tool_state: None,
+        }
     }
 }
 
@@ -74,6 +77,11 @@ pub struct PtySession {
     last_alt_screen_exit_time: Mutex<Option<std::time::Instant>>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PtyTerminalEnv {
+    pub vars: Vec<(String, String)>,
+}
+
 impl PtySession {
     pub fn spawn(
         id: Uuid,
@@ -86,6 +94,7 @@ impl PtySession {
         scrollback_data_dir: &str,
         scrollback_memory_kb: usize,
         scrollback_disk_max_mb: usize,
+        terminal_env: PtyTerminalEnv,
     ) -> anyhow::Result<Arc<Self>> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
@@ -108,7 +117,9 @@ impl PtySession {
             CommandBuilder::new(shell)
         };
         cmd.cwd(&resolved_cwd);
-        cmd.env("TERM", "xterm-256color");
+        for (key, value) in terminal_env.vars {
+            cmd.env(&key, &value);
+        }
         cmd.env_remove("CLAUDECODE");
 
         let child = pair.slave.spawn_command(cmd)?;
@@ -180,7 +191,11 @@ impl PtySession {
                     if let Ok(mut parser) = session.osc_parser.lock() {
                         if let Some(title) = parser.feed(&buf[..n]) {
                             if let Ok(mut t) = session.osc_title.lock() {
-                                *t = if title.is_empty() { None } else { Some(title.clone()) };
+                                *t = if title.is_empty() {
+                                    None
+                                } else {
+                                    Some(title.clone())
+                                };
                             }
                             Self::update_sticky_osc_tool(&session, &title);
                         }
@@ -217,10 +232,8 @@ impl PtySession {
                 pixel_height: 0,
             })?;
         }
-        self.cols
-            .store(cols, std::sync::atomic::Ordering::Relaxed);
-        self.rows
-            .store(rows, std::sync::atomic::Ordering::Relaxed);
+        self.cols.store(cols, std::sync::atomic::Ordering::Relaxed);
+        self.rows.store(rows, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
@@ -277,26 +290,42 @@ impl PtySession {
         } else {
             None
         };
-        SessionForeground { process, tool_state }
+        SessionForeground {
+            process,
+            tool_state,
+        }
     }
 
     /// Infer the running/waiting state of an AI tool from terminal output activity.
     /// Only meaningful when a known tool is the foreground process.
     pub fn compute_tool_state(&self) -> Option<ToolState> {
-        if !self.in_alternate_screen.load(std::sync::atomic::Ordering::Relaxed) {
+        if !self
+            .in_alternate_screen
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             return None;
         }
-        let input_is_recent = self.last_input_time.lock().unwrap()
+        let input_is_recent = self
+            .last_input_time
+            .lock()
+            .unwrap()
             .map(|t| t.elapsed() < std::time::Duration::from_millis(200))
             .unwrap_or(false);
         if input_is_recent {
             // Suppress Running — output is likely echo of user input.
             return Some(ToolState::Waiting);
         }
-        let is_recent = self.last_output_time.lock().unwrap()
+        let is_recent = self
+            .last_output_time
+            .lock()
+            .unwrap()
             .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
             .unwrap_or(false);
-        Some(if is_recent { ToolState::Running } else { ToolState::Waiting })
+        Some(if is_recent {
+            ToolState::Running
+        } else {
+            ToolState::Waiting
+        })
     }
 
     pub fn is_known_tool(process: Option<&str>) -> bool {
@@ -304,7 +333,8 @@ impl PtySession {
     }
 
     pub fn is_in_alternate_screen(&self) -> bool {
-        self.in_alternate_screen.load(std::sync::atomic::Ordering::Relaxed)
+        self.in_alternate_screen
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn set_last_detected_alt_screen_tool(&self, tool: Option<String>) {
@@ -355,10 +385,17 @@ impl PtySession {
     }
 
     fn detect_foreground_from_alt_screen_cache(&self) -> Option<String> {
-        let in_alt = self.in_alternate_screen.load(std::sync::atomic::Ordering::Relaxed);
+        let in_alt = self
+            .in_alternate_screen
+            .load(std::sync::atomic::Ordering::Relaxed);
         let usable = in_alt || {
-            self.last_alt_screen_exit_time.lock().ok()
-                .and_then(|g| g.as_ref().map(|t| t.elapsed() < std::time::Duration::from_secs(5)))
+            self.last_alt_screen_exit_time
+                .lock()
+                .ok()
+                .and_then(|g| {
+                    g.as_ref()
+                        .map(|t| t.elapsed() < std::time::Duration::from_secs(5))
+                })
                 .unwrap_or(false)
         };
         if usable {
@@ -471,5 +508,4 @@ impl PtySession {
             }
         }
     }
-
 }

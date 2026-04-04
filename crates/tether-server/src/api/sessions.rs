@@ -98,14 +98,15 @@ pub async fn create_session(
     Query(query): Query<CreateSessionQuery>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<(StatusCode, Json<SessionRow>), StatusCode> {
-    let group_id =
-        Uuid::parse_str(&req.group_id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let group_id = Uuid::parse_str(&req.group_id).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     if query.local {
         // local=true: store DB record only, skip PTY spawn.
         // Native macOS client manages its own PTY locally.
         let id = Uuid::new_v4();
-        let session_name = req.name.unwrap_or_else(|| format!("session-{}", &id.to_string()[..8]));
+        let session_name = req
+            .name
+            .unwrap_or_else(|| format!("session-{}", &id.to_string()[..8]));
         let shell = req.command.unwrap_or_default();
         let cwd = req.cwd.unwrap_or_else(|| "~".to_string());
 
@@ -237,7 +238,10 @@ pub async fn update_session(
                     patch.insert("sort_order".into(), serde_json::Value::Number(order.into()));
                 }
                 if let Some(ref group_id) = req.group_id {
-                    patch.insert("local_group_id".into(), serde_json::Value::String(group_id.clone()));
+                    patch.insert(
+                        "local_group_id".into(),
+                        serde_json::Value::String(group_id.clone()),
+                    );
                 }
                 match reqwest::Client::new()
                     .patch(&url)
@@ -248,14 +252,12 @@ pub async fn update_session(
                     Ok(resp) if !resp.status().is_success() => {
                         tracing::warn!(
                             "Remote PATCH for session {} returned {}",
-                            id, resp.status()
+                            id,
+                            resp.status()
                         );
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            "Failed to proxy PATCH to remote for session {}: {}",
-                            id, e
-                        );
+                        tracing::warn!("Failed to proxy PATCH to remote for session {}: {}", id, e);
                     }
                     _ => {}
                 }
@@ -265,10 +267,7 @@ pub async fn update_session(
     StatusCode::OK
 }
 
-pub async fn delete_session(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> StatusCode {
+pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
     // Proxy to remote if this is a remote session
     if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&id) {
         // Require the tunnel to be up — do not silently clean up locally while
@@ -315,9 +314,7 @@ pub async fn batch_reorder_sessions(
     // target the host that owns each PTY, not the destination group's host.
     let original_ssh_hosts: Vec<Option<String>> = items
         .iter()
-        .map(|item| {
-            state.inner.db.get_session_ssh_host(&item.id).ok().flatten()
-        })
+        .map(|item| state.inner.db.get_session_ssh_host(&item.id).ok().flatten())
         .collect();
 
     let orders: Vec<(String, i32, Option<String>)> = items
@@ -331,7 +328,9 @@ pub async fn batch_reorder_sessions(
     // For items that include a group_id move, update in-memory state and proxy
     // the new local_group_id to the remote server that owns the session.
     for (item, original_ssh_host) in items.iter().zip(original_ssh_hosts.iter()) {
-        let Some(ref group_id) = item.group_id else { continue };
+        let Some(ref group_id) = item.group_id else {
+            continue;
+        };
         // Update in-memory group_id for live local PTY sessions.
         if let Ok(uuid) = Uuid::parse_str(&item.id) {
             if let Ok(new_gid) = Uuid::parse_str(group_id) {
@@ -345,22 +344,19 @@ pub async fn batch_reorder_sessions(
             if let Some(port) = state.inner.remote_manager.get_tunnel_port(ssh_host) {
                 let url = format!("http://127.0.0.1:{}/api/sessions/{}", port, item.id);
                 let patch = serde_json::json!({"local_group_id": group_id});
-                match reqwest::Client::new()
-                    .patch(&url)
-                    .json(&patch)
-                    .send()
-                    .await
-                {
+                match reqwest::Client::new().patch(&url).json(&patch).send().await {
                     Ok(resp) if !resp.status().is_success() => {
                         tracing::warn!(
                             "Remote PATCH for session {} returned {}",
-                            item.id, resp.status()
+                            item.id,
+                            resp.status()
                         );
                     }
                     Err(e) => {
                         tracing::warn!(
                             "Failed to proxy group move to remote for session {}: {}",
-                            item.id, e
+                            item.id,
+                            e
                         );
                     }
                     _ => {}
@@ -417,7 +413,10 @@ pub async fn get_scrollback(
 
     // Slow path: dead local session preserved across restart.
     // The session record must exist in the DB, and the scrollback file on disk.
-    state.inner.db.list_sessions()
+    state
+        .inner
+        .db
+        .list_sessions()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .into_iter()
         .find(|s| s.id == id)
@@ -464,7 +463,10 @@ async fn create_remote_session(
             // Host not Ready — kick off a background connect attempt so a
             // client retry in a few seconds succeeds instead of waiting for
             // the 60-second scanner cycle.
-            state.inner.remote_manager.trigger_connect_if_needed(ssh_host);
+            state
+                .inner
+                .remote_manager
+                .trigger_connect_if_needed(ssh_host);
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
     };
@@ -481,7 +483,9 @@ async fn create_remote_session(
 
     // Strip transport SSH commands: "ssh <host>" was used locally to reach this
     // remote, but we are already on the remote — let it run its default shell.
-    let remote_command = req.command.as_deref()
+    let remote_command = req
+        .command
+        .as_deref()
         .filter(|cmd| !cmd.trim_start().starts_with("ssh "))
         .map(|s| s.to_string());
 
@@ -499,7 +503,10 @@ async fn create_remote_session(
     // Verify the tunnel port is still alive before attempting the HTTP POST.
     // If dead, clear the stale Ready state immediately so the scanner reconnects
     // on its next cycle, and return 503 instead of letting reqwest fail with 502.
-    if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err() {
+    if tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .is_err()
+    {
         state.inner.remote_manager.clear_dead_tunnel(ssh_host);
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }

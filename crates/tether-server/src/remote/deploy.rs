@@ -11,9 +11,8 @@ pub async fn ensure_deployed(client: &SshClient) -> anyhow::Result<()> {
     // 1. Detect remote OS + arch
     let (_, uname, _) = client.exec("uname -sm").await?;
     let uname = uname.trim();
-    let target = uname_to_target(uname).ok_or_else(|| {
-        anyhow::anyhow!("Unsupported remote platform: {}", uname)
-    })?;
+    let target = uname_to_target(uname)
+        .ok_or_else(|| anyhow::anyhow!("Unsupported remote platform: {}", uname))?;
 
     // 2. Compare versions
     let (_, remote_ver, _) = client
@@ -22,17 +21,20 @@ pub async fn ensure_deployed(client: &SshClient) -> anyhow::Result<()> {
     let remote_ver = remote_ver.trim();
     let local_ver = env!("CARGO_PKG_VERSION");
     // clap --version output is "tether-server X.Y.Z"
-    let remote_needs_update = remote_ver == "NOTFOUND"
-        || !remote_ver.contains(local_ver);
+    let remote_needs_update = remote_ver == "NOTFOUND" || !remote_ver.contains(local_ver);
 
     if remote_needs_update {
         tracing::info!(
             "Deploying tether-server {} to {} (remote has: {})",
-            local_ver, client.host_alias, remote_ver
+            local_ver,
+            client.host_alias,
+            remote_ver
         );
         let binary = get_or_build_linux_binary(target)?;
         client.exec("mkdir -p ~/.tether/bin").await?;
-        client.upload(&binary, "~/.tether/bin/tether-server").await?;
+        client
+            .upload(&binary, "~/.tether/bin/tether-server")
+            .await?;
         client.exec("chmod +x ~/.tether/bin/tether-server").await?;
         tracing::info!("Binary uploaded to {}", client.host_alias);
 
@@ -53,7 +55,8 @@ pub async fn ensure_deployed(client: &SshClient) -> anyhow::Result<()> {
     } else {
         tracing::debug!(
             "tether-server {} already up-to-date on {}",
-            local_ver, client.host_alias
+            local_ver,
+            client.host_alias
         );
     }
 
@@ -68,9 +71,14 @@ pub async fn ensure_deployed(client: &SshClient) -> anyhow::Result<()> {
     if alive_out.trim() != "alive" {
         tracing::info!("Starting tether-server daemon on {}", client.host_alias);
         // --no-ssh-scan: remote daemon only manages PTY sessions, never re-deploys
-        client.exec("~/.tether/bin/tether-server --daemon --no-ssh-scan").await?;
+        client
+            .exec("~/.tether/bin/tether-server --daemon --no-ssh-scan")
+            .await?;
     } else {
-        tracing::debug!("tether-server daemon already running on {}", client.host_alias);
+        tracing::debug!(
+            "tether-server daemon already running on {}",
+            client.host_alias
+        );
     }
 
     // 4. Poll until the remote server responds on port 7680
@@ -90,7 +98,9 @@ pub async fn restart_remote(client: &SshClient) -> anyhow::Result<()> {
     if kill_code != 0 {
         tracing::warn!(
             "kill command on {} exited {}: {}",
-            client.host_alias, kill_code, kill_err.trim()
+            client.host_alias,
+            kill_code,
+            kill_err.trim()
         );
     }
 
@@ -99,7 +109,9 @@ pub async fn restart_remote(client: &SshClient) -> anyhow::Result<()> {
     if rm_code != 0 {
         tracing::warn!(
             "rm -rf ~/.tether on {} exited {}: {}",
-            client.host_alias, rm_code, rm_err.trim()
+            client.host_alias,
+            rm_code,
+            rm_err.trim()
         );
     }
 
@@ -110,9 +122,9 @@ pub async fn restart_remote(client: &SshClient) -> anyhow::Result<()> {
 /// Map `uname -sm` output to a Rust target triple.
 pub(crate) fn uname_to_target(uname: &str) -> Option<&'static str> {
     match uname {
-        s if s.contains("Linux") && s.contains("x86_64")  => Some("x86_64-unknown-linux-musl"),
+        s if s.contains("Linux") && s.contains("x86_64") => Some("x86_64-unknown-linux-musl"),
         s if s.contains("Linux") && s.contains("aarch64") => Some("aarch64-unknown-linux-musl"),
-        s if s.contains("Linux") && s.contains("arm")     => Some("armv7-unknown-linux-musleabihf"),
+        s if s.contains("Linux") && s.contains("arm") => Some("armv7-unknown-linux-musleabihf"),
         _ => None,
     }
 }
@@ -149,7 +161,14 @@ fn get_or_build_linux_binary(target: &str) -> anyhow::Result<Vec<u8>> {
     // Cross-compile via cargo zigbuild
     tracing::info!("Cross-compiling tether-server for {} ...", target);
     let status = std::process::Command::new("cargo")
-        .args(["zigbuild", "--target", target, "--release", "-p", "tether-server"])
+        .args([
+            "zigbuild",
+            "--target",
+            target,
+            "--release",
+            "-p",
+            "tether-server",
+        ])
         .current_dir(workspace)
         .status()
         .map_err(|e| {

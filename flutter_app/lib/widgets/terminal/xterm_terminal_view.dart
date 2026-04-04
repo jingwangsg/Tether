@@ -7,21 +7,26 @@ import 'package:xterm/xterm.dart' as xterm;
 import '../../providers/server_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../services/websocket_service.dart';
+import 'terminal_controller.dart';
 
 /// Terminal widget that connects to a server-managed PTY via WebSocket.
 /// Uses xterm.dart for terminal emulation and rendering.
 class XtermTerminalView extends ConsumerStatefulWidget {
   final String sessionId;
+  final TerminalController controller;
   final bool isActive;
   final VoidCallback? onSessionExited;
   final void Function(String? title)? onTitleChanged;
+  final void Function(String? process, String? toolState)? onForegroundChanged;
 
   const XtermTerminalView({
     super.key,
     required this.sessionId,
+    required this.controller,
     required this.isActive,
     this.onSessionExited,
     this.onTitleChanged,
+    this.onForegroundChanged,
   });
 
   @override
@@ -45,8 +50,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   // Stateful UTF-8 decoder — maintains state across flushes so multi-byte
   // sequences split across WebSocket message boundaries are reassembled
   // correctly instead of being replaced with U+FFFD.
-  final StreamController<List<int>> _bytesInput =
-      StreamController<List<int>>(sync: true);
+  final StreamController<List<int>> _bytesInput = StreamController<List<int>>(
+    sync: true,
+  );
 
   // Foreground change debounce
   Timer? _foregroundDebounce;
@@ -109,18 +115,27 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
 
   void showSearch() {
     if (_searchOpen) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _searchFocusNode.requestFocus());
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _searchFocusNode.requestFocus(),
+      );
       return;
     }
-    setState(() { _searchOpen = true; });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _searchFocusNode.requestFocus());
+    setState(() {
+      _searchOpen = true;
+    });
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _searchFocusNode.requestFocus(),
+    );
   }
 
   void _closeSearch() {
     _disposeAllSearchHighlights();
     _searchMatches.clear();
     _searchController.clear();
-    setState(() { _searchOpen = false; _currentMatchIndex = -1; });
+    setState(() {
+      _searchOpen = false;
+      _currentMatchIndex = -1;
+    });
   }
 
   void _disposeAllSearchHighlights() {
@@ -145,7 +160,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     _searchMatches.clear();
 
     if (query.isEmpty) {
-      setState(() { _currentMatchIndex = -1; });
+      setState(() {
+        _currentMatchIndex = -1;
+      });
       return;
     }
 
@@ -169,9 +186,13 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       final p1 = buffer.createAnchor(match.col, match.line);
       final p2 = buffer.createAnchor(match.col + match.length, match.line);
       _searchAnchors.addAll([p1, p2]);
-      _searchHighlights.add(_terminalController.highlight(
-        p1: p1, p2: p2, color: const Color(0x40FFFF00),
-      ));
+      _searchHighlights.add(
+        _terminalController.highlight(
+          p1: p1,
+          p2: p2,
+          color: const Color(0x40FFFF00),
+        ),
+      );
     }
 
     int newIdx = -1;
@@ -181,7 +202,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       _scrollToMatch(newIdx);
     }
 
-    setState(() { _currentMatchIndex = newIdx; });
+    setState(() {
+      _currentMatchIndex = newIdx;
+    });
   }
 
   void _highlightCurrentMatch(int index) {
@@ -192,7 +215,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     _currentMatchP1 = buffer.createAnchor(match.col, match.line);
     _currentMatchP2 = buffer.createAnchor(match.col + match.length, match.line);
     _currentMatchHighlight = _terminalController.highlight(
-      p1: _currentMatchP1!, p2: _currentMatchP2!, color: const Color(0x80FF8C00),
+      p1: _currentMatchP1!,
+      p2: _currentMatchP2!,
+      color: const Color(0x80FF8C00),
     );
   }
 
@@ -201,15 +226,21 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     final newIdx = (_currentMatchIndex + 1) % _searchMatches.length;
     _highlightCurrentMatch(newIdx);
     _scrollToMatch(newIdx);
-    setState(() { _currentMatchIndex = newIdx; });
+    setState(() {
+      _currentMatchIndex = newIdx;
+    });
   }
 
   void _prevMatch() {
     if (_searchMatches.isEmpty) return;
-    final newIdx = (_currentMatchIndex - 1 + _searchMatches.length) % _searchMatches.length;
+    final newIdx =
+        (_currentMatchIndex - 1 + _searchMatches.length) %
+        _searchMatches.length;
     _highlightCurrentMatch(newIdx);
     _scrollToMatch(newIdx);
-    setState(() { _currentMatchIndex = newIdx; });
+    setState(() {
+      _currentMatchIndex = newIdx;
+    });
   }
 
   void _scrollToMatch(int index) {
@@ -230,8 +261,26 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    widget.controller.attach(
+      sendText: sendText,
+      paste: paste,
+      showSearch: showSearch,
+    );
+  }
+
+  @override
   void didUpdateWidget(XtermTerminalView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller)) {
+      oldWidget.controller.detach();
+      widget.controller.attach(
+        sendText: sendText,
+        paste: paste,
+        showSearch: showSearch,
+      );
+    }
     if (oldWidget.isActive != widget.isActive) {
       if (widget.isActive) {
         _resume();
@@ -244,13 +293,16 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   void _connect() {
     final serverState = ref.read(serverProvider);
     if (!serverState.isConnected || serverState.config == null) {
-      _writeToTerminal(utf8.encode('\r\n\x1b[31m[server not connected]\x1b[0m\r\n'));
+      _writeToTerminal(
+        utf8.encode('\r\n\x1b[31m[server not connected]\x1b[0m\r\n'),
+      );
       return;
     }
 
     final config = serverState.config!;
     final wsScheme = config.useTls ? 'wss' : 'ws';
-    var url = '$wsScheme://${config.host}:${config.port}/ws/session/${widget.sessionId}';
+    var url =
+        '$wsScheme://${config.host}:${config.port}/ws/session/${widget.sessionId}';
     if (config.token != null && config.token!.isNotEmpty) {
       url += '?token=${Uri.encodeComponent(config.token!)}';
     }
@@ -277,11 +329,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
           }
           _foregroundDebounce?.cancel();
           _foregroundDebounce = Timer(const Duration(milliseconds: 100), () {
-            ref.read(serverProvider.notifier).updateForegroundProcess(
-              widget.sessionId,
-              msg.process,
-              toolState: msg.toolState,
-            );
+            widget.onForegroundChanged?.call(msg.process, msg.toolState);
           });
         case ConnectionStateMessage():
           if (msg.connected) {
@@ -294,7 +342,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
               _ws?.sendResize(w, h);
             }
           } else if (!_sessionExited) {
-            _writeToTerminal(utf8.encode('\r\n\x1b[33m[reconnecting...]\x1b[0m\r\n'));
+            _writeToTerminal(
+              utf8.encode('\r\n\x1b[33m[reconnecting...]\x1b[0m\r\n'),
+            );
           }
         case PongMessage():
           break;
@@ -317,24 +367,25 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     // Suppress Running if output arrived shortly after user input — likely echo.
     final lastInput = _lastInputSentAt;
     if (lastInput != null &&
-        DateTime.now().difference(lastInput) < const Duration(milliseconds: 150)) {
+        DateTime.now().difference(lastInput) <
+            const Duration(milliseconds: 150)) {
       return;
     }
 
     if (session?.toolState != 'running') {
-      ref.read(serverProvider.notifier).updateForegroundProcess(
-        widget.sessionId, process, toolState: 'running',
-      );
+      widget.onForegroundChanged?.call(process, 'running');
     }
 
     _toolStateTimer?.cancel();
     _toolStateTimer = Timer(const Duration(milliseconds: 350), () {
-      final s = ref.read(serverProvider)
-          .sessions.where((s) => s.id == widget.sessionId).firstOrNull;
+      final s =
+          ref
+              .read(serverProvider)
+              .sessions
+              .where((s) => s.id == widget.sessionId)
+              .firstOrNull;
       if (s?.foregroundProcess == process) {
-        ref.read(serverProvider.notifier).updateForegroundProcess(
-          widget.sessionId, process, toolState: 'waiting',
-        );
+        widget.onForegroundChanged?.call(process, 'waiting');
       }
     });
   }
@@ -437,7 +488,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   void _showContextMenu(BuildContext context, Offset position) {
     final hasSelection = _terminalController.selection != null;
     final rect = RelativeRect.fromLTRB(
-      position.dx, position.dy, position.dx, position.dy,
+      position.dx,
+      position.dy,
+      position.dx,
+      position.dy,
     );
     showMenu<String>(
       context: context,
@@ -468,6 +522,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
 
   @override
   void dispose() {
+    widget.controller.detach();
     HardwareKeyboard.instance.removeHandler(_handleSearchKey);
     _disposeAllSearchHighlights();
     _searchController.dispose();
@@ -504,20 +559,15 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     return Stack(
       children: [
         terminalView,
-        Positioned(
-          top: 8,
-          right: 8,
-          child: _buildSearchBar(),
-        ),
+        Positioned(top: 8, right: 8, child: _buildSearchBar()),
       ],
     );
   }
 
   Widget _buildSearchBar() {
     final count = _searchMatches.length;
-    final countText = count == 0
-        ? 'No results'
-        : '${_currentMatchIndex + 1} / $count';
+    final countText =
+        count == 0 ? 'No results' : '${_currentMatchIndex + 1} / $count';
 
     return Material(
       color: Colors.transparent,
@@ -556,8 +606,14 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
               countText,
               style: const TextStyle(color: Colors.white54, fontSize: 11),
             ),
-            _searchNavButton(Icons.keyboard_arrow_up, count > 0 ? _prevMatch : null),
-            _searchNavButton(Icons.keyboard_arrow_down, count > 0 ? _nextMatch : null),
+            _searchNavButton(
+              Icons.keyboard_arrow_up,
+              count > 0 ? _prevMatch : null,
+            ),
+            _searchNavButton(
+              Icons.keyboard_arrow_down,
+              count > 0 ? _nextMatch : null,
+            ),
             _searchNavButton(Icons.close, _closeSearch),
           ],
         ),
@@ -570,7 +626,11 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       width: 24,
       height: 24,
       child: IconButton(
-        icon: Icon(icon, size: 14, color: onPressed != null ? Colors.white70 : Colors.white24),
+        icon: Icon(
+          icon,
+          size: 14,
+          color: onPressed != null ? Colors.white70 : Colors.white24,
+        ),
         padding: EdgeInsets.zero,
         constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
         onPressed: onPressed,

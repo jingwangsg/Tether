@@ -30,6 +30,7 @@ impl AppState {
     pub async fn new(config: ServerConfig) -> anyhow::Result<Self> {
         let data_dir = config.data_dir();
         std::fs::create_dir_all(&data_dir)?;
+        config.materialize_terminal_runtime()?;
 
         let db_path = format!("{}/tether.db", data_dir);
         let db = Store::new(&db_path)?;

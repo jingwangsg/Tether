@@ -16,10 +16,10 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use base64::Engine as _;
 use axum::middleware;
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
+use base64::Engine as _;
 use dashmap::DashMap;
 use http_body_util::BodyExt;
 use std::sync::Arc;
@@ -231,9 +231,7 @@ async fn create_session_in_ssh_group_does_not_leave_db_record_on_503() {
                 .method("POST")
                 .uri("/api/sessions")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({"group_id": gid}).to_string(),
-                ))
+                .body(Body::from(serde_json::json!({"group_id": gid}).to_string()))
                 .unwrap(),
         )
         .await
@@ -391,7 +389,14 @@ async fn list_sessions_includes_ssh_group_sessions_from_db() {
     state
         .inner
         .db
-        .create_session(&remote_id, &remote_gid, "remote-sess", "ssh myhost", "~", None)
+        .create_session(
+            &remote_id,
+            &remote_gid,
+            "remote-sess",
+            "ssh myhost",
+            "~",
+            None,
+        )
         .unwrap();
 
     let resp = app
@@ -409,7 +414,11 @@ async fn list_sessions_includes_ssh_group_sessions_from_db() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let sessions: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
 
-    assert_eq!(sessions.len(), 2, "should list both local and remote sessions");
+    assert_eq!(
+        sessions.len(),
+        2,
+        "should list both local and remote sessions"
+    );
 
     let names: Vec<&str> = sessions
         .iter()
@@ -468,7 +477,10 @@ async fn get_scrollback_for_dead_local_session_returns_empty_data() {
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(body["length"], 0, "no scrollback data for a never-written session");
+    assert_eq!(
+        body["length"], 0,
+        "no scrollback data for a never-written session"
+    );
 
     cleanup(&state);
 }
@@ -526,7 +538,9 @@ async fn get_scrollback_for_dead_session_serves_existing_disk_data() {
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["length"], 16, "should return the 16 bytes written");
     let data_b64 = body["data"].as_str().unwrap();
-    let decoded = base64::engine::general_purpose::STANDARD.decode(data_b64).unwrap();
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(data_b64)
+        .unwrap();
     assert_eq!(decoded, b"hello scrollback");
 
     cleanup(&state);
@@ -549,11 +563,7 @@ async fn store_get_session_ssh_host_via_api_created_group() {
         .create_session(&session_id, &gid, "s", "ssh prod.server.example", "~", None)
         .unwrap();
 
-    let ssh_host = state
-        .inner
-        .db
-        .get_session_ssh_host(&session_id)
-        .unwrap();
+    let ssh_host = state.inner.db.get_session_ssh_host(&session_id).unwrap();
     assert_eq!(ssh_host, Some("prod.server.example".to_string()));
 
     cleanup(&state);

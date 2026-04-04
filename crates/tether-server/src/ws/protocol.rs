@@ -148,8 +148,7 @@ mod tests {
     #[test]
     fn type_tags_are_correct() {
         // Client messages
-        let input: ClientMessage =
-            serde_json::from_str(r#"{"type":"input","data":""}"#).unwrap();
+        let input: ClientMessage = serde_json::from_str(r#"{"type":"input","data":""}"#).unwrap();
         assert!(matches!(input, ClientMessage::Input { .. }));
 
         let resize: ClientMessage =

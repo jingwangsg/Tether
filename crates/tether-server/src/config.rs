@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+const GHOSTTY_TERMINFO: &[u8] = include_bytes!("../assets/terminfo/78/xterm-ghostty");
+const GHOSTTY_TERM_NAME: &str = "xterm-ghostty";
+const GHOSTTY_TERMINFO_SUBDIR: &str = "78";
+const GHOSTTY_TERMINFO_FILENAME: &str = "xterm-ghostty";
+const GHOSTTY_TERM_PROGRAM: &str = "ghostty";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -122,6 +128,45 @@ impl ServerConfig {
         }
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
     }
+
+    pub fn terminal_runtime_dir(&self) -> PathBuf {
+        PathBuf::from(self.data_dir()).join("runtime")
+    }
+
+    pub fn ghostty_terminfo_dir(&self) -> PathBuf {
+        self.terminal_runtime_dir().join("terminfo")
+    }
+
+    pub fn materialize_terminal_runtime(&self) -> anyhow::Result<()> {
+        let entry_dir = self.ghostty_terminfo_dir().join(GHOSTTY_TERMINFO_SUBDIR);
+        std::fs::create_dir_all(&entry_dir)?;
+        let entry_path = entry_dir.join(GHOSTTY_TERMINFO_FILENAME);
+        let needs_write = match std::fs::read(&entry_path) {
+            Ok(existing) => existing != GHOSTTY_TERMINFO,
+            Err(_) => true,
+        };
+        if needs_write {
+            std::fs::write(&entry_path, GHOSTTY_TERMINFO)?;
+        }
+        Ok(())
+    }
+
+    pub fn ghostty_terminal_env(&self) -> anyhow::Result<Vec<(String, String)>> {
+        self.materialize_terminal_runtime()?;
+        Ok(vec![
+            ("TERM".to_string(), GHOSTTY_TERM_NAME.to_string()),
+            (
+                "TERMINFO".to_string(),
+                self.ghostty_terminfo_dir().display().to_string(),
+            ),
+            ("COLORTERM".to_string(), "truecolor".to_string()),
+            ("TERM_PROGRAM".to_string(), GHOSTTY_TERM_PROGRAM.to_string()),
+            (
+                "TERM_PROGRAM_VERSION".to_string(),
+                env!("CARGO_PKG_VERSION").to_string(),
+            ),
+        ])
+    }
 }
 
 #[cfg(test)]
@@ -241,5 +286,54 @@ scrollback_disk_max_mb = 100
         // The default is "~/.tether", which after expansion should not contain ~
         assert!(!dir.starts_with('~'), "tilde should be expanded: {}", dir);
         assert!(dir.ends_with(".tether"));
+    }
+
+    #[test]
+    fn materialize_terminal_runtime_writes_terminfo() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("TETHER_DATA_DIR", tmp.path());
+
+        let config = ServerConfig::default();
+        config.materialize_terminal_runtime().unwrap();
+
+        let entry = config
+            .ghostty_terminfo_dir()
+            .join(GHOSTTY_TERMINFO_SUBDIR)
+            .join(GHOSTTY_TERMINFO_FILENAME);
+        let data = std::fs::read(entry).unwrap();
+        assert!(!data.is_empty());
+        assert_eq!(data, GHOSTTY_TERMINFO);
+
+        std::env::remove_var("TETHER_DATA_DIR");
+    }
+
+    #[test]
+    fn ghostty_terminal_env_contains_expected_vars() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("TETHER_DATA_DIR", tmp.path());
+
+        let config = ServerConfig::default();
+        let env = config.ghostty_terminal_env().unwrap();
+        let map: std::collections::HashMap<_, _> = env.into_iter().collect();
+        let terminfo_dir = config.ghostty_terminfo_dir().display().to_string();
+
+        assert_eq!(map.get("TERM").map(String::as_str), Some(GHOSTTY_TERM_NAME));
+        assert_eq!(map.get("COLORTERM").map(String::as_str), Some("truecolor"));
+        assert_eq!(
+            map.get("TERM_PROGRAM").map(String::as_str),
+            Some(GHOSTTY_TERM_PROGRAM)
+        );
+        assert_eq!(
+            map.get("TERM_PROGRAM_VERSION").map(String::as_str),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            map.get("TERMINFO").map(String::as_str),
+            Some(terminfo_dir.as_str())
+        );
+
+        std::env::remove_var("TETHER_DATA_DIR");
     }
 }

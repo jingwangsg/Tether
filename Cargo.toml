@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/tether-server"]
+members = ["crates/tether-server", "crates/tether-client"]
 resolver = "2"

@@ -10,7 +10,11 @@ pub struct CompletionQuery {
 
 pub async fn complete_path(Query(query): Query<CompletionQuery>) -> Json<Vec<String>> {
     // Normalize bare ~ to ~/ so we list home directory contents
-    let path = if query.path == "~" { "~/".to_string() } else { query.path.clone() };
+    let path = if query.path == "~" {
+        "~/".to_string()
+    } else {
+        query.path.clone()
+    };
     let expanded = shellexpand::tilde(&path).to_string();
 
     // Restrict completions to the user's home directory (canonicalize both sides)
@@ -21,7 +25,10 @@ pub async fn complete_path(Query(query): Query<CompletionQuery>) -> Json<Vec<Str
     let resolved = std::path::Path::new(&expanded);
     if let Ok(canonical_parent) = resolved.canonicalize().or_else(|_| {
         // If path doesn't exist yet, canonicalize its parent
-        resolved.parent().map(|p| p.canonicalize()).unwrap_or_else(|| Ok(resolved.to_path_buf()))
+        resolved
+            .parent()
+            .map(|p| p.canonicalize())
+            .unwrap_or_else(|| Ok(resolved.to_path_buf()))
     }) {
         if !canonical_parent.starts_with(&home) {
             return Json(vec![]);
@@ -45,9 +52,7 @@ pub async fn complete_path(Query(query): Query<CompletionQuery>) -> Json<Vec<Str
 
     let mut results: Vec<String> = entries
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
-        })
+        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             if name.starts_with('.') {
@@ -81,7 +86,26 @@ pub struct RemoteCompletionQuery {
 
 /// Returns true if the path contains characters that could enable shell injection.
 fn has_dangerous_chars(s: &str) -> bool {
-    s.chars().any(|c| matches!(c, ';' | '`' | '$' | '|' | '&' | '(' | ')' | '{' | '}' | '<' | '>' | '\'' | '"' | '\\' | '\n' | '\r'))
+    s.chars().any(|c| {
+        matches!(
+            c,
+            ';' | '`'
+                | '$'
+                | '|'
+                | '&'
+                | '('
+                | ')'
+                | '{'
+                | '}'
+                | '<'
+                | '>'
+                | '\''
+                | '"'
+                | '\\'
+                | '\n'
+                | '\r'
+        )
+    })
 }
 
 pub async fn complete_remote_path(Query(query): Query<RemoteCompletionQuery>) -> Json<Vec<String>> {
@@ -90,12 +114,18 @@ pub async fn complete_remote_path(Query(query): Query<RemoteCompletionQuery>) ->
     }
 
     // Normalize bare ~ to ~/ so the glob expands correctly
-    let path = if query.path == "~" { "~/".to_string() } else { query.path.clone() };
+    let path = if query.path == "~" {
+        "~/".to_string()
+    } else {
+        query.path.clone()
+    };
     let ls_arg = format!("{}*", path);
 
     let child = tokio::process::Command::new("ssh")
-        .arg("-o").arg("ConnectTimeout=3")
-        .arg("-o").arg("BatchMode=yes")
+        .arg("-o")
+        .arg("ConnectTimeout=3")
+        .arg("-o")
+        .arg("BatchMode=yes")
         .arg(&query.host)
         .arg(format!("ls -1dp {} 2>/dev/null", ls_arg))
         .stdout(std::process::Stdio::piped())

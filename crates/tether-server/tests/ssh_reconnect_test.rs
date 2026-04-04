@@ -93,10 +93,19 @@ fn full_test_router(state: AppState) -> Router {
         .route("/api/sessions", post(api::sessions::create_session))
         .route("/api/sessions/{id}", patch(api::sessions::update_session))
         .route("/api/sessions/{id}", delete(api::sessions::delete_session))
-        .route("/api/sessions/{id}/scrollback", get(api::sessions::get_scrollback))
-        .route("/api/sessions/reorder", post(api::sessions::batch_reorder_sessions))
+        .route(
+            "/api/sessions/{id}/scrollback",
+            get(api::sessions::get_scrollback),
+        )
+        .route(
+            "/api/sessions/reorder",
+            post(api::sessions::batch_reorder_sessions),
+        )
         .route("/api/remote/hosts", get(api::remote::list_remote_hosts))
-        .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::auth_middleware,
+        ));
 
     Router::new()
         .route("/api/info", get(api::server_info::get_info))
@@ -144,9 +153,8 @@ async fn start_mock_remote() -> (u16, oneshot::Sender<()>) {
         while let Ok((stream, _)) = listener.accept().await {
             let handle = tokio::spawn(async move {
                 if let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await {
-                    let msg = TungMessage::Text(
-                        r#"{"type":"scrollback","data":""}"#.to_string().into(),
-                    );
+                    let msg =
+                        TungMessage::Text(r#"{"type":"scrollback","data":""}"#.to_string().into());
                     ws.send(msg).await.ok();
                     // Idle until client disconnects or this task is aborted
                     while let Some(Ok(_)) = ws.next().await {}
@@ -535,7 +543,11 @@ async fn session_post_returns_503_when_tunnel_dead_then_201_after_recovery() {
 
     // clear_dead_tunnel should have been called by the handler
     assert!(
-        state.inner.remote_manager.get_tunnel_port("testhost").is_none(),
+        state
+            .inner
+            .remote_manager
+            .get_tunnel_port("testhost")
+            .is_none(),
         "tunnel should be cleared after 503"
     );
 

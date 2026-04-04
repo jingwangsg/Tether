@@ -167,10 +167,7 @@ mod tests {
     #[test]
     fn no_osc_in_normal_output() {
         let mut p = OscParser::new();
-        assert_eq!(
-            p.feed(b"\x1b[32mgreen text\x1b[0m normal text\r\n"),
-            None
-        );
+        assert_eq!(p.feed(b"\x1b[32mgreen text\x1b[0m normal text\r\n"), None);
     }
 
     #[test]

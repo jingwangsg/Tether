@@ -6,10 +6,10 @@ import Foundation
 /// Channels:
 ///   MethodChannel "dev.tether/terminal_input":
 ///     sendText({viewId, text})
-///     sendKey({viewId, key, modifiers})
 ///     setActive({viewId, active})
+///     performAction({viewId, action})
 ///   EventChannel "dev.tether/terminal_events/{viewId}":
-///     {type: "title", value: "..."} | {type: "exited"}
+///     {type: "title", value: "..."} | {type: "exited"} | search events
 class TerminalPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFactory {
     private var registrar: FlutterPluginRegistrar!
     private var views: [Int64: TerminalView] = [:]
@@ -39,8 +39,8 @@ class TerminalPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFactory {
     ) -> NSView {
         let params = args as? [String: Any] ?? [:]
         let sessionId = params["sessionId"] as? String ?? ""
-        let command = params["command"] as? String
-        let cwd = params["cwd"] as? String
+        let serverBaseUrl = params["serverBaseUrl"] as? String
+        let authToken = params["authToken"] as? String
 
         // Create the event channel for this view
         let eventChannel = FlutterEventChannel(
@@ -50,8 +50,8 @@ class TerminalPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFactory {
 
         let view = TerminalView(
             sessionId: sessionId,
-            command: command,
-            cwd: cwd,
+            serverBaseUrl: serverBaseUrl,
+            authToken: authToken,
             eventSink: { _ in } // placeholder, overwritten by stream handler below
         )
 
@@ -95,13 +95,15 @@ class TerminalPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFactory {
             }
             result(nil)
 
-        case "sendKey":
-            // Keys are now handled at the AppKit level (NSView.keyDown:)
-            result(nil)
-
         case "setActive":
             if let active = args["active"] as? Bool {
                 view.setActive(active)
+            }
+            result(nil)
+
+        case "performAction":
+            if let action = args["action"] as? String {
+                view.performAction(action)
             }
             result(nil)
 

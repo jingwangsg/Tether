@@ -69,14 +69,8 @@ fn test_router(state: AppState) -> Router {
         )
         .route("/api/sessions", get(api::sessions::list_sessions))
         .route("/api/sessions", post(api::sessions::create_session))
-        .route(
-            "/api/sessions/{id}",
-            patch(api::sessions::update_session),
-        )
-        .route(
-            "/api/sessions/{id}",
-            delete(api::sessions::delete_session),
-        )
+        .route("/api/sessions/{id}", patch(api::sessions::update_session))
+        .route("/api/sessions/{id}", delete(api::sessions::delete_session))
         .route(
             "/api/sessions/{id}/scrollback",
             get(api::sessions::get_scrollback),
@@ -86,7 +80,10 @@ fn test_router(state: AppState) -> Router {
             post(api::sessions::batch_reorder_sessions),
         )
         .route("/api/completions", get(api::completions::complete_path))
-        .route("/api/completions/remote", get(api::completions::complete_remote_path))
+        .route(
+            "/api/completions/remote",
+            get(api::completions::complete_remote_path),
+        )
         .route("/api/ssh/hosts", get(api::ssh::list_ssh_hosts))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -193,9 +190,7 @@ async fn test_update_group() {
                 .method("POST")
                 .uri("/api/groups")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({"name": "old"}).to_string(),
-                ))
+                .body(Body::from(serde_json::json!({"name": "old"}).to_string()))
                 .unwrap(),
         )
         .await
@@ -365,9 +360,7 @@ async fn test_batch_reorder_groups() {
                     .method("POST")
                     .uri("/api/groups")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({"name": name}).to_string(),
-                    ))
+                    .body(Body::from(serde_json::json!({"name": name}).to_string()))
                     .unwrap(),
             )
             .await
@@ -769,9 +762,7 @@ async fn test_update_group_clear_ssh_host() {
                 .method("PATCH")
                 .uri(format!("/api/groups/{}", id))
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({"ssh_host": ""}).to_string(),
-                ))
+                .body(Body::from(serde_json::json!({"ssh_host": ""}).to_string()))
                 .unwrap(),
         )
         .await
@@ -813,7 +804,9 @@ async fn test_delete_group_cascades_child_groups() {
                 .method("POST")
                 .uri("/api/groups")
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::json!({"name": "parent"}).to_string()))
+                .body(Body::from(
+                    serde_json::json!({"name": "parent"}).to_string(),
+                ))
                 .unwrap(),
         )
         .await

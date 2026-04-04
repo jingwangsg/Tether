@@ -23,9 +23,7 @@ impl ScrollbackBuffer {
             .open(&disk_path)
             .ok();
 
-        let disk_bytes = fs::metadata(&disk_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let disk_bytes = fs::metadata(&disk_path).map(|m| m.len()).unwrap_or(0);
 
         Self {
             ring: VecDeque::with_capacity(max_memory_kb * 1024),
@@ -89,8 +87,8 @@ mod tests {
 
     /// Create a unique temp directory for each test using UUID.
     fn temp_session_dir() -> String {
-        let dir = std::env::temp_dir()
-            .join(format!("tether-test-scrollback-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("tether-test-scrollback-{}", uuid::Uuid::new_v4()));
         dir.to_string_lossy().to_string()
     }
 
