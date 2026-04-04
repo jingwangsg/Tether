@@ -6,6 +6,16 @@ const GHOSTTY_TERM_NAME: &str = "xterm-ghostty";
 const GHOSTTY_TERMINFO_SUBDIR: &str = "78";
 const GHOSTTY_TERMINFO_FILENAME: &str = "xterm-ghostty";
 const GHOSTTY_TERM_PROGRAM: &str = "ghostty";
+const GHOSTTY_SHELL_FEATURES: &str = "path,title";
+const SHELL_WRAPPER_ZSH: &str = include_str!("../assets/shell-integration/bin/tether-zsh");
+const SHELL_WRAPPER_BASH: &str = include_str!("../assets/shell-integration/bin/tether-bash");
+const SHELL_INTEGRATION_ZSH_RC: &str = include_str!("../assets/shell-integration/zsh/.zshrc");
+const SHELL_INTEGRATION_ZSH_SCRIPT: &str =
+    include_str!("../assets/shell-integration/zsh/tether-integration.zsh");
+const SHELL_INTEGRATION_BASH_RC: &str =
+    include_str!("../assets/shell-integration/bash/tether.bashrc");
+const SHELL_INTEGRATION_BASH_SCRIPT: &str =
+    include_str!("../assets/shell-integration/bash/tether-integration.bash");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -137,6 +147,22 @@ impl ServerConfig {
         self.terminal_runtime_dir().join("terminfo")
     }
 
+    pub fn shell_integration_dir(&self) -> PathBuf {
+        self.terminal_runtime_dir().join("shell-integration")
+    }
+
+    pub fn shell_wrapper_dir(&self) -> PathBuf {
+        self.terminal_runtime_dir().join("bin")
+    }
+
+    pub fn zsh_wrapper_path(&self) -> PathBuf {
+        self.shell_wrapper_dir().join("tether-zsh")
+    }
+
+    pub fn bash_wrapper_path(&self) -> PathBuf {
+        self.shell_wrapper_dir().join("tether-bash")
+    }
+
     pub fn materialize_terminal_runtime(&self) -> anyhow::Result<()> {
         let entry_dir = self.ghostty_terminfo_dir().join(GHOSTTY_TERMINFO_SUBDIR);
         std::fs::create_dir_all(&entry_dir)?;
@@ -148,6 +174,30 @@ impl ServerConfig {
         if needs_write {
             std::fs::write(&entry_path, GHOSTTY_TERMINFO)?;
         }
+
+        let shell_dir = self.shell_integration_dir();
+        write_runtime_text(&self.zsh_wrapper_path(), SHELL_WRAPPER_ZSH, true)?;
+        write_runtime_text(&self.bash_wrapper_path(), SHELL_WRAPPER_BASH, true)?;
+        write_runtime_text(
+            &shell_dir.join("zsh").join(".zshrc"),
+            SHELL_INTEGRATION_ZSH_RC,
+            false,
+        )?;
+        write_runtime_text(
+            &shell_dir.join("zsh").join("tether-integration.zsh"),
+            SHELL_INTEGRATION_ZSH_SCRIPT,
+            false,
+        )?;
+        write_runtime_text(
+            &shell_dir.join("bash").join("tether.bashrc"),
+            SHELL_INTEGRATION_BASH_RC,
+            false,
+        )?;
+        write_runtime_text(
+            &shell_dir.join("bash").join("tether-integration.bash"),
+            SHELL_INTEGRATION_BASH_SCRIPT,
+            false,
+        )?;
         Ok(())
     }
 
@@ -162,11 +212,39 @@ impl ServerConfig {
             ("COLORTERM".to_string(), "truecolor".to_string()),
             ("TERM_PROGRAM".to_string(), GHOSTTY_TERM_PROGRAM.to_string()),
             (
+                "GHOSTTY_SHELL_FEATURES".to_string(),
+                GHOSTTY_SHELL_FEATURES.to_string(),
+            ),
+            (
                 "TERM_PROGRAM_VERSION".to_string(),
                 env!("CARGO_PKG_VERSION").to_string(),
             ),
         ])
     }
+}
+
+fn write_runtime_text(path: &Path, contents: &str, executable: bool) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let needs_write = match std::fs::read_to_string(path) {
+        Ok(existing) => existing != contents,
+        Err(_) => true,
+    };
+    if needs_write {
+        std::fs::write(path, contents)?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = if executable { 0o755 } else { 0o644 };
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -309,6 +387,34 @@ scrollback_disk_max_mb = 100
     }
 
     #[test]
+    fn materialize_terminal_runtime_writes_shell_integration_assets() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("TETHER_DATA_DIR", tmp.path());
+
+        let config = ServerConfig::default();
+        config.materialize_terminal_runtime().unwrap();
+
+        assert!(config.zsh_wrapper_path().exists());
+        assert!(config.bash_wrapper_path().exists());
+        assert!(config.shell_integration_dir().join("zsh/.zshrc").exists());
+        assert!(config
+            .shell_integration_dir()
+            .join("zsh/tether-integration.zsh")
+            .exists());
+        assert!(config
+            .shell_integration_dir()
+            .join("bash/tether.bashrc")
+            .exists());
+        assert!(config
+            .shell_integration_dir()
+            .join("bash/tether-integration.bash")
+            .exists());
+
+        std::env::remove_var("TETHER_DATA_DIR");
+    }
+
+    #[test]
     fn ghostty_terminal_env_contains_expected_vars() {
         let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
@@ -324,6 +430,10 @@ scrollback_disk_max_mb = 100
         assert_eq!(
             map.get("TERM_PROGRAM").map(String::as_str),
             Some(GHOSTTY_TERM_PROGRAM)
+        );
+        assert_eq!(
+            map.get("GHOSTTY_SHELL_FEATURES").map(String::as_str),
+            Some(GHOSTTY_SHELL_FEATURES)
         );
         assert_eq!(
             map.get("TERM_PROGRAM_VERSION").map(String::as_str),

@@ -122,18 +122,16 @@ class ServerNotifier extends StateNotifier<ServerState> {
         api.listSshHosts(),
       ]);
 
-      // The HTTP session list does not include foreground state for SSH sessions
-      // (the local server has no PtySession for them — that lives on the remote).
-      // Preserve whatever the WebSocket last pushed so the HTTP refresh doesn't
-      // wipe the foreground and leave the icon stuck as terminal during idle.
+      // Preserve the freshest transient foreground state we have. Older or
+      // remote daemons may omit tool_state or the full foreground payload from
+      // the HTTP session list, while WebSocket events can be more current.
       final currentSessions = state.sessions;
       final refreshed =
           (results[1] as List<Session>).map((s) {
             final current =
                 currentSessions.where((c) => c.id == s.id).firstOrNull;
-            if (s.foregroundProcess != null) {
-              // Server gave us foreground_process but not tool_state — preserve in-memory toolState.
-              if (current?.toolState != null) {
+            if (s.foregroundProcess != null || s.toolState != null) {
+              if (s.toolState == null && current?.toolState != null) {
                 return s.copyWith(toolState: current!.toolState);
               }
               return s;

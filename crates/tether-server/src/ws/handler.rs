@@ -426,7 +426,17 @@ async fn proxy_ws_to_remote(
                     if v.get("type").and_then(|x| x.as_str()) == Some("foreground_changed") {
                         match v.get("process").and_then(|x| x.as_str()) {
                             Some(p) => {
-                                state.inner.ssh_fg.insert(session_id, p.to_string());
+                                let tool_state = v
+                                    .get("tool_state")
+                                    .cloned()
+                                    .and_then(|value| serde_json::from_value(value).ok());
+                                state.inner.ssh_fg.insert(
+                                    session_id,
+                                    crate::pty::session::SessionForeground {
+                                        process: Some(p.to_string()),
+                                        tool_state,
+                                    },
+                                );
                             }
                             None => {
                                 state.inner.ssh_fg.remove(&session_id);

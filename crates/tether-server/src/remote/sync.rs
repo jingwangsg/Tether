@@ -1,4 +1,5 @@
 use crate::persistence::store::{GroupRow, SessionRow, Store};
+use crate::pty::session::SessionForeground;
 use dashmap::DashMap;
 use uuid::Uuid;
 
@@ -9,7 +10,7 @@ pub async fn sync_remote_host(
     db: &Store,
     host_alias: &str,
     tunnel_port: u16,
-    ssh_fg: &DashMap<Uuid, String>,
+    ssh_fg: &DashMap<Uuid, SessionForeground>,
 ) -> anyhow::Result<()> {
     let base = format!("http://127.0.0.1:{tunnel_port}");
     let client = reqwest::Client::new();
@@ -32,7 +33,20 @@ pub async fn sync_remote_host(
         if let Ok(id) = Uuid::parse_str(&session.id) {
             match &session.foreground_process {
                 Some(process) => {
-                    ssh_fg.insert(id, process.clone());
+                    let preserved_tool_state = ssh_fg.get(&id).and_then(|existing| {
+                        if existing.process.as_deref() == Some(process.as_str()) {
+                            existing.tool_state.clone()
+                        } else {
+                            None
+                        }
+                    });
+                    ssh_fg.insert(
+                        id,
+                        SessionForeground {
+                            process: Some(process.clone()),
+                            tool_state: session.tool_state.clone().or(preserved_tool_state),
+                        },
+                    );
                 }
                 None => {
                     ssh_fg.remove(&id);
@@ -190,6 +204,7 @@ mod tests {
             sort_order,
             is_alive: true,
             foreground_process: foreground_process.map(str::to_string),
+            tool_state: None,
             local_group_id: None,
         }
     }
@@ -213,7 +228,10 @@ mod tests {
             .unwrap();
         ssh_fg.insert(
             Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
-            "codex".to_string(),
+            SessionForeground {
+                process: Some("codex".to_string()),
+                tool_state: None,
+            },
         );
 
         let group = GroupRow {
@@ -239,6 +257,7 @@ mod tests {
             sort_order: 7,
             is_alive: true,
             foreground_process: Some("claude".to_string()),
+            tool_state: None,
             local_group_id: None,
         };
 
@@ -259,7 +278,10 @@ mod tests {
         let fg = ssh_fg
             .get(&Uuid::parse_str(&session.id).unwrap())
             .map(|entry| entry.value().clone());
-        assert_eq!(fg.as_deref(), Some("claude"));
+        assert_eq!(
+            fg.as_ref().and_then(|entry| entry.process.as_deref()),
+            Some("claude")
+        );
         assert!(store.get_group(&stale_group.id).unwrap().is_none());
     }
 
@@ -323,6 +345,7 @@ mod tests {
             name: "alpha-moved".to_string(),
             sort_order: 5,
             foreground_process: None,
+            tool_state: None,
             ..session_a.clone()
         };
         let session_c = session_row(
@@ -396,6 +419,42 @@ mod tests {
         let fg = ssh_fg
             .get(&Uuid::parse_str(&session_c.id).unwrap())
             .map(|entry| entry.value().clone());
-        assert_eq!(fg.as_deref(), Some("gemini"));
+        assert_eq!(
+            fg.as_ref().and_then(|entry| entry.process.as_deref()),
+            Some("gemini")
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_remote_host_preserves_cached_tool_state_when_remote_omits_it() {
+        let store = test_store();
+        let ssh_fg = DashMap::new();
+        let host = "shared-host";
+
+        let group = group_row("11111111-1111-1111-1111-111111111111", "remote", None, 0);
+        let session = session_row(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            &group.id,
+            "alpha",
+            0,
+            Some("claude"),
+        );
+        ssh_fg.insert(
+            Uuid::parse_str(&session.id).unwrap(),
+            SessionForeground {
+                process: Some("claude".to_string()),
+                tool_state: Some(crate::pty::session::ToolState::Running),
+            },
+        );
+
+        let port = start_mock_remote(vec![group], vec![session]).await;
+        sync_remote_host(&store, host, port, &ssh_fg).await.unwrap();
+
+        let fg = ssh_fg
+            .get(&Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap())
+            .map(|entry| entry.value().clone())
+            .expect("expected cached foreground");
+        assert_eq!(fg.process.as_deref(), Some("claude"));
+        assert_eq!(fg.tool_state, Some(crate::pty::session::ToolState::Running));
     }
 }

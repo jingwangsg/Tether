@@ -1,3 +1,4 @@
+use crate::pty::session::ToolState;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -39,6 +40,9 @@ pub struct SessionRow {
     /// Transient: detected foreground process (e.g. "claude", "codex")
     #[serde(default)]
     pub foreground_process: Option<String>,
+    /// Transient: detected coding-agent state for the foreground process.
+    #[serde(default)]
+    pub tool_state: Option<ToolState>,
     /// Persisted on the remote server: which local group this session belongs to.
     /// Set when a session is created via create_remote_session and kept in sync
     /// when the user moves the session between groups. Used during sync to restore
@@ -423,6 +427,7 @@ impl Store {
                     sort_order: row.get(9)?,
                     is_alive: row.get::<_, i32>(10)? != 0,
                     foreground_process: None,
+                    tool_state: None,
                     local_group_id: row.get(11)?,
                 })
             })?
@@ -464,6 +469,7 @@ impl Store {
             sort_order: 0,
             is_alive: true,
             foreground_process: None,
+            tool_state: None,
             local_group_id: local_group_id.map(|s| s.to_string()),
         })
     }
@@ -489,6 +495,7 @@ impl Store {
                     sort_order: row.get(9)?,
                     is_alive: row.get::<_, i32>(10)? != 0,
                     foreground_process: None,
+                    tool_state: None,
                     local_group_id: row.get(11)?,
                 })
             })
@@ -725,6 +732,7 @@ impl Store {
                     sort_order: row.get(9)?,
                     is_alive: row.get::<_, i32>(10)? != 0,
                     foreground_process: None,
+                    tool_state: None,
                     local_group_id: row.get(11)?,
                 })
             })?

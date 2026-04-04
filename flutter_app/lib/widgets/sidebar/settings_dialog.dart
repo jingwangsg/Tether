@@ -5,10 +5,7 @@ import '../../models/mobile_key.dart';
 import '../../providers/settings_provider.dart';
 
 void showSettingsDialog(BuildContext context, WidgetRef ref) {
-  showDialog(
-    context: context,
-    builder: (ctx) => const _SettingsDialog(),
-  );
+  showDialog(context: context, builder: (ctx) => const _SettingsDialog());
 }
 
 class _SettingsDialog extends ConsumerWidget {
@@ -32,10 +29,11 @@ class _SettingsDialog extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             SwitchListTile(
-              title: const Text('Show Tab Bar',
-                  style: TextStyle(fontSize: 13)),
-              subtitle: const Text('Session tabs above terminal',
-                  style: TextStyle(fontSize: 11, color: Colors.white38)),
+              title: const Text('Show Tab Bar', style: TextStyle(fontSize: 13)),
+              subtitle: const Text(
+                'Session tabs above terminal',
+                style: TextStyle(fontSize: 11, color: Colors.white38),
+              ),
               value: settings.showTabBar,
               dense: true,
               contentPadding: EdgeInsets.zero,
@@ -44,15 +42,21 @@ class _SettingsDialog extends ConsumerWidget {
               },
             ),
             SwitchListTile(
-              title: const Text('Scroll to Bottom on Output',
-                  style: TextStyle(fontSize: 13)),
-              subtitle: const Text('Always follow new terminal output',
-                  style: TextStyle(fontSize: 11, color: Colors.white38)),
+              title: const Text(
+                'Scroll to Bottom on Output',
+                style: TextStyle(fontSize: 13),
+              ),
+              subtitle: const Text(
+                'Always follow new terminal output',
+                style: TextStyle(fontSize: 11, color: Colors.white38),
+              ),
               value: settings.scrollToBottomOnOutput,
               dense: true,
               contentPadding: EdgeInsets.zero,
               onChanged: (value) {
-                ref.read(settingsProvider.notifier).setScrollToBottomOnOutput(value);
+                ref
+                    .read(settingsProvider.notifier)
+                    .setScrollToBottomOnOutput(value);
               },
             ),
             const Divider(color: Colors.white12),
@@ -60,19 +64,25 @@ class _SettingsDialog extends ConsumerWidget {
             const _HotkeyRow(),
             const Divider(color: Colors.white12),
             const SizedBox(height: 8),
-            const Text('Font',
-                style: TextStyle(fontSize: 13, color: Colors.white70)),
+            const Text(
+              'Font',
+              style: TextStyle(fontSize: 13, color: Colors.white70),
+            ),
             const SizedBox(height: 4),
             DropdownButtonFormField<String>(
-              value: _fonts.containsKey(settings.fontFamily)
-                  ? settings.fontFamily
-                  : 'MesloLGSNF',
-              items: _fonts.entries
-                  .map((e) => DropdownMenuItem(
-                        value: e.key,
-                        child: Text(e.value),
-                      ))
-                  .toList(),
+              initialValue:
+                  _fonts.containsKey(settings.fontFamily)
+                      ? settings.fontFamily
+                      : 'MesloLGSNF',
+              items:
+                  _fonts.entries
+                      .map(
+                        (e) => DropdownMenuItem(
+                          value: e.key,
+                          child: Text(e.value),
+                        ),
+                      )
+                      .toList(),
               onChanged: (value) {
                 if (value != null) {
                   ref.read(settingsProvider.notifier).setFontFamily(value);
@@ -80,8 +90,10 @@ class _SettingsDialog extends ConsumerWidget {
               },
             ),
             const SizedBox(height: 16),
-            Text('Font Size: ${settings.fontSize.round()}',
-                style: const TextStyle(fontSize: 13, color: Colors.white70)),
+            Text(
+              'Font Size: ${settings.fontSize.round()}',
+              style: const TextStyle(fontSize: 13, color: Colors.white70),
+            ),
             Slider(
               value: settings.fontSize.clamp(10, 24),
               min: 10,
@@ -97,8 +109,10 @@ class _SettingsDialog extends ConsumerWidget {
             const SizedBox(height: 8),
             Row(
               children: [
-                const Text('Custom Keys',
-                    style: TextStyle(fontSize: 13, color: Colors.white70)),
+                const Text(
+                  'Custom Keys',
+                  style: TextStyle(fontSize: 13, color: Colors.white70),
+                ),
                 const Spacer(),
                 SizedBox(
                   height: 28,
@@ -117,8 +131,10 @@ class _SettingsDialog extends ConsumerWidget {
             if (settings.customKeys.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 8),
-                child: Text('No custom keys',
-                    style: TextStyle(fontSize: 12, color: Colors.white38)),
+                child: Text(
+                  'No custom keys',
+                  style: TextStyle(fontSize: 12, color: Colors.white38),
+                ),
               )
             else
               ...settings.customKeys.asMap().entries.map((entry) {
@@ -130,21 +146,29 @@ class _SettingsDialog extends ConsumerWidget {
                     children: [
                       Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 4),
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
                         decoration: BoxDecoration(
                           color: const Color(0xFF2D2D2D),
                           borderRadius: BorderRadius.circular(4),
                         ),
-                        child: Text(key.label,
-                            style: const TextStyle(
-                                fontSize: 13, color: Colors.white70)),
+                        child: Text(
+                          key.label,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: Colors.white70,
+                          ),
+                        ),
                       ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           _describeValue(key.value),
                           style: const TextStyle(
-                              fontSize: 11, color: Colors.white38),
+                            fontSize: 11,
+                            color: Colors.white38,
+                          ),
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
@@ -156,7 +180,9 @@ class _SettingsDialog extends ConsumerWidget {
                           color: Colors.white38,
                           padding: EdgeInsets.zero,
                           constraints: const BoxConstraints(
-                              minWidth: 28, minHeight: 28),
+                            minWidth: 28,
+                            minHeight: 28,
+                          ),
                           onPressed: () {
                             ref
                                 .read(settingsProvider.notifier)
@@ -211,6 +237,7 @@ class _SettingsDialog extends ConsumerWidget {
             Navigator.pop(ctx);
           }
         }
+
         return AlertDialog(
           title: const Text('Add Custom Key'),
           content: Column(
@@ -245,10 +272,7 @@ class _SettingsDialog extends ConsumerWidget {
               onPressed: () => Navigator.pop(ctx),
               child: const Text('Cancel'),
             ),
-            ElevatedButton(
-              onPressed: doAdd,
-              child: const Text('Add'),
-            ),
+            ElevatedButton(onPressed: doAdd, child: const Text('Add')),
           ],
         );
       },
@@ -257,16 +281,19 @@ class _SettingsDialog extends ConsumerWidget {
 }
 
 String _formatHotkey(String s) {
-  return s.split('+').map((p) {
-    return switch (p) {
-      'cmd' => '⌘',
-      'shift' => '⇧',
-      'ctrl' => '⌃',
-      'alt' => '⌥',
-      'space' => 'Space',
-      _ => p.toUpperCase(),
-    };
-  }).join('');
+  return s
+      .split('+')
+      .map((p) {
+        return switch (p) {
+          'cmd' => '⌘',
+          'shift' => '⇧',
+          'ctrl' => '⌃',
+          'alt' => '⌥',
+          'space' => 'Space',
+          _ => p.toUpperCase(),
+        };
+      })
+      .join('');
 }
 
 class _HotkeyRow extends ConsumerStatefulWidget {
@@ -316,7 +343,10 @@ class _HotkeyRowState extends ConsumerState<_HotkeyRow> {
 
     final kb = HardwareKeyboard.instance;
     // Require at least one modifier
-    if (!kb.isMetaPressed && !kb.isShiftPressed && !kb.isControlPressed && !kb.isAltPressed) {
+    if (!kb.isMetaPressed &&
+        !kb.isShiftPressed &&
+        !kb.isControlPressed &&
+        !kb.isAltPressed) {
       return false;
     }
 
@@ -358,28 +388,36 @@ class _HotkeyRowState extends ConsumerState<_HotkeyRow> {
 
     return Row(
       children: [
-        const Text('Global Hotkey',
-            style: TextStyle(fontSize: 13, color: Colors.white70)),
+        const Text(
+          'Global Hotkey',
+          style: TextStyle(fontSize: 13, color: Colors.white70),
+        ),
         const Spacer(),
         if (_recording)
-          const Text('Press key combo…',
-              style: TextStyle(fontSize: 12, color: Colors.white38))
+          const Text(
+            'Press key combo…',
+            style: TextStyle(fontSize: 12, color: Colors.white38),
+          )
         else
           Text(
             hotkey != null ? _formatHotkey(hotkey) : 'Not set',
             style: TextStyle(
-                fontSize: 12,
-                color: hotkey != null ? Colors.white70 : Colors.white38),
+              fontSize: 12,
+              color: hotkey != null ? Colors.white70 : Colors.white38,
+            ),
           ),
         const SizedBox(width: 8),
         SizedBox(
           height: 28,
           child: TextButton(
             style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 8)),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+            ),
             onPressed: _recording ? _stopRecording : _startRecording,
-            child: Text(_recording ? 'Cancel' : 'Set',
-                style: const TextStyle(fontSize: 12)),
+            child: Text(
+              _recording ? 'Cancel' : 'Set',
+              style: const TextStyle(fontSize: 12),
+            ),
           ),
         ),
         if (hotkey != null && !_recording) ...[
@@ -392,8 +430,9 @@ class _HotkeyRowState extends ConsumerState<_HotkeyRow> {
               color: Colors.white38,
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-              onPressed: () =>
-                  ref.read(settingsProvider.notifier).setGlobalHotkey(null),
+              onPressed:
+                  () =>
+                      ref.read(settingsProvider.notifier).setGlobalHotkey(null),
             ),
           ),
         ],

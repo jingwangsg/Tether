@@ -1,5 +1,6 @@
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -11,7 +12,13 @@ use tether_server::persistence::Store;
 use tether_server::remote::manager::RemoteManager;
 use tether_server::state::{AppState, AppStateInner};
 
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
 fn test_state() -> AppState {
+    test_state_with_shell("")
+}
+
+fn test_state_with_shell(default_shell: &str) -> AppState {
     let data_dir = std::env::temp_dir()
         .join(format!("tether-terminal-env-test-{}", Uuid::new_v4()))
         .to_string_lossy()
@@ -27,7 +34,10 @@ fn test_state() -> AppState {
         persistence: PersistenceSection {
             data_dir: data_dir.clone(),
         },
-        terminal: TerminalSection::default(),
+        terminal: TerminalSection {
+            default_shell: default_shell.to_string(),
+            ..TerminalSection::default()
+        },
     };
     config.materialize_terminal_runtime().unwrap();
 
@@ -103,4 +113,65 @@ async fn local_session_reports_ghostty_terminal_identity() {
     assert!(std::path::Path::new(parts[1]).exists());
 
     cleanup(&state);
+}
+
+#[tokio::test]
+async fn default_bash_shell_wrapper_emits_lifecycle_markers_with_prompt_command_array() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let home = tempdir().unwrap();
+    std::env::set_var("HOME", home.path());
+    std::fs::write(
+        home.path().join(".bashrc"),
+        "PROMPT_COMMAND=('true' 'true')\n",
+    )
+    .unwrap();
+
+    let state = test_state_with_shell("/bin/bash");
+    let group = state.inner.db.create_group("g", "~", None, None).unwrap();
+    let session = state
+        .create_session(
+            Uuid::parse_str(&group.id).unwrap(),
+            Some("bash".to_string()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    let prompt_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if session.compute_tool_state() == Some(tether_server::pty::session::ToolState::Waiting) {
+            break;
+        }
+        let snapshot = String::from_utf8_lossy(&session.get_scrollback_snapshot()).into_owned();
+        assert!(
+            tokio::time::Instant::now() < prompt_deadline,
+            "bash wrapper never reached prompt state; output so far: {snapshot:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    session.write_input(b"sleep 1\n").unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        session.compute_tool_state(),
+        Some(tether_server::pty::session::ToolState::Running),
+        "bash wrapper should mark command execution as running"
+    );
+
+    let finish_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if session.compute_tool_state() == Some(tether_server::pty::session::ToolState::Waiting) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < finish_deadline,
+            "bash wrapper never returned to waiting after command completion"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    session.kill();
+    cleanup(&state);
+    std::env::remove_var("HOME");
 }

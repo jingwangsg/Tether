@@ -23,7 +23,7 @@ pub struct AppStateInner {
     pub remote_manager: RemoteManager,
     /// Cached foreground process for SSH-proxied sessions.
     /// Transient (not persisted). Updated by sync_remote_sessions and proxy_ws_to_remote.
-    pub ssh_fg: DashMap<Uuid, String>,
+    pub ssh_fg: DashMap<Uuid, SessionForeground>,
 }
 
 impl AppState {

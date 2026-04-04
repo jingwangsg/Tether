@@ -57,12 +57,6 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   // Foreground change debounce
   Timer? _foregroundDebounce;
 
-  // Tool state (running/waiting) detected from output activity
-  Timer? _toolStateTimer;
-
-  // Timestamp of last user input sent — used to suppress echo false positives
-  DateTime? _lastInputSentAt;
-
   // Search state
   bool _searchOpen = false;
   final List<({int line, int col, int length})> _searchMatches = [];
@@ -139,9 +133,13 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   }
 
   void _disposeAllSearchHighlights() {
-    for (final h in _searchHighlights) h.dispose();
+    for (final h in _searchHighlights) {
+      h.dispose();
+    }
     _searchHighlights.clear();
-    for (final a in _searchAnchors) a.dispose();
+    for (final a in _searchAnchors) {
+      a.dispose();
+    }
     _searchAnchors.clear();
     _disposeCurrentMatch();
   }
@@ -314,7 +312,6 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       switch (msg) {
         case OutputMessage():
           _writeToTerminal(msg.data);
-          _onToolOutput();
         case ScrollbackMessage():
           _writeToTerminal(msg.data);
         case SessionEventMessage():
@@ -323,10 +320,6 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
             widget.onSessionExited?.call();
           }
         case ForegroundChangedMessage():
-          if (msg.process == null) {
-            _toolStateTimer?.cancel();
-            _toolStateTimer = null;
-          }
           _foregroundDebounce?.cancel();
           _foregroundDebounce = Timer(const Duration(milliseconds: 100), () {
             widget.onForegroundChanged?.call(msg.process, msg.toolState);
@@ -350,42 +343,6 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
           break;
         case ErrorMessage():
           break;
-      }
-    });
-  }
-
-  /// Update toolState based on terminal output activity.
-  /// Called on every OutputMessage — if a known tool (claude/codex) is the
-  /// foreground process, marks it "running" immediately and schedules a
-  /// transition to "waiting" after 350ms of output silence.
-  void _onToolOutput() {
-    final sessions = ref.read(serverProvider).sessions;
-    final session = sessions.where((s) => s.id == widget.sessionId).firstOrNull;
-    final process = session?.foregroundProcess;
-    if (process != 'claude' && process != 'codex') return;
-
-    // Suppress Running if output arrived shortly after user input — likely echo.
-    final lastInput = _lastInputSentAt;
-    if (lastInput != null &&
-        DateTime.now().difference(lastInput) <
-            const Duration(milliseconds: 150)) {
-      return;
-    }
-
-    if (session?.toolState != 'running') {
-      widget.onForegroundChanged?.call(process, 'running');
-    }
-
-    _toolStateTimer?.cancel();
-    _toolStateTimer = Timer(const Duration(milliseconds: 350), () {
-      final s =
-          ref
-              .read(serverProvider)
-              .sessions
-              .where((s) => s.id == widget.sessionId)
-              .firstOrNull;
-      if (s?.foregroundProcess == process) {
-        widget.onForegroundChanged?.call(process, 'waiting');
       }
     });
   }
@@ -429,6 +386,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     if (ref.read(settingsProvider).scrollToBottomOnOutput) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !_scrollController.hasClients) return;
+        // ignore: invalid_use_of_protected_member
         _scrollController.position.forcePixels(
           _scrollController.position.maxScrollExtent,
         );
@@ -454,13 +412,11 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   }
 
   void _onTerminalInput(String data) {
-    _lastInputSentAt = DateTime.now();
     _ws?.sendInput(data);
   }
 
   /// Send raw text to the PTY (used by MobileKeyBar and paste service).
   void sendText(String text) {
-    _lastInputSentAt = DateTime.now();
     _ws?.sendInput(text);
     // Snap to live output when user sends input, matching ghostty's
     // scroll-to-bottom-on-keystroke default behavior.  forcePixels always
@@ -468,6 +424,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     // equals the target), so xterm's _onScroll re-arms _stickToBottom even
     // after alt-buffer transitions that leave maxScrollExtent at 0.
     if (_scrollController.hasClients) {
+      // ignore: invalid_use_of_protected_member
       _scrollController.position.forcePixels(
         _scrollController.position.maxScrollExtent,
       );
@@ -528,7 +485,6 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     _searchController.dispose();
     _searchFocusNode.dispose();
     _foregroundDebounce?.cancel();
-    _toolStateTimer?.cancel();
     _msgSub?.cancel();
     _ws?.dispose();
     _bytesInput.close();

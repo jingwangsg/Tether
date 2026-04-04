@@ -25,6 +25,7 @@ use tether_server::api;
 use tether_server::auth;
 use tether_server::config::{PersistenceSection, ServerConfig, ServerSection, TerminalSection};
 use tether_server::persistence::Store;
+use tether_server::pty::session::{SessionForeground, ToolState};
 use tether_server::state::{AppState, AppStateInner};
 
 // ─── Test infrastructure (mirrors api_test.rs exactly) ───────────────────────
@@ -591,6 +592,33 @@ async fn test_batch_reorder_sessions() {
         id_a,
         "a should be third"
     );
+
+    cleanup_state(&state);
+}
+
+#[tokio::test]
+async fn test_list_sessions_includes_transient_tool_state_from_cache() {
+    let state = test_state();
+    let app = test_router(state.clone());
+    let gid = create_group(&app, "remote").await;
+
+    let session = create_local_session(&app, &gid, Some("agent"), None, None).await;
+    let session_id = session["id"].as_str().unwrap().parse().unwrap();
+    state.inner.ssh_fg.insert(
+        session_id,
+        SessionForeground {
+            process: Some("codex".to_string()),
+            tool_state: Some(ToolState::Waiting),
+        },
+    );
+
+    let sessions = list_sessions(&app).await;
+    let listed = sessions
+        .iter()
+        .find(|entry| entry["id"].as_str() == session["id"].as_str())
+        .unwrap();
+    assert_eq!(listed["foreground_process"], "codex");
+    assert_eq!(listed["tool_state"], "waiting");
 
     cleanup_state(&state);
 }

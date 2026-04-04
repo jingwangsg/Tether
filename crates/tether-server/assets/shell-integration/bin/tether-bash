@@ -1,0 +1,8 @@
+#!/bin/sh
+
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+runtime_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
+
+exec "${TETHER_REAL_SHELL:-/bin/bash}" --rcfile "$runtime_dir/shell-integration/bash/tether.bashrc" -i "$@"

@@ -1,0 +1,16 @@
+#!/bin/sh
+
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+runtime_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
+
+if [ -n "${ZDOTDIR:-}" ]; then
+  export TETHER_REAL_ZDOTDIR="$ZDOTDIR"
+else
+  export TETHER_REAL_ZDOTDIR="$HOME"
+fi
+
+export ZDOTDIR="$runtime_dir/shell-integration/zsh"
+
+exec "${TETHER_REAL_SHELL:-/bin/zsh}" -i "$@"

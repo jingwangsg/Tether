@@ -26,6 +26,29 @@ fn single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellKind {
+    Bash,
+    Zsh,
+}
+
+fn detect_shell_kind(shell: &str) -> Option<ShellKind> {
+    if shell.contains(' ') {
+        return None;
+    }
+
+    let shell_name = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell);
+
+    match shell_name {
+        "bash" => Some(ShellKind::Bash),
+        "zsh" => Some(ShellKind::Zsh),
+        _ => None,
+    }
+}
+
 /// Resolve the effective shell command and cwd for session spawning.
 /// For SSH groups with a non-home remote cwd, wraps the ssh command
 /// to cd into the remote path. Returns (effective_shell, effective_cwd)
@@ -69,8 +92,11 @@ impl AppState {
             .ok_or_else(|| anyhow::anyhow!("Group not found"))?;
 
         let id = id_override.unwrap_or_else(Uuid::new_v4);
+        let is_default_shell = command.as_ref().map_or(true, |c| c.is_empty());
         let shell = command
+            .as_ref()
             .filter(|c| !c.is_empty())
+            .cloned()
             .unwrap_or_else(|| inner.config.resolve_shell());
         let cwd = cwd_override
             .filter(|c| !c.is_empty())
@@ -81,15 +107,41 @@ impl AppState {
         // For SSH sessions: embed remote cwd into SSH command, use local home for process cwd
         let (effective_shell, effective_cwd) =
             resolve_ssh_command(group.ssh_host.as_deref(), &shell, &cwd);
-        let terminal_env = PtyTerminalEnv {
+        let mut terminal_env = PtyTerminalEnv {
             vars: inner.config.ghostty_terminal_env()?,
+        };
+        let spawned_shell = if is_default_shell {
+            match detect_shell_kind(&effective_shell) {
+                Some(ShellKind::Zsh) => {
+                    terminal_env
+                        .vars
+                        .push(("TETHER_REAL_SHELL".to_string(), effective_shell.clone()));
+                    if let Ok(real_zdotdir) = std::env::var("ZDOTDIR") {
+                        if !real_zdotdir.is_empty() {
+                            terminal_env
+                                .vars
+                                .push(("TETHER_REAL_ZDOTDIR".to_string(), real_zdotdir));
+                        }
+                    }
+                    inner.config.zsh_wrapper_path().display().to_string()
+                }
+                Some(ShellKind::Bash) => {
+                    terminal_env
+                        .vars
+                        .push(("TETHER_REAL_SHELL".to_string(), effective_shell.clone()));
+                    inner.config.bash_wrapper_path().display().to_string()
+                }
+                None => effective_shell.clone(),
+            }
+        } else {
+            effective_shell.clone()
         };
 
         let session = PtySession::spawn(
             id,
             group_id,
             &session_name,
-            &effective_shell,
+            &spawned_shell,
             &effective_cwd,
             80,
             24,

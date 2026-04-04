@@ -76,8 +76,10 @@ pub async fn list_sessions(
                 row.is_alive = session.is_alive();
                 let fg = session.get_foreground();
                 row.foreground_process = fg.process;
+                row.tool_state = fg.tool_state;
             } else if let Some(fg) = state.inner.ssh_fg.get(&id) {
-                row.foreground_process = Some(fg.clone());
+                row.foreground_process = fg.process.clone();
+                row.tool_state = fg.tool_state.clone();
             }
         }
     }
@@ -155,6 +157,7 @@ pub async fn create_session(
         sort_order: 0,
         is_alive: session.is_alive(),
         foreground_process: None,
+        tool_state: None,
         local_group_id: None,
     };
 

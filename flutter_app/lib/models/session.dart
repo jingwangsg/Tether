@@ -43,6 +43,7 @@ class Session {
       lastActive: json['last_active'] as String? ?? '',
       sortOrder: json['sort_order'] as int? ?? 0,
       foregroundProcess: json['foreground_process'] as String?,
+      toolState: json['tool_state'] as String?,
     );
   }
 
@@ -67,7 +68,10 @@ class Session {
       createdAt: createdAt,
       lastActive: lastActive,
       sortOrder: sortOrder ?? this.sortOrder,
-      foregroundProcess: clearForeground ? null : (foregroundProcess ?? this.foregroundProcess),
+      foregroundProcess:
+          clearForeground
+              ? null
+              : (foregroundProcess ?? this.foregroundProcess),
       toolState: clearForeground ? null : (toolState ?? this.toolState),
     );
   }
