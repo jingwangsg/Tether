@@ -1,4 +1,5 @@
 use axum::extract::Query;
+use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 use std::time::Duration;
@@ -84,6 +85,13 @@ pub struct RemoteCompletionQuery {
     pub path: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum RemoteCompletionError {
+    Spawn(String),
+    Timeout,
+    Ssh(String),
+}
+
 /// Returns true if the path contains characters that could enable shell injection.
 fn has_dangerous_chars(s: &str) -> bool {
     s.chars().any(|c| {
@@ -108,9 +116,36 @@ fn has_dangerous_chars(s: &str) -> bool {
     })
 }
 
-pub async fn complete_remote_path(Query(query): Query<RemoteCompletionQuery>) -> Json<Vec<String>> {
+fn remote_completion_error_response(error: RemoteCompletionError) -> (StatusCode, String) {
+    match error {
+        RemoteCompletionError::Spawn(message) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to start ssh: {}", message),
+        ),
+        RemoteCompletionError::Timeout => (
+            StatusCode::GATEWAY_TIMEOUT,
+            "ssh completion timed out".to_string(),
+        ),
+        RemoteCompletionError::Ssh(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
+    }
+}
+
+fn summarize_ssh_stderr(stderr: &[u8]) -> Option<String> {
+    let stderr = String::from_utf8_lossy(stderr);
+    stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+async fn complete_remote_path_inner(
+    query: &RemoteCompletionQuery,
+    ssh_bin: &str,
+    timeout_duration: Duration,
+) -> Result<Vec<String>, RemoteCompletionError> {
     if has_dangerous_chars(&query.path) || has_dangerous_chars(&query.host) {
-        return Json(vec![]);
+        return Ok(vec![]);
     }
 
     // Normalize bare ~ to ~/ so the glob expands correctly
@@ -121,7 +156,7 @@ pub async fn complete_remote_path(Query(query): Query<RemoteCompletionQuery>) ->
     };
     let ls_arg = format!("{}*", path);
 
-    let child = tokio::process::Command::new("ssh")
+    let child = tokio::process::Command::new(ssh_bin)
         .arg("-o")
         .arg("ConnectTimeout=3")
         .arg("-o")
@@ -129,19 +164,24 @@ pub async fn complete_remote_path(Query(query): Query<RemoteCompletionQuery>) ->
         .arg(&query.host)
         .arg(format!("ls -1dp {} 2>/dev/null", ls_arg))
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn();
 
-    let child = match child {
-        Ok(c) => c,
-        Err(_) => return Json(vec![]),
+    let child = child.map_err(|error| RemoteCompletionError::Spawn(error.to_string()))?;
+
+    let result = tokio::time::timeout(timeout_duration, child.wait_with_output()).await;
+    let output = match result {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => return Err(RemoteCompletionError::Spawn(error.to_string())),
+        Err(_) => return Err(RemoteCompletionError::Timeout),
     };
 
-    let result = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output()).await;
-    let output = match result {
-        Ok(Ok(out)) => out,
-        _ => return Json(vec![]),
-    };
+    if !output.status.success() {
+        if let Some(stderr) = summarize_ssh_stderr(&output.stderr) {
+            return Err(RemoteCompletionError::Ssh(stderr));
+        }
+        return Ok(vec![]);
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut results: Vec<String> = stdout
@@ -152,7 +192,24 @@ pub async fn complete_remote_path(Query(query): Query<RemoteCompletionQuery>) ->
 
     results.sort();
     results.truncate(20);
-    Json(results)
+    Ok(results)
+}
+
+async fn complete_remote_path_with_ssh_bin(
+    query: &RemoteCompletionQuery,
+    ssh_bin: &str,
+    timeout_duration: Duration,
+) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+    complete_remote_path_inner(query, ssh_bin, timeout_duration)
+        .await
+        .map(Json)
+        .map_err(remote_completion_error_response)
+}
+
+pub async fn complete_remote_path(
+    Query(query): Query<RemoteCompletionQuery>,
+) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+    complete_remote_path_with_ssh_bin(&query, "ssh", Duration::from_secs(5)).await
 }
 
 #[cfg(test)]
@@ -160,6 +217,7 @@ mod tests {
     use super::*;
     use axum::extract::Query;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
 
     /// Helper: call complete_path with a given path string.
     async fn complete(path: &str) -> Vec<String> {
@@ -239,5 +297,71 @@ mod tests {
         let query = format!("{}/", base_path.display());
         let results = complete(&query).await;
         assert_eq!(results.len(), 20);
+    }
+
+    fn write_fake_ssh_script(body: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fake_ssh.sh");
+        fs::write(&path, format!("#!/bin/sh\n{}", body)).unwrap();
+
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).unwrap();
+
+        (dir, path.to_string_lossy().into_owned())
+    }
+
+    async fn complete_remote_with_bin(
+        ssh_bin: &str,
+        host: &str,
+        path: &str,
+        timeout_duration: Duration,
+    ) -> Result<Vec<String>, (StatusCode, String)> {
+        let query = RemoteCompletionQuery {
+            host: host.to_string(),
+            path: path.to_string(),
+        };
+
+        complete_remote_path_with_ssh_bin(&query, ssh_bin, timeout_duration)
+            .await
+            .map(|Json(results)| results)
+    }
+
+    #[tokio::test]
+    async fn remote_completion_nonzero_exit_without_stderr_returns_empty_results() {
+        let (_dir, ssh_bin) = write_fake_ssh_script("exit 2\n");
+
+        let results =
+            complete_remote_with_bin(&ssh_bin, "fake-host", "~/missing", Duration::from_secs(1))
+                .await
+                .unwrap();
+
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn remote_completion_ssh_failure_returns_non_2xx_error() {
+        let (_dir, ssh_bin) =
+            write_fake_ssh_script("echo 'Permission denied (publickey).' >&2\nexit 255\n");
+
+        let error = complete_remote_with_bin(&ssh_bin, "fake-host", "~/", Duration::from_secs(5))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error.1, "Permission denied (publickey).");
+    }
+
+    #[tokio::test]
+    async fn remote_completion_timeout_returns_gateway_timeout() {
+        let (_dir, ssh_bin) = write_fake_ssh_script("sleep 1\n");
+
+        let error =
+            complete_remote_with_bin(&ssh_bin, "fake-host", "~/", Duration::from_millis(25))
+                .await
+                .unwrap_err();
+
+        assert_eq!(error.0, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(error.1, "ssh completion timed out");
     }
 }

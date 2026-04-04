@@ -398,9 +398,9 @@ async fn remote_completion_allows_clean_tilde_path() {
     let state = test_state();
     let app = test_router(state.clone());
 
-    // ~/projects is a clean path — should not be rejected by the safety check
-    // (SSH might fail since "nonexistent-host" isn't reachable, but the endpoint
-    //  should return 200 with empty results, not reject the path)
+    // ~/projects is a clean path — it should pass the safety check and reach
+    // the SSH transport layer. Because the host does not exist, the endpoint
+    // should now surface a server error instead of silently returning [].
     let resp = app
         .oneshot(
             Request::builder()
@@ -411,12 +411,10 @@ async fn remote_completion_allows_clean_tilde_path() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.status().is_server_error());
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    let results: Vec<String> = serde_json::from_slice(&body).unwrap();
-    // Results will be empty because the host doesn't exist, but that's OK —
-    // we're testing that the request isn't rejected by the safety check
-    let _ = results;
+    let message = String::from_utf8(body.to_vec()).unwrap();
+    assert!(!message.trim().is_empty());
 
     cleanup(&state);
 }
@@ -437,10 +435,10 @@ async fn remote_completion_allows_bare_tilde() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::OK);
-    // Should return 200 (not panic or 500) — host won't be reachable, so empty
+    assert!(resp.status().is_server_error());
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    let _results: Vec<String> = serde_json::from_slice(&body).unwrap();
+    let message = String::from_utf8(body.to_vec()).unwrap();
+    assert!(!message.trim().is_empty());
 
     cleanup(&state);
 }
@@ -460,9 +458,10 @@ async fn remote_completion_allows_tilde_trailing_slash() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.status().is_server_error());
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    let _results: Vec<String> = serde_json::from_slice(&body).unwrap();
+    let message = String::from_utf8(body.to_vec()).unwrap();
+    assert!(!message.trim().is_empty());
 
     cleanup(&state);
 }
