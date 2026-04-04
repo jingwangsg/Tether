@@ -317,7 +317,7 @@ impl PtySession {
         }
     }
 
-    /// Infer the running/waiting state of an AI tool from terminal output activity.
+    /// Infer the running/waiting state of an AI tool from terminal activity.
     /// Only meaningful when a known tool is the foreground process.
     pub fn compute_tool_state(&self) -> Option<ToolState> {
         const COMMAND_START_GRACE: std::time::Duration = std::time::Duration::from_millis(1200);
@@ -364,7 +364,9 @@ impl PtySession {
             });
         }
 
-        phase.map(|_| ToolState::Waiting)
+        // Keep a visible idle state for known tools even when shell integration
+        // markers are unavailable (for example older or mismatched SSH sessions).
+        Some(ToolState::Waiting)
     }
 
     pub fn is_known_tool(process: Option<&str>) -> bool {
@@ -608,9 +610,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compute_tool_state_is_none_without_markers_or_recent_output() {
+    async fn compute_tool_state_defaults_to_waiting_without_markers_or_recent_output() {
         let (session, _dir) = spawn_idle_session();
-        assert_eq!(session.compute_tool_state(), None);
+        assert_eq!(session.compute_tool_state(), Some(ToolState::Waiting));
         session.kill();
     }
 

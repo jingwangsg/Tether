@@ -261,6 +261,18 @@ async fn handle_events_socket(
     let (mut ws_sink, mut ws_stream) = socket.split();
 
     let current_fg = session.get_foreground();
+    if crate::pty::session::PtySession::is_known_tool(current_fg.process.as_deref())
+        || current_fg.tool_state.is_some()
+    {
+        tracing::debug!(
+            target: "tool-state",
+            session_id = %session_id,
+            source = "events_ws_initial",
+            process = ?current_fg.process,
+            tool_state = ?current_fg.tool_state,
+            "sending initial foreground_changed"
+        );
+    }
     let initial = ServerMessage::ForegroundChanged {
         process: current_fg.process,
         tool_state: current_fg.tool_state,
@@ -328,6 +340,18 @@ async fn handle_events_socket(
                 result = fg_rx.recv() => {
                     match result {
                         Ok((sid, fg)) if sid == session_id => {
+                            if crate::pty::session::PtySession::is_known_tool(fg.process.as_deref())
+                                || fg.tool_state.is_some()
+                            {
+                                tracing::debug!(
+                                    target: "tool-state",
+                                    session_id = %session_id,
+                                    source = "events_ws_stream",
+                                    process = ?fg.process,
+                                    tool_state = ?fg.tool_state,
+                                    "sending foreground_changed"
+                                );
+                            }
                             let msg = ServerMessage::ForegroundChanged {
                                 process: fg.process,
                                 tool_state: fg.tool_state,
@@ -430,12 +454,26 @@ async fn proxy_ws_to_remote(
                             .get("tool_state")
                             .cloned()
                             .and_then(|value| serde_json::from_value(value).ok());
+                        let process = v
+                            .get("process")
+                            .and_then(|x| x.as_str())
+                            .map(str::to_string);
+                        if crate::pty::session::PtySession::is_known_tool(process.as_deref())
+                            || tool_state.is_some()
+                        {
+                            tracing::debug!(
+                                target: "tool-state",
+                                session_id = %session_id,
+                                source = "ssh_proxy_intercept",
+                                process = ?process,
+                                tool_state = ?tool_state,
+                                "intercepted remote foreground_changed"
+                            );
+                        }
                         update_ssh_foreground_cache(
                             &state.inner.ssh_fg,
                             session_id,
-                            v.get("process")
-                                .and_then(|x| x.as_str())
-                                .map(str::to_string),
+                            process,
                             tool_state,
                         );
                     }

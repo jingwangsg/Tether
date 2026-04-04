@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/group.dart';
 import '../models/session.dart';
@@ -130,17 +131,35 @@ class ServerNotifier extends StateNotifier<ServerState> {
           (results[1] as List<Session>).map((s) {
             final current =
                 currentSessions.where((c) => c.id == s.id).firstOrNull;
+            Session merged;
             if (s.foregroundProcess != null || s.toolState != null) {
               if (s.toolState == null && current?.toolState != null) {
-                return s.copyWith(toolState: current!.toolState);
+                merged = s.copyWith(toolState: current!.toolState);
+              } else {
+                merged = s;
               }
-              return s;
+            } else if (current?.foregroundProcess != null) {
+              merged = s.copyWith(
+                foregroundProcess: current!.foregroundProcess,
+                toolState: current.toolState,
+              );
+            } else {
+              merged = s;
             }
-            if (current?.foregroundProcess == null) return s;
-            return s.copyWith(
-              foregroundProcess: current!.foregroundProcess,
-              toolState: current.toolState,
-            );
+            if (_shouldLogToolState(
+              s.foregroundProcess,
+              s.toolState,
+              current?.foregroundProcess,
+              current?.toolState,
+            )) {
+              debugPrint(
+                '[tool-state][refresh] sid=${s.id} '
+                'http=${s.foregroundProcess}/${s.toolState} '
+                'current=${current?.foregroundProcess}/${current?.toolState} '
+                'merged=${merged.foregroundProcess}/${merged.toolState}',
+              );
+            }
+            return merged;
           }).toList();
 
       state = state.copyWith(
@@ -241,6 +260,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
     String? process, {
     String? toolState,
   }) {
+    final before = state.sessions.where((s) => s.id == sessionId).firstOrNull;
     final sessions =
         state.sessions.map((s) {
           if (s.id == sessionId) {
@@ -252,6 +272,18 @@ class ServerNotifier extends StateNotifier<ServerState> {
           }
           return s;
         }).toList();
+    if (_shouldLogToolState(
+      process,
+      toolState,
+      before?.foregroundProcess,
+      before?.toolState,
+    )) {
+      debugPrint(
+        '[tool-state][provider-update] sid=$sessionId '
+        'before=${before?.foregroundProcess}/${before?.toolState} '
+        'after=$process/$toolState',
+      );
+    }
     state = state.copyWith(sessions: sessions);
   }
 
@@ -267,6 +299,20 @@ class ServerNotifier extends StateNotifier<ServerState> {
     state.api?.dispose();
     super.dispose();
   }
+}
+
+bool _isKnownTool(String? process) => process == 'claude' || process == 'codex';
+
+bool _shouldLogToolState(
+  String? process,
+  String? toolState,
+  String? otherProcess,
+  String? otherToolState,
+) {
+  return _isKnownTool(process) ||
+      _isKnownTool(otherProcess) ||
+      toolState != null ||
+      otherToolState != null;
 }
 
 final serverProvider = StateNotifierProvider<ServerNotifier, ServerState>((

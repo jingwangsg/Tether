@@ -77,9 +77,35 @@ pub async fn list_sessions(
                 let fg = session.get_foreground();
                 row.foreground_process = fg.process;
                 row.tool_state = fg.tool_state;
+                if crate::pty::session::PtySession::is_known_tool(row.foreground_process.as_deref())
+                    || row.tool_state.is_some()
+                {
+                    tracing::debug!(
+                        target: "tool-state",
+                        session_id = %row.id,
+                        source = "list_sessions_live",
+                        process = ?row.foreground_process,
+                        tool_state = ?row.tool_state,
+                        is_alive = row.is_alive,
+                        "list_sessions foreground snapshot"
+                    );
+                }
             } else if let Some(fg) = state.inner.ssh_fg.get(&id) {
                 row.foreground_process = fg.process.clone();
                 row.tool_state = fg.tool_state.clone();
+                if crate::pty::session::PtySession::is_known_tool(row.foreground_process.as_deref())
+                    || row.tool_state.is_some()
+                {
+                    tracing::debug!(
+                        target: "tool-state",
+                        session_id = %row.id,
+                        source = "list_sessions_ssh_cache",
+                        process = ?row.foreground_process,
+                        tool_state = ?row.tool_state,
+                        is_alive = row.is_alive,
+                        "list_sessions foreground snapshot"
+                    );
+                }
             }
         }
     }

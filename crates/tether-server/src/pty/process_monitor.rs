@@ -2,6 +2,10 @@ use crate::pty::session::{PtySession, SessionForeground};
 use crate::state::AppState;
 use std::time::Duration;
 
+fn should_log_foreground(fg: &SessionForeground) -> bool {
+    PtySession::is_known_tool(fg.process.as_deref()) || fg.tool_state.is_some()
+}
+
 /// Background task that polls foreground process for all alive sessions.
 /// - Slow path (every 2s): full detection including `ps` syscall.
 /// - Fast path (every 250ms): lightweight tool-state update from in-memory timestamp only.
@@ -29,6 +33,19 @@ pub async fn run_process_monitor(state: AppState) {
                     }
                     let old_fg = session.get_foreground();
                     if new_fg != old_fg {
+                        if should_log_foreground(&old_fg) || should_log_foreground(&new_fg) {
+                            tracing::debug!(
+                                target: "tool-state",
+                                session_id = %session.id,
+                                source = "process_monitor_slow",
+                                old_process = ?old_fg.process,
+                                old_tool_state = ?old_fg.tool_state,
+                                new_process = ?new_fg.process,
+                                new_tool_state = ?new_fg.tool_state,
+                                in_alt,
+                                "foreground changed"
+                            );
+                        }
                         *session.foreground.lock().unwrap() = new_fg.clone();
                         let _ = state.inner.fg_tx.send((session.id, new_fg));
                     }
@@ -46,6 +63,15 @@ pub async fn run_process_monitor(state: AppState) {
                             process: old_fg.process.clone(),
                             tool_state,
                         };
+                        tracing::debug!(
+                            target: "tool-state",
+                            session_id = %session.id,
+                            source = "process_monitor_fast",
+                            process = ?new_fg.process,
+                            old_tool_state = ?old_fg.tool_state,
+                            new_tool_state = ?new_fg.tool_state,
+                            "tool_state changed"
+                        );
                         *session.foreground.lock().unwrap() = new_fg.clone();
                         let _ = state.inner.fg_tx.send((session.id, new_fg));
                     }

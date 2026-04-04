@@ -4,6 +4,97 @@ use super::client::SshClient;
 
 /// Workspace root embedded at compile time (two levels up from this crate's manifest).
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+const CRATE_ROOT: &str = env!("CARGO_MANIFEST_DIR");
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn remote_start_command() -> String {
+    let mut prefix = String::new();
+    if let Ok(rust_log) = std::env::var("RUST_LOG") {
+        if !rust_log.trim().is_empty() {
+            prefix.push_str("RUST_LOG=");
+            prefix.push_str(&shell_quote(rust_log.trim()));
+            prefix.push(' ');
+        }
+    }
+    format!("{prefix}~/.tether/bin/tether-server --daemon --no-ssh-scan")
+}
+
+fn fingerprint_paths() -> [std::path::PathBuf; 5] {
+    let workspace = std::path::Path::new(WORKSPACE_ROOT);
+    let crate_root = std::path::Path::new(CRATE_ROOT);
+    [
+        workspace.join("Cargo.toml"),
+        workspace.join("Cargo.lock"),
+        crate_root.join("Cargo.toml"),
+        crate_root.join("src"),
+        crate_root.join("assets"),
+    ]
+}
+
+fn collect_fingerprint_files(
+    path: &std::path::Path,
+    files: &mut Vec<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_file() {
+        files.push(path.to_path_buf());
+        return Ok(());
+    }
+    if path.is_dir() {
+        let mut entries = std::fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            collect_fingerprint_files(&entry.path(), files)?;
+        }
+    }
+    Ok(())
+}
+
+fn fnv1a_update(hash: &mut u64, bytes: &[u8]) {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    if *hash == 0 {
+        *hash = FNV_OFFSET_BASIS;
+    }
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(FNV_PRIME);
+    }
+}
+
+fn current_source_fingerprint() -> anyhow::Result<String> {
+    let workspace = std::path::Path::new(WORKSPACE_ROOT);
+    let mut files = Vec::new();
+    for path in fingerprint_paths() {
+        collect_fingerprint_files(&path, &mut files)?;
+    }
+    files.sort();
+
+    let mut hash = 0u64;
+    for file in files {
+        let rel = file.strip_prefix(workspace).unwrap_or(&file);
+        fnv1a_update(&mut hash, rel.to_string_lossy().as_bytes());
+        fnv1a_update(&mut hash, &[0]);
+        fnv1a_update(&mut hash, &std::fs::read(&file)?);
+        fnv1a_update(&mut hash, &[0xff]);
+    }
+
+    Ok(format!("{hash:016x}"))
+}
+
+fn current_cache_stamp() -> anyhow::Result<String> {
+    Ok(format!(
+        "{}:{}",
+        env!("CARGO_PKG_VERSION"),
+        current_source_fingerprint()?
+    ))
+}
 
 /// Ensure `~/.tether/bin/tether-server` on the remote is present, up-to-date,
 /// and running as a daemon.
@@ -83,9 +174,7 @@ async fn ensure_available(client: &SshClient, allow_replace_running: bool) -> an
     if alive_out.trim() != "alive" {
         tracing::info!("Starting tether-server daemon on {}", client.host_alias);
         // --no-ssh-scan: remote daemon only manages PTY sessions, never re-deploys
-        client
-            .exec("~/.tether/bin/tether-server --daemon --no-ssh-scan")
-            .await?;
+        client.exec(&remote_start_command()).await?;
     } else {
         tracing::debug!(
             "tether-server daemon already running on {}",
@@ -160,13 +249,13 @@ fn get_or_build_linux_binary(target: &str) -> anyhow::Result<Vec<u8>> {
     std::fs::create_dir_all(&cache_dir)?;
 
     let cache_path = format!("{}/tether-server-{}", cache_dir, target);
-    let version_stamp = format!("{}.version", cache_path);
-    let local_ver = env!("CARGO_PKG_VERSION");
+    let cache_stamp_path = format!("{}.version", cache_path);
+    let expected_stamp = current_cache_stamp()?;
 
-    // Cache hit: binary exists and version matches
+    // Cache hit: binary exists and source fingerprint matches
     if std::path::Path::new(&cache_path).exists() {
-        if let Ok(cached_ver) = std::fs::read_to_string(&version_stamp) {
-            if cached_ver.trim() == local_ver {
+        if let Ok(cached_stamp) = std::fs::read_to_string(&cache_stamp_path) {
+            if cached_stamp.trim() == expected_stamp {
                 tracing::debug!("Using cached binary for {}", target);
                 return Ok(std::fs::read(&cache_path)?);
             }
@@ -217,7 +306,7 @@ fn get_or_build_linux_binary(target: &str) -> anyhow::Result<Vec<u8>> {
         .join("tether-server");
 
     std::fs::copy(&built, &cache_path)?;
-    std::fs::write(&version_stamp, local_ver)?;
+    std::fs::write(&cache_stamp_path, expected_stamp)?;
 
     tracing::info!("Built and cached binary for {}", target);
     Ok(std::fs::read(&cache_path)?)

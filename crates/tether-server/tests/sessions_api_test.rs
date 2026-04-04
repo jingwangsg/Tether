@@ -18,6 +18,7 @@ use axum::routing::{delete, get, patch, post};
 use axum::Router;
 use dashmap::DashMap;
 use http_body_util::BodyExt;
+use std::time::{Duration, Instant};
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -622,6 +623,67 @@ async fn test_list_sessions_includes_transient_tool_state_from_cache() {
     assert_eq!(listed["tool_state"], "waiting");
 
     cleanup_state(&state);
+}
+
+#[tokio::test]
+async fn test_list_sessions_reports_waiting_for_markerless_known_tool_session() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let state = test_state();
+    let app = test_router(state.clone());
+    let gid = create_group(&app, "local").await;
+    let group_id = uuid::Uuid::parse_str(&gid).unwrap();
+
+    let script_dir = std::env::temp_dir().join(format!(
+        "tether-markerless-tool-state-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&script_dir).unwrap();
+    let script_path = script_dir.join("claude");
+    std::fs::write(&script_path, "#!/bin/sh\nsleep 30\n").unwrap();
+    std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let session = state
+        .create_session(
+            group_id,
+            Some("markerless".to_string()),
+            Some(script_path.display().to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+    let monitor = tokio::spawn(tether_server::pty::process_monitor::run_process_monitor(
+        state.clone(),
+    ));
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let fg = session.get_foreground();
+        if fg.process.as_deref() == Some("claude") && fg.tool_state == Some(ToolState::Waiting) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "foreground never converged to claude/waiting; got {:?}",
+            fg
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let session_id = session.id.to_string();
+    let sessions = list_sessions(&app).await;
+    let listed = sessions
+        .iter()
+        .find(|entry| entry["id"].as_str() == Some(session_id.as_str()))
+        .unwrap();
+    assert_eq!(listed["foreground_process"], "claude");
+    assert_eq!(listed["tool_state"], "waiting");
+
+    session.kill();
+    monitor.abort();
+    cleanup_state(&state);
+    let _ = std::fs::remove_dir_all(script_dir);
 }
 
 // ─── GET /api/sessions/{id}/scrollback ───────────────────────────────────────
