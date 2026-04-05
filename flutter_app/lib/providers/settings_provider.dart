@@ -36,7 +36,8 @@ class TerminalSettings {
       customKeys: customKeys ?? this.customKeys,
       showTabBar: showTabBar ?? this.showTabBar,
       globalHotkey: clearHotkey ? null : (globalHotkey ?? this.globalHotkey),
-      scrollToBottomOnOutput: scrollToBottomOnOutput ?? this.scrollToBottomOnOutput,
+      scrollToBottomOnOutput:
+          scrollToBottomOnOutput ?? this.scrollToBottomOnOutput,
     );
   }
 }
@@ -64,7 +65,10 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
     List<MobileKey>? customKeys;
     if (customKeysJson != null) {
       final list = jsonDecode(customKeysJson) as List;
-      customKeys = list.map((e) => MobileKey.fromJson(e as Map<String, dynamic>)).toList();
+      customKeys =
+          list
+              .map((e) => MobileKey.fromJson(e as Map<String, dynamic>))
+              .toList();
     }
     state = TerminalSettings(
       fontFamily: fontFamily ?? state.fontFamily,
@@ -72,7 +76,8 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
       customKeys: customKeys ?? state.customKeys,
       showTabBar: showTabBar ?? state.showTabBar,
       globalHotkey: globalHotkey,
-      scrollToBottomOnOutput: scrollToBottomOnOutput ?? state.scrollToBottomOnOutput,
+      scrollToBottomOnOutput:
+          scrollToBottomOnOutput ?? state.scrollToBottomOnOutput,
     );
     if (globalHotkey != null) _applyHotkey(globalHotkey);
   }
@@ -92,7 +97,10 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
   Future<void> setCustomKeys(List<MobileKey> keys) async {
     state = state.copyWith(customKeys: keys);
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_keyCustomKeys, jsonEncode(keys.map((k) => k.toJson()).toList()));
+    await prefs.setString(
+      _keyCustomKeys,
+      jsonEncode(keys.map((k) => k.toJson()).toList()),
+    );
   }
 
   Future<void> setShowTabBar(bool show) async {
@@ -102,9 +110,10 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
   }
 
   Future<void> setGlobalHotkey(String? hotkey) async {
-    state = hotkey != null
-        ? state.copyWith(globalHotkey: hotkey)
-        : state.copyWith(clearHotkey: true);
+    state =
+        hotkey != null
+            ? state.copyWith(globalHotkey: hotkey)
+            : state.copyWith(clearHotkey: true);
     final prefs = await SharedPreferences.getInstance();
     if (hotkey != null) {
       await prefs.setString(_keyGlobalHotkey, hotkey);
@@ -142,5 +151,5 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
 
 final settingsProvider =
     StateNotifierProvider<SettingsNotifier, TerminalSettings>((ref) {
-  return SettingsNotifier();
-});
+      return SettingsNotifier();
+    });

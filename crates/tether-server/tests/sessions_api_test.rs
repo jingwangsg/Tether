@@ -629,6 +629,33 @@ async fn test_list_sessions_includes_transient_osc_title_from_cache() {
 }
 
 #[tokio::test]
+async fn test_list_sessions_includes_transient_osc_title_from_cache_for_claude() {
+    let state = test_state();
+    let app = test_router(state.clone());
+    let gid = create_group(&app, "remote").await;
+
+    let session = create_local_session(&app, &gid, Some("agent"), None, None).await;
+    let session_id = session["id"].as_str().unwrap().parse().unwrap();
+    state.inner.ssh_fg.insert(
+        session_id,
+        SessionForeground {
+            process: Some("claude".to_string()),
+            osc_title: Some("· Claude Code".to_string()),
+        },
+    );
+
+    let sessions = list_sessions(&app).await;
+    let listed = sessions
+        .iter()
+        .find(|entry| entry["id"].as_str() == session["id"].as_str())
+        .unwrap();
+    assert_eq!(listed["foreground_process"], "claude");
+    assert_eq!(listed["osc_title"], "· Claude Code");
+
+    cleanup_state(&state);
+}
+
+#[tokio::test]
 async fn test_list_sessions_reports_process_for_known_tool_session() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -637,10 +664,8 @@ async fn test_list_sessions_reports_process_for_known_tool_session() {
     let gid = create_group(&app, "local").await;
     let group_id = uuid::Uuid::parse_str(&gid).unwrap();
 
-    let script_dir = std::env::temp_dir().join(format!(
-        "tether-tool-process-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let script_dir =
+        std::env::temp_dir().join(format!("tether-tool-process-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&script_dir).unwrap();
     let script_path = script_dir.join("claude");
     std::fs::write(&script_path, "#!/bin/sh\nsleep 30\n").unwrap();

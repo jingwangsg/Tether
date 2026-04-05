@@ -10,6 +10,8 @@ import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_display.dart';
 import '../../utils/session_interaction.dart';
+import '../../utils/session_status.dart';
+import '../terminal/session_status_dot.dart';
 import 'group_dialog.dart';
 import 'group_section.dart';
 import 'settings_dialog.dart';
@@ -380,6 +382,7 @@ class Sidebar extends ConsumerWidget {
     final serverState = ref.read(serverProvider);
     final display = getDisplayInfo(session, serverState.sessions);
     final canOpen = isSessionInteractive(session, serverState.groups);
+    final status = deriveSessionToolStatus(session);
     final titleColor =
         canOpen ? (isActive ? Colors.white : Colors.white70) : Colors.white38;
     final subtitleColor = canOpen ? Colors.white38 : Colors.white24;
@@ -421,17 +424,32 @@ class Sidebar extends ConsumerWidget {
                 )
                 : null,
         trailing: SizedBox(
-          width: 24,
-          height: 24,
-          child: IconButton(
-            icon: const Icon(Icons.close, size: 14),
-            color: Colors.white38,
-            padding: EdgeInsets.zero,
-            tooltip: 'Delete Session',
-            onPressed: () {
-              ref.read(serverProvider.notifier).deleteSession(session.id);
-              ref.read(sessionProvider.notifier).closeTab(session.id);
-            },
+          width: status != null ? 44 : 24,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (status != null) ...[
+                SessionStatusDot(
+                  key: ValueKey('session-sidebar-status-${session.id}'),
+                  status: status,
+                ),
+                const SizedBox(width: 6),
+              ],
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: IconButton(
+                  icon: const Icon(Icons.close, size: 14),
+                  color: Colors.white38,
+                  padding: EdgeInsets.zero,
+                  tooltip: 'Delete Session',
+                  onPressed: () {
+                    ref.read(serverProvider.notifier).deleteSession(session.id);
+                    ref.read(sessionProvider.notifier).closeTab(session.id);
+                  },
+                ),
+              ),
+            ],
           ),
         ),
         onTap:

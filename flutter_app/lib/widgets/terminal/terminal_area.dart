@@ -10,6 +10,8 @@ import '../../platform/volume_keys.dart';
 import '../../platform/terminal_backend.dart';
 import '../../utils/session_display.dart';
 import '../../utils/session_interaction.dart';
+import '../../utils/session_status.dart';
+import 'session_status_dot.dart';
 import 'terminal_controller.dart';
 import 'mobile_key_bar.dart';
 
@@ -339,6 +341,7 @@ class _TerminalTabBar extends ConsumerWidget {
                 hasProcess
                     ? session.name
                     : (oscTitle != null ? session.name : display.subtitle);
+            final status = deriveSessionToolStatus(session);
 
             return ReorderableDelayedDragStartListener(
               key: ValueKey(tab.sessionId),
@@ -382,9 +385,7 @@ class _TerminalTabBar extends ConsumerWidget {
                             color:
                                 isActive
                                     ? display.iconColor
-                                    : display.iconColor.withValues(
-                                      alpha: 0.5,
-                                    ),
+                                    : display.iconColor.withValues(alpha: 0.5),
                           ),
                       const SizedBox(width: 6),
                       Column(
@@ -409,6 +410,13 @@ class _TerminalTabBar extends ConsumerWidget {
                             ),
                         ],
                       ),
+                      if (status != null) ...[
+                        const SizedBox(width: 8),
+                        SessionStatusDot(
+                          key: ValueKey('session-tab-status-${tab.sessionId}'),
+                          status: status,
+                        ),
+                      ],
                       const SizedBox(width: 6),
                       SizedBox(
                         width: 28,

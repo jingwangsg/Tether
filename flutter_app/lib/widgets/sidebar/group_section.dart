@@ -9,6 +9,8 @@ import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_display.dart';
 import '../../utils/session_interaction.dart';
+import '../../utils/session_status.dart';
+import '../terminal/session_status_dot.dart';
 import 'group_dialog.dart';
 
 bool get _isDesktop =>
@@ -354,25 +356,12 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
     );
   }
 
-  /// If the oscTitle starts with a non-alphanumeric character (e.g. a spinner
-  /// glyph like `·`, `*`, or braille `\u28xx`), return that first grapheme as
-  /// a tiny status badge.  Returns null when there is nothing to show.
-  static String? _oscTitleBadge(String? oscTitle) {
-    if (oscTitle == null || oscTitle.isEmpty) return null;
-    final runes = oscTitle.runes;
-    final firstCodePoint = runes.first;
-    final first = String.fromCharCode(firstCodePoint);
-    // Show the badge when the leading character is NOT a plain letter/digit.
-    final isAlphaNum = RegExp(r'^[a-zA-Z0-9]$').hasMatch(first);
-    if (isAlphaNum) return null;
-    return first;
-  }
-
   Widget _buildSessionTile(Session session) {
     final activeId = ref.watch(sessionProvider).activeSessionId;
     final isActive = session.id == activeId;
     final display = getDisplayInfo(session, widget.allSessions);
     final canOpen = isSessionInteractive(session, widget.allGroups);
+    final status = deriveSessionToolStatus(session);
     final titleColor =
         canOpen ? (isActive ? Colors.white : Colors.white60) : Colors.white38;
     final subtitleColor = canOpen ? Colors.white38 : Colors.white24;
@@ -403,17 +392,6 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
               display.iconAsset != null
                   ? Image.asset(display.iconAsset!, width: 14, height: 14)
                   : Icon(display.icon, size: 14, color: display.iconColor),
-              if (_oscTitleBadge(session.oscTitle) case final badge?)
-                Padding(
-                  padding: const EdgeInsets.only(left: 3),
-                  child: Text(
-                    badge,
-                    style: const TextStyle(
-                      color: Colors.white54,
-                      fontSize: 11,
-                    ),
-                  ),
-                ),
               const SizedBox(width: 6),
               Expanded(
                 child: Column(
@@ -434,6 +412,13 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                   ],
                 ),
               ),
+              if (status != null) ...[
+                const SizedBox(width: 8),
+                SessionStatusDot(
+                  key: ValueKey('session-sidebar-status-${session.id}'),
+                  status: status,
+                ),
+              ],
               _buildSessionMenuButton(session),
               SizedBox(
                 width: 24,
