@@ -102,22 +102,31 @@ fn remote_ghostty_terminfo_dir() -> String {
     format!("~/.terminfo/{subdir}")
 }
 
-fn remote_ghostty_terminfo_path() -> String {
+fn remote_ghostty_terminfo_entry_path() -> String {
     let (subdir, filename, _) = ghostty_terminfo_asset();
     format!("~/.terminfo/{subdir}/{filename}")
 }
 
+fn remote_ghostty_terminfo_source_path() -> String {
+    "~/.tether/tmp/xterm-ghostty.src".to_string()
+}
+
 pub async fn ensure_remote_ghostty_terminfo(client: &SshClient) -> anyhow::Result<()> {
-    let (_, _, terminfo) = ghostty_terminfo_asset();
+    let (_, _, terminfo_source) = ghostty_terminfo_asset();
     let remote_dir = remote_ghostty_terminfo_dir();
-    let remote_path = remote_ghostty_terminfo_path();
+    let remote_entry_path = remote_ghostty_terminfo_entry_path();
+    let remote_source_path = remote_ghostty_terminfo_source_path();
 
     client
-        .exec_checked(&format!("mkdir -p {remote_dir}"))
+        .exec_checked(&format!("mkdir -p ~/.tether/tmp {remote_dir}"))
         .await?;
-    client.upload(terminfo, &remote_path).await?;
     client
-        .exec_checked(&format!("chmod 644 {remote_path}"))
+        .upload(terminfo_source.as_bytes(), &remote_source_path)
+        .await?;
+    client
+        .exec_checked(&format!(
+            "tic -x -o ~/.terminfo {remote_source_path} >/dev/null 2>&1 && infocmp -A ~/.terminfo xterm-ghostty >/dev/null 2>&1 && chmod 644 {remote_entry_path} && rm -f {remote_source_path}",
+        ))
         .await?;
     Ok(())
 }
@@ -427,13 +436,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let fake_ssh = temp.path().join("ssh");
         let log_path = temp.path().join("ssh.log");
-        let upload_path = temp.path().join("uploaded-terminfo");
+        let upload_path = temp.path().join("uploaded-terminfo-src");
         let old_path = std::env::var_os("PATH");
 
         std::fs::write(
             &fake_ssh,
             format!(
-                "#!/bin/sh\nset -eu\nlast=\"\"\nfor arg in \"$@\"; do last=\"$arg\"; done\nprintf '%s\\n' \"$*\" >> \"{}\"\ncase \"$last\" in\n  \"cat > ~/.terminfo/78/xterm-ghostty\")\n    cat > \"{}\"\n    ;;\n  *)\n    :\n    ;;\nesac\n",
+                "#!/bin/sh\nset -eu\nlast=\"\"\nfor arg in \"$@\"; do last=\"$arg\"; done\nprintf '%s\\n' \"$*\" >> \"{}\"\ncase \"$last\" in\n  \"cat > ~/.tether/tmp/xterm-ghostty.src\")\n    cat > \"{}\"\n    ;;\n  *)\n    :\n    ;;\nesac\n",
                 log_path.display(),
                 upload_path.display()
             ),
@@ -457,13 +466,18 @@ mod tests {
         ensure_remote_ghostty_terminfo(&client).await.unwrap();
 
         let log = std::fs::read_to_string(&log_path).unwrap();
-        assert!(log.contains("mkdir -p ~/.terminfo/78"));
-        assert!(log.contains("cat > ~/.terminfo/78/xterm-ghostty"));
+        assert!(log.contains("mkdir -p ~/.tether/tmp ~/.terminfo/78"));
+        assert!(log.contains("cat > ~/.tether/tmp/xterm-ghostty.src"));
+        assert!(
+            log.contains("tic -x -o ~/.terminfo ~/.tether/tmp/xterm-ghostty.src >/dev/null 2>&1")
+        );
+        assert!(log.contains("infocmp -A ~/.terminfo xterm-ghostty >/dev/null 2>&1"));
         assert!(log.contains("chmod 644 ~/.terminfo/78/xterm-ghostty"));
+        assert!(log.contains("rm -f ~/.tether/tmp/xterm-ghostty.src"));
 
         let (_, _, expected) = ghostty_terminfo_asset();
         let uploaded = std::fs::read(&upload_path).unwrap();
-        assert_eq!(uploaded, expected);
+        assert_eq!(uploaded, expected.as_bytes());
 
         if let Some(path) = old_path {
             std::env::set_var("PATH", path);

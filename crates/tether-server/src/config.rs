@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 const GHOSTTY_TERMINFO: &[u8] = include_bytes!("../assets/terminfo/78/xterm-ghostty");
+const GHOSTTY_TERMINFO_SOURCE: &str = include_str!("../assets/terminfo/xterm-ghostty.src");
 const GHOSTTY_TERM_NAME: &str = "xterm-ghostty";
 const GHOSTTY_TERMINFO_SUBDIR: &str = "78";
 const GHOSTTY_TERMINFO_FILENAME: &str = "xterm-ghostty";
@@ -17,11 +19,11 @@ const SHELL_INTEGRATION_BASH_RC: &str =
 const SHELL_INTEGRATION_BASH_SCRIPT: &str =
     include_str!("../assets/shell-integration/bash/tether-integration.bash");
 
-pub(crate) fn ghostty_terminfo_asset() -> (&'static str, &'static str, &'static [u8]) {
+pub(crate) fn ghostty_terminfo_asset() -> (&'static str, &'static str, &'static str) {
     (
         GHOSTTY_TERMINFO_SUBDIR,
         GHOSTTY_TERMINFO_FILENAME,
-        GHOSTTY_TERMINFO,
+        GHOSTTY_TERMINFO_SOURCE,
     )
 }
 
@@ -185,17 +187,18 @@ impl ServerConfig {
     }
 
     pub fn materialize_terminal_runtime(&self) -> anyhow::Result<()> {
-        let runtime_entry_path = self
-            .ghostty_terminfo_dir()
-            .join(GHOSTTY_TERMINFO_SUBDIR)
-            .join(GHOSTTY_TERMINFO_FILENAME);
-        write_runtime_bytes(&runtime_entry_path, GHOSTTY_TERMINFO, false)?;
+        materialize_terminfo_dir(&self.ghostty_terminfo_dir())?;
 
         if let Some(user_entry_path) = self.user_terminfo_entry_path() {
-            if let Err(error) = write_runtime_bytes(&user_entry_path, GHOSTTY_TERMINFO, false) {
+            let user_root = user_entry_path
+                .parent()
+                .and_then(|path| path.parent())
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
+            if let Err(error) = materialize_terminfo_dir(&user_root) {
                 tracing::warn!(
-                    "Failed to install user terminfo at {}: {}",
-                    user_entry_path.display(),
+                    "Failed to install user terminfo under {}: {}",
+                    user_root.display(),
                     error
                 );
             }
@@ -279,14 +282,121 @@ fn write_runtime_text(path: &Path, contents: &str, executable: bool) -> anyhow::
     write_runtime_bytes(path, contents.as_bytes(), executable)
 }
 
+fn terminfo_entry_path(root: &Path) -> PathBuf {
+    root.join(GHOSTTY_TERMINFO_SUBDIR)
+        .join(GHOSTTY_TERMINFO_FILENAME)
+}
+
+fn terminfo_dir_is_usable(root: &Path) -> bool {
+    if !terminfo_entry_path(root).exists() {
+        return false;
+    }
+
+    Command::new("infocmp")
+        .arg("-A")
+        .arg(root)
+        .arg(GHOSTTY_TERM_NAME)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn compile_terminfo_dir(root: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = root.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::create_dir_all(root)?;
+
+    let mut child = Command::new("tic")
+        .arg("-x")
+        .arg("-o")
+        .arg(root)
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            anyhow::anyhow!("failed to spawn tic for {}: {}", root.display(), error)
+        })?;
+
+    {
+        use std::io::Write;
+
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("failed to open tic stdin"))?;
+        stdin.write_all(GHOSTTY_TERMINFO_SOURCE.as_bytes())?;
+    }
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "tic failed for {}: {}",
+            root.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn materialize_terminfo_dir(root: &Path) -> anyhow::Result<()> {
+    if terminfo_dir_is_usable(root) {
+        return Ok(());
+    }
+
+    match compile_terminfo_dir(root) {
+        Ok(()) => {
+            if terminfo_dir_is_usable(root) {
+                return Ok(());
+            }
+            tracing::warn!(
+                "Compiled Ghostty terminfo under {} but infocmp could not validate it; falling back to bundled entry",
+                root.display()
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                "Failed to compile Ghostty terminfo under {}: {}; falling back to bundled entry",
+                root.display(),
+                error
+            );
+        }
+    }
+
+    let entry_path = terminfo_entry_path(root);
+    write_runtime_bytes(&entry_path, GHOSTTY_TERMINFO, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::process::{Command, Stdio};
     use std::sync::Mutex;
 
     // Mutex to serialize tests that manipulate environment variables
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn assert_terminfo_resolves(root: &Path) {
+        let status = Command::new("infocmp")
+            .arg("-A")
+            .arg(root)
+            .arg(GHOSTTY_TERM_NAME)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "expected infocmp to resolve {} from {}",
+            GHOSTTY_TERM_NAME,
+            root.display()
+        );
+    }
 
     #[test]
     fn default_values() {
@@ -414,17 +524,16 @@ scrollback_disk_max_mb = 100
             .ghostty_terminfo_dir()
             .join(GHOSTTY_TERMINFO_SUBDIR)
             .join(GHOSTTY_TERMINFO_FILENAME);
-        let data = std::fs::read(entry).unwrap();
-        assert!(!data.is_empty());
-        assert_eq!(data, GHOSTTY_TERMINFO);
+        assert!(entry.exists());
+        assert_terminfo_resolves(&config.ghostty_terminfo_dir());
 
         let user_entry = home
             .path()
             .join(".terminfo")
             .join(GHOSTTY_TERMINFO_SUBDIR)
             .join(GHOSTTY_TERMINFO_FILENAME);
-        let user_data = std::fs::read(user_entry).unwrap();
-        assert_eq!(user_data, GHOSTTY_TERMINFO);
+        assert!(user_entry.exists());
+        assert_terminfo_resolves(&home.path().join(".terminfo"));
 
         std::env::remove_var("TETHER_DATA_DIR");
         if let Some(home) = old_home {
@@ -526,7 +635,8 @@ scrollback_disk_max_mb = 100
             .ghostty_terminfo_dir()
             .join(GHOSTTY_TERMINFO_SUBDIR)
             .join(GHOSTTY_TERMINFO_FILENAME);
-        assert_eq!(std::fs::read(runtime_entry).unwrap(), GHOSTTY_TERMINFO);
+        assert!(runtime_entry.exists());
+        assert_terminfo_resolves(&config.ghostty_terminfo_dir());
 
         std::env::remove_var("TETHER_DATA_DIR");
         if let Some(home) = old_home {
