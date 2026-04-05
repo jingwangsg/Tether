@@ -284,7 +284,8 @@ private final class TerminalSurfaceView: NSView {
         var cfg = ghostty_surface_config_new()
         cfg.platform_tag = GHOSTTY_PLATFORM_MACOS
         cfg.platform.macos.nsview = Unmanaged.passUnretained(self).toOpaque()
-        cfg.userdata = Unmanaged.passUnretained(self).toOpaque()
+        let surfaceUserdata = Unmanaged.passUnretained(self).toOpaque()
+        cfg.userdata = surfaceUserdata
         cfg.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? window.backingScaleFactor)
 
         let command = attachCommand()
@@ -300,7 +301,7 @@ private final class TerminalSurfaceView: NSView {
 
         let scaledBounds = convertToBacking(bounds)
         ghostty_surface_set_size(s, UInt32(scaledBounds.width), UInt32(scaledBounds.height))
-        TerminalApp.shared.registerSurface(s)
+        TerminalApp.shared.registerSurface(s, userdata: surfaceUserdata)
         ghostty_surface_draw(s)
         observeNotifications()
         eventMonitor = NSEvent.addLocalMonitorForEvents(
@@ -937,7 +938,10 @@ private final class TerminalSurfaceView: NSView {
             NSEvent.removeMonitor(eventMonitor)
         }
         if let surface {
-            TerminalApp.shared.unregisterSurface(surface)
+            TerminalApp.shared.unregisterSurface(
+                surface,
+                userdata: Unmanaged.passUnretained(self).toOpaque()
+            )
             ghostty_surface_free(surface)
         }
     }

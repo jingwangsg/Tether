@@ -207,4 +207,36 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testSurfaceLookupTracksRegistrationLifecycle() {
+    guard let surface = ghostty_surface_t(bitPattern: 0x9876),
+          let userdata = UnsafeMutableRawPointer(bitPattern: 0x1234) else {
+      XCTFail("failed to construct fake pointers")
+      return
+    }
+
+    XCTAssertNil(TerminalApp.shared.surface(forUserdata: userdata))
+
+    TerminalApp.shared.registerSurface(surface, userdata: userdata)
+    XCTAssertEqual(TerminalApp.shared.surface(forUserdata: userdata), surface)
+
+    TerminalApp.shared.unregisterSurface(surface, userdata: userdata)
+    XCTAssertNil(TerminalApp.shared.surface(forUserdata: userdata))
+  }
+
+  func testCompleteClipboardRequestSkipsMissingSurface() {
+    let userdata = UnsafeMutableRawPointer(bitPattern: 0xDEAD)
+    let state = UnsafeMutableRawPointer(bitPattern: 0xBEEF)
+
+    let completed = "paste".withCString { ptr in
+      TerminalApp.shared.completeClipboardRequest(
+        surfaceUserdata: userdata,
+        text: ptr,
+        state: state,
+        confirmed: false,
+      )
+    }
+
+    XCTAssertFalse(completed)
+  }
+
 }

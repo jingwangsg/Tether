@@ -14,6 +14,7 @@ class TerminalApp {
 
     // Surfaces that should be redrawn on wakeup (active/visible only)
     private var drawableSurfaces: Set<ghostty_surface_t> = []
+    private var surfacesByUserdata: [UnsafeMutableRawPointer: ghostty_surface_t] = [:]
     private let surfaceLock = NSLock()
 
     // Coalescing: prevents main-queue buildup under rapid wakeup bursts
@@ -24,16 +25,28 @@ class TerminalApp {
 
     // MARK: - Surface registration
 
-    func registerSurface(_ s: ghostty_surface_t) {
+    func registerSurface(
+        _ s: ghostty_surface_t,
+        userdata: UnsafeMutableRawPointer? = nil
+    ) {
         surfaceLock.lock()
         defer { surfaceLock.unlock() }
         drawableSurfaces.insert(s)
+        if let userdata = userdata {
+            surfacesByUserdata[userdata] = s
+        }
     }
 
-    func unregisterSurface(_ s: ghostty_surface_t) {
+    func unregisterSurface(
+        _ s: ghostty_surface_t,
+        userdata: UnsafeMutableRawPointer? = nil
+    ) {
         surfaceLock.lock()
         defer { surfaceLock.unlock() }
         drawableSurfaces.remove(s)
+        if let userdata = userdata, surfacesByUserdata[userdata] == s {
+            surfacesByUserdata.removeValue(forKey: userdata)
+        }
     }
 
     /// Called by TerminalView.setActive(_:) to pause/resume draws for offstage tabs.
@@ -42,6 +55,37 @@ class TerminalApp {
         defer { surfaceLock.unlock() }
         if drawable { drawableSurfaces.insert(s) }
         else        { drawableSurfaces.remove(s) }
+    }
+
+    func surface(forUserdata userdata: UnsafeMutableRawPointer?) -> ghostty_surface_t? {
+        guard let userdata else { return nil }
+        surfaceLock.lock()
+        defer { surfaceLock.unlock() }
+        return surfacesByUserdata[userdata]
+    }
+
+    @discardableResult
+    func completeClipboardRequest(
+        surfaceUserdata: UnsafeMutableRawPointer?,
+        text: UnsafePointer<CChar>?,
+        state: UnsafeMutableRawPointer?,
+        confirmed: Bool
+    ) -> Bool {
+        guard let surface = surface(forUserdata: surfaceUserdata) else {
+            print("[TerminalApp] missing surface for clipboard request")
+            return false
+        }
+        guard let text else {
+            print("[TerminalApp] missing clipboard text for request")
+            return false
+        }
+        guard let state else {
+            print("[TerminalApp] missing clipboard state for request")
+            return false
+        }
+
+        ghostty_surface_complete_clipboard_request(surface, text, state, confirmed)
+        return true
     }
 
     // MARK: - Wakeup (called from any thread by the terminal library)
@@ -123,17 +167,25 @@ class TerminalApp {
                 }
                 return true
             },
-            read_clipboard_cb: { _, loc, state in
+            read_clipboard_cb: { surfaceUserdata, loc, state in
                 guard loc == GHOSTTY_CLIPBOARD_STANDARD else { return false }
                 guard let text = NSPasteboard.general.string(forType: .string) else { return false }
-                text.withCString { cString in
-                    ghostty_surface_complete_clipboard_request(nil, cString, state, false)
+                return text.withCString { cString in
+                    TerminalApp.shared.completeClipboardRequest(
+                        surfaceUserdata: surfaceUserdata,
+                        text: cString,
+                        state: state,
+                        confirmed: false
+                    )
                 }
-                return true
             },
-            confirm_read_clipboard_cb: { _, str, state, _ in
-                guard let str else { return }
-                ghostty_surface_complete_clipboard_request(nil, str, state, true)
+            confirm_read_clipboard_cb: { surfaceUserdata, str, state, _ in
+                _ = TerminalApp.shared.completeClipboardRequest(
+                    surfaceUserdata: surfaceUserdata,
+                    text: str,
+                    state: state,
+                    confirmed: true
+                )
             },
             write_clipboard_cb: { _, loc, content, len, confirm in
                 guard loc == GHOSTTY_CLIPBOARD_STANDARD else { return }
