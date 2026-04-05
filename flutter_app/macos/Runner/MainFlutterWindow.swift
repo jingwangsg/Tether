@@ -5,6 +5,17 @@ class MainFlutterWindow: NSWindow {
     private var pasteChannel: FlutterMethodChannel?
     private var windowChannel: FlutterMethodChannel?
 
+    static func shouldUsePasteChannelFallback(
+        eventType: NSEvent.EventType,
+        modifierFlags: NSEvent.ModifierFlags,
+        charactersIgnoringModifiers: String?,
+        superHandled: Bool
+    ) -> Bool {
+        guard !superHandled, eventType == .keyDown else { return false }
+        return modifierFlags.intersection(.deviceIndependentFlagsMask) == .command &&
+            charactersIgnoringModifiers == "v"
+    }
+
     override func awakeFromNib() {
         let flutterViewController = FlutterViewController()
         let windowFrame = self.frame
@@ -48,15 +59,19 @@ class MainFlutterWindow: NSWindow {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.type == .keyDown,
-           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-           event.charactersIgnoringModifiers == "v" {
+        let superHandled = super.performKeyEquivalent(with: event)
+        if Self.shouldUsePasteChannelFallback(
+            eventType: event.type,
+            modifierFlags: event.modifierFlags,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            superHandled: superHandled
+        ) {
             if let text = NSPasteboard.general.string(forType: .string) {
                 pasteChannel?.invokeMethod("pasteText", arguments: ["text": text])
+                return true
             }
-            return true
         }
-        return super.performKeyEquivalent(with: event)
+        return superHandled
     }
 
     @objc func paste(_ sender: Any?) {

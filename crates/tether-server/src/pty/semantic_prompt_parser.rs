@@ -152,9 +152,7 @@ mod tests {
         let events = parser.feed(b"\\");
         assert_eq!(
             events,
-            vec![SemanticPromptKind::EndCommand {
-                exit_code: Some(0)
-            }]
+            vec![SemanticPromptKind::EndCommand { exit_code: Some(0) }]
         );
     }
 

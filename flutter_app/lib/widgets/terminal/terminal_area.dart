@@ -39,10 +39,11 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     super.initState();
     _volumeKeys.setEnabled(true);
 
-    // PasteService forwards native macOS Cmd+V events via dev.tether/paste channel.
+    // PasteService is a fallback path for macOS window-level Cmd+V forwarding.
+    // The native Ghostty backend now prefers AppKit responder-chain paste.
     // With xterm backend, paste() calls _terminal.paste() which handles bracketed
     // paste mode correctly. Falls back to PasteTextIntent (Actions widget below)
-    // if the native channel has no active handler.
+    // if the native handler doesn't claim the shortcut.
     _pasteService.onPaste = (text) {
       final focusCtx = FocusManager.instance.primaryFocus?.context;
 

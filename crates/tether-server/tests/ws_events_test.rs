@@ -213,11 +213,7 @@ async fn ssh_proxy_forwards_remote_foreground_sequence_verbatim() {
     );
     let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
 
-    for expected_osc_title in [
-        "· Claude Code",
-        "✱ Claude Code",
-        "· Claude Code",
-    ] {
+    for expected_osc_title in ["· Claude Code", "✱ Claude Code", "· Claude Code"] {
         let next = tokio::time::timeout(Duration::from_secs(1), ws.next())
             .await
             .unwrap()

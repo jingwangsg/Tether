@@ -9,6 +9,10 @@ struct TerminalScrollbarState {
 
 /// Platform view wrapper around a Ghostty surface view plus a native NSScrollView.
 final class TerminalView: NSView {
+    static let copySelector = Selector(("copy:"))
+    static let pasteSelector = Selector(("paste:"))
+    static let pasteAsPlainTextSelector = #selector(NSTextView.pasteAsPlainText(_:))
+
     private let scrollView: NSScrollView
     private let documentView: NSView
     private let surfaceView: TerminalSurfaceView
@@ -204,6 +208,25 @@ final class TerminalView: NSView {
         let row = Int(scrollOffset / cellHeight)
         guard row != lastSentRow else { return nil }
         return "scroll_to_row:\(row)"
+    }
+
+    static func pasteboardHasText(_ pasteboard: NSPasteboard = .general) -> Bool {
+        pasteboard.string(forType: .string) != nil
+    }
+
+    static func isClipboardMenuActionEnabled(
+        action: Selector?,
+        hasSelection: Bool,
+        pasteboardHasText: Bool
+    ) -> Bool {
+        switch action {
+        case Self.copySelector:
+            return hasSelection
+        case Self.pasteSelector, Self.pasteAsPlainTextSelector:
+            return pasteboardHasText
+        default:
+            return true
+        }
     }
 }
 
@@ -604,25 +627,18 @@ private final class TerminalSurfaceView: NSView {
         ghostty_surface_mouse_pressure(s, 0, 0)
     }
 
-    override func rightMouseDown(with event: NSEvent) {
-        guard let s = surface else { return }
-        _ = ghostty_surface_mouse_button(
-            s,
-            GHOSTTY_MOUSE_PRESS,
-            GHOSTTY_MOUSE_RIGHT,
-            modsFromEvent(event)
-        )
+    override func menu(for event: NSEvent) -> NSMenu? {
+        window?.makeFirstResponder(self)
+        return buildContextMenu()
     }
 
-    override func rightMouseUp(with event: NSEvent) {
-        guard let s = surface else { return }
-        _ = ghostty_surface_mouse_button(
-            s,
-            GHOSTTY_MOUSE_RELEASE,
-            GHOSTTY_MOUSE_RIGHT,
-            modsFromEvent(event)
-        )
+    override func rightMouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        guard let menu = menu(for: event) else { return }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
+
+    override func rightMouseUp(with event: NSEvent) {}
 
     override func otherMouseDown(with event: NSEvent) {
         guard let s = surface else { return }
@@ -761,6 +777,20 @@ private final class TerminalSurfaceView: NSView {
         // Prevent NSBeep for unhandled commands.
     }
 
+    @objc func copy(_ sender: Any?) {
+        guard hasSelection() else { return }
+        performAction("copy_to_clipboard")
+    }
+
+    @objc func paste(_ sender: Any?) {
+        guard TerminalView.pasteboardHasText() else { return }
+        performAction("paste_from_clipboard")
+    }
+
+    @objc func pasteAsPlainText(_ sender: Any?) {
+        paste(sender)
+    }
+
     private func sendKeyEvent(
         _ s: ghostty_surface_t,
         action: ghostty_input_action_e,
@@ -861,6 +891,21 @@ private final class TerminalSurfaceView: NSView {
         }
     }
 
+    private func hasSelection() -> Bool {
+        guard let surface else { return false }
+        return ghostty_surface_has_selection(surface)
+    }
+
+    private func buildContextMenu() -> NSMenu {
+        let menu = NSMenu(title: "Terminal")
+        menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
+        for item in menu.items {
+            item.target = self
+        }
+        return menu
+    }
+
     func sendText(_ text: String) {
         guard let s = surface else { return }
         ghostty_surface_text(s, text, UInt(text.utf8.count))
@@ -948,4 +993,14 @@ extension TerminalSurfaceView: NSTextInputClient {
     }
 
     func characterIndex(for point: NSPoint) -> Int { 0 }
+}
+
+extension TerminalSurfaceView: NSUserInterfaceValidations {
+    func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        TerminalView.isClipboardMenuActionEnabled(
+            action: item.action,
+            hasSelection: hasSelection(),
+            pasteboardHasText: TerminalView.pasteboardHasText()
+        )
+    }
 }

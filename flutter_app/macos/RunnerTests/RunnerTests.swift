@@ -131,4 +131,80 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(action)
   }
 
+  func testPasteFallbackSkipsWhenSuperHandled() {
+    XCTAssertFalse(
+      MainFlutterWindow.shouldUsePasteChannelFallback(
+        eventType: .keyDown,
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "v",
+        superHandled: true,
+      )
+    )
+  }
+
+  func testPasteFallbackOnlyHandlesCmdV() {
+    XCTAssertTrue(
+      MainFlutterWindow.shouldUsePasteChannelFallback(
+        eventType: .keyDown,
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "v",
+        superHandled: false,
+      )
+    )
+    XCTAssertFalse(
+      MainFlutterWindow.shouldUsePasteChannelFallback(
+        eventType: .keyDown,
+        modifierFlags: [.command, .shift],
+        charactersIgnoringModifiers: "v",
+        superHandled: false,
+      )
+    )
+    XCTAssertFalse(
+      MainFlutterWindow.shouldUsePasteChannelFallback(
+        eventType: .keyDown,
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "c",
+        superHandled: false,
+      )
+    )
+  }
+
+  func testClipboardMenuValidation() {
+    XCTAssertTrue(
+      TerminalView.isClipboardMenuActionEnabled(
+        action: TerminalView.copySelector,
+        hasSelection: true,
+        pasteboardHasText: false,
+      )
+    )
+    XCTAssertFalse(
+      TerminalView.isClipboardMenuActionEnabled(
+        action: TerminalView.copySelector,
+        hasSelection: false,
+        pasteboardHasText: true,
+      )
+    )
+    XCTAssertTrue(
+      TerminalView.isClipboardMenuActionEnabled(
+        action: TerminalView.pasteSelector,
+        hasSelection: false,
+        pasteboardHasText: true,
+      )
+    )
+    XCTAssertTrue(
+      TerminalView.isClipboardMenuActionEnabled(
+        action: TerminalView.pasteAsPlainTextSelector,
+        hasSelection: false,
+        pasteboardHasText: true,
+      )
+    )
+    XCTAssertFalse(
+      TerminalView.isClipboardMenuActionEnabled(
+        action: TerminalView.pasteSelector,
+        hasSelection: true,
+        pasteboardHasText: false,
+      )
+    )
+  }
+
 }

@@ -125,10 +125,16 @@ class TerminalApp {
             },
             read_clipboard_cb: { _, loc, state in
                 guard loc == GHOSTTY_CLIPBOARD_STANDARD else { return false }
-                guard NSPasteboard.general.string(forType: .string) != nil else { return false }
-                return false
+                guard let text = NSPasteboard.general.string(forType: .string) else { return false }
+                text.withCString { cString in
+                    ghostty_surface_complete_clipboard_request(nil, cString, state, false)
+                }
+                return true
             },
-            confirm_read_clipboard_cb: { _, str, state, request in },
+            confirm_read_clipboard_cb: { _, str, state, _ in
+                guard let str else { return }
+                ghostty_surface_complete_clipboard_request(nil, str, state, true)
+            },
             write_clipboard_cb: { _, loc, content, len, confirm in
                 guard loc == GHOSTTY_CLIPBOARD_STANDARD else { return }
                 guard let content = content, len > 0 else { return }

@@ -311,10 +311,7 @@ impl PtySession {
     pub fn detect_foreground(&self) -> SessionForeground {
         let process = self.detect_foreground_process();
         let osc_title = self.get_osc_title();
-        SessionForeground {
-            process,
-            osc_title,
-        }
+        SessionForeground { process, osc_title }
     }
 
     pub fn is_known_tool(process: Option<&str>) -> bool {
