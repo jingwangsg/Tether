@@ -18,8 +18,8 @@ use axum::routing::{delete, get, patch, post};
 use axum::Router;
 use dashmap::DashMap;
 use http_body_util::BodyExt;
-use std::time::{Duration, Instant};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tower::ServiceExt;
 
 use tether_server::api;

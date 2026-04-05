@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -102,20 +103,24 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
         if (_expanded) ...[
           for (final childGroup in childGroups)
             DragTarget<Group>(
+              key: ValueKey('child-group-drop-${childGroup.id}'),
               onWillAcceptWithDetails:
                   (details) =>
                       details.data.id != childGroup.id &&
                       details.data.parentId == childGroup.parentId &&
                       _sameGroupScope(details.data, childGroup),
               onAcceptWithDetails:
-                  (details) => _handleChildGroupDrop(
-                    details.data,
-                    childGroup,
-                    childGroups,
+                  (details) => unawaited(
+                    _handleChildGroupDrop(
+                      details.data,
+                      childGroup,
+                      childGroups,
+                    ),
                   ),
               builder: (context, candidateData, rejectedData) {
                 final isDropTarget = candidateData.isNotEmpty;
                 return Column(
+                  key: ValueKey('child-group-column-${childGroup.id}'),
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (isDropTarget) Container(height: 2, color: Colors.blue),
@@ -156,6 +161,7 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                         final childWhenDragging = Opacity(
                           opacity: 0.3,
                           child: GroupSection(
+                            key: ValueKey('group-section-${childGroup.id}'),
                             group: childGroup,
                             allGroups: widget.allGroups,
                             allSessions: visibleSessionsForSidebar,
@@ -163,6 +169,7 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                           ),
                         );
                         final child = GroupSection(
+                          key: ValueKey('group-section-${childGroup.id}'),
                           group: childGroup,
                           allGroups: widget.allGroups,
                           allSessions: visibleSessionsForSidebar,
@@ -436,14 +443,16 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
     );
 
     return DragTarget<Session>(
+      key: ValueKey('session-drop-${session.id}'),
       onWillAcceptWithDetails:
           (details) => _canMoveSessionBefore(details.data, session),
       onAcceptWithDetails: (details) {
-        _handleSessionDrop(details.data, session);
+        unawaited(_handleSessionDrop(details.data, session));
       },
       builder: (context, candidateData, rejectedData) {
         final isDropTarget = candidateData.isNotEmpty;
         return Column(
+          key: ValueKey('session-column-${session.id}'),
           mainAxisSize: MainAxisSize.min,
           children: [
             if (isDropTarget) Container(height: 2, color: Colors.blue),
@@ -559,12 +568,13 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
 
   Widget _buildChildGroupEndDropZone(List<Group> childGroups) {
     return DragTarget<Group>(
+      key: ValueKey('child-group-end-drop-${widget.group.id}'),
       onWillAcceptWithDetails:
           (details) =>
               details.data.parentId == widget.group.id &&
               details.data.id != childGroups.last.id &&
               _sameGroupScope(details.data, widget.group),
-      onAcceptWithDetails: (details) {
+      onAcceptWithDetails: (details) async {
         final groups = List<Group>.from(childGroups);
         groups.removeWhere((g) => g.id == details.data.id);
         groups.add(details.data);
@@ -572,7 +582,11 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
         for (int i = 0; i < groups.length; i++) {
           items.add({'id': groups[i].id, 'sort_order': i});
         }
-        ref.read(serverProvider.notifier).reorderGroups(items);
+        try {
+          await ref.read(serverProvider.notifier).reorderGroups(items);
+        } catch (_) {
+          _showReorderError('folders');
+        }
       },
       builder: (context, candidateData, rejectedData) {
         final isDropTarget = candidateData.isNotEmpty;
@@ -593,10 +607,11 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
 
   Widget _buildEndDropZone() {
     return DragTarget<Session>(
+      key: ValueKey('session-end-drop-${widget.group.id}'),
       onWillAcceptWithDetails:
           (details) => _canMoveSessionToGroup(details.data, widget.group),
       onAcceptWithDetails: (details) {
-        _handleSessionDropOnGroup(details.data);
+        unawaited(_handleSessionDropOnGroup(details.data));
       },
       builder: (context, candidateData, rejectedData) {
         final isDropTarget = candidateData.isNotEmpty;
@@ -615,11 +630,11 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
     );
   }
 
-  void _handleChildGroupDrop(
+  Future<void> _handleChildGroupDrop(
     Group dragged,
     Group target,
     List<Group> siblingGroups,
-  ) {
+  ) async {
     if (!_sameGroupScope(dragged, target)) {
       return;
     }
@@ -637,10 +652,14 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
     for (int i = 0; i < groups.length; i++) {
       items.add({'id': groups[i].id, 'sort_order': i});
     }
-    ref.read(serverProvider.notifier).reorderGroups(items);
+    try {
+      await ref.read(serverProvider.notifier).reorderGroups(items);
+    } catch (_) {
+      _showReorderError('folders');
+    }
   }
 
-  void _handleSessionDrop(Session dragged, Session target) {
+  Future<void> _handleSessionDrop(Session dragged, Session target) async {
     if (!_canMoveSessionBefore(dragged, target)) {
       return;
     }
@@ -666,10 +685,14 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
         'group_id': targetGroupId,
       });
     }
-    ref.read(serverProvider.notifier).reorderSessions(items);
+    try {
+      await ref.read(serverProvider.notifier).reorderSessions(items);
+    } catch (_) {
+      _showReorderError('sessions');
+    }
   }
 
-  void _handleSessionDropOnGroup(Session dragged) {
+  Future<void> _handleSessionDropOnGroup(Session dragged) async {
     if (!_canMoveSessionToGroup(dragged, widget.group)) {
       return;
     }
@@ -686,7 +709,26 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
     for (int i = 0; i < sessions.length; i++) {
       items.add({'id': sessions[i].id, 'sort_order': i, 'group_id': groupId});
     }
-    ref.read(serverProvider.notifier).reorderSessions(items);
+    try {
+      await ref.read(serverProvider.notifier).reorderSessions(items);
+    } catch (_) {
+      _showReorderError('sessions');
+    }
+  }
+
+  void _showReorderError(String itemType) {
+    if (!mounted) {
+      return;
+    }
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) {
+      return;
+    }
+    messenger
+      ..removeCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text("Couldn't reorder $itemType. Reverted.")),
+      );
   }
 
   void _createSession() async {

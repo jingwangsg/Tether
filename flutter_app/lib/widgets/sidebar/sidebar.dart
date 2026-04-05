@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' show min;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -114,10 +115,7 @@ class Sidebar extends ConsumerWidget {
   Widget _buildContent(BuildContext context, WidgetRef ref, ServerState state) {
     final groups = state.groups;
     final sessions = visibleSessions(state.sessions, groups);
-
-    final rootGroups =
-        groups.where((g) => g.parentId == null).toList()
-          ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    final rootScopes = _buildRootScopes(groups);
 
     return ListView(
       children: [
@@ -127,90 +125,20 @@ class Sidebar extends ConsumerWidget {
           ),
           const Divider(height: 1, color: Colors.white12),
         ],
-        for (final group in rootGroups)
-          DragTarget<Group>(
-            onWillAcceptWithDetails:
-                (details) =>
-                    details.data.id != group.id &&
-                    details.data.parentId == null &&
-                    _sameGroupScope(details.data, group),
-            onAcceptWithDetails: (details) {
-              _handleGroupDrop(ref, details.data, group, rootGroups);
-            },
-            builder: (context, candidateData, rejectedData) {
-              final isDropTarget = candidateData.isNotEmpty;
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (isDropTarget) Container(height: 2, color: Colors.blue),
-                  Builder(
-                    builder: (context) {
-                      final feedback = Material(
-                        elevation: 4,
-                        color: const Color(0xFF2A2A2A),
-                        borderRadius: BorderRadius.circular(4),
-                        child: SizedBox(
-                          width: 220,
-                          child: Padding(
-                            padding: const EdgeInsets.all(8),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.folder,
-                                  size: 16,
-                                  color: Colors.white54,
-                                ),
-                                const SizedBox(width: 6),
-                                Flexible(
-                                  child: Text(
-                                    group.name,
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 12,
-                                    ),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      );
-                      final childWhenDragging = Opacity(
-                        opacity: 0.3,
-                        child: GroupSection(
-                          group: group,
-                          allGroups: groups,
-                          allSessions: sessions,
-                          depth: 0,
-                        ),
-                      );
-                      final child = GroupSection(
-                        group: group,
-                        allGroups: groups,
-                        allSessions: sessions,
-                        depth: 0,
-                      );
-                      return _isDesktop
-                          ? Draggable<Group>(
-                            data: group,
-                            feedback: feedback,
-                            childWhenDragging: childWhenDragging,
-                            child: child,
-                          )
-                          : LongPressDraggable<Group>(
-                            data: group,
-                            feedback: feedback,
-                            childWhenDragging: childWhenDragging,
-                            child: child,
-                          );
-                    },
-                  ),
-                ],
-              );
-            },
-          ),
+        for (final scope in rootScopes) ...[
+          _buildScopeHeader(scope),
+          for (final group in scope.groups)
+            _buildRootGroupDropTarget(
+              context,
+              ref,
+              group,
+              scope.groups,
+              groups,
+              sessions,
+            ),
+          if (scope.groups.isNotEmpty)
+            _buildRootScopeEndDropZone(context, ref, scope.groups),
+        ],
         for (final session in sessions.where(
           (s) => !groups.any((g) => g.id == s.groupId),
         ))
@@ -219,12 +147,174 @@ class Sidebar extends ConsumerWidget {
     );
   }
 
-  void _handleGroupDrop(
+  Widget _buildScopeHeader(_RootGroupScope scope) {
+    return Container(
+      key: ValueKey('root-scope-header-${scope.key}'),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+      child: Row(
+        children: [
+          Icon(
+            scope.isRemote ? Icons.cloud_outlined : Icons.laptop_mac_outlined,
+            size: 12,
+            color: Colors.white38,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              scope.label,
+              style: const TextStyle(
+                color: Colors.white38,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRootGroupDropTarget(
+    BuildContext context,
+    WidgetRef ref,
+    Group group,
+    List<Group> scopeGroups,
+    List<Group> allGroups,
+    List<Session> sessions,
+  ) {
+    return DragTarget<Group>(
+      key: ValueKey('root-group-drop-${group.id}'),
+      onWillAcceptWithDetails:
+          (details) =>
+              details.data.id != group.id &&
+              details.data.parentId == null &&
+              _sameGroupScope(details.data, group),
+      onAcceptWithDetails: (details) {
+        unawaited(
+          _handleGroupDrop(context, ref, details.data, group, scopeGroups),
+        );
+      },
+      builder: (context, candidateData, rejectedData) {
+        final isDropTarget = candidateData.isNotEmpty;
+        return Column(
+          key: ValueKey('root-group-column-${group.id}'),
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isDropTarget) Container(height: 2, color: Colors.blue),
+            Builder(
+              builder: (context) {
+                final feedback = Material(
+                  elevation: 4,
+                  color: const Color(0xFF2A2A2A),
+                  borderRadius: BorderRadius.circular(4),
+                  child: SizedBox(
+                    width: 220,
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.folder,
+                            size: 16,
+                            color: Colors.white54,
+                          ),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              group.name,
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 12,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+                final childWhenDragging = Opacity(
+                  opacity: 0.3,
+                  child: GroupSection(
+                    key: ValueKey('group-section-${group.id}'),
+                    group: group,
+                    allGroups: allGroups,
+                    allSessions: sessions,
+                    depth: 0,
+                  ),
+                );
+                final child = GroupSection(
+                  key: ValueKey('group-section-${group.id}'),
+                  group: group,
+                  allGroups: allGroups,
+                  allSessions: sessions,
+                  depth: 0,
+                );
+                return _isDesktop
+                    ? Draggable<Group>(
+                      data: group,
+                      feedback: feedback,
+                      childWhenDragging: childWhenDragging,
+                      child: child,
+                    )
+                    : LongPressDraggable<Group>(
+                      data: group,
+                      feedback: feedback,
+                      childWhenDragging: childWhenDragging,
+                      child: child,
+                    );
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildRootScopeEndDropZone(
+    BuildContext context,
+    WidgetRef ref,
+    List<Group> scopeGroups,
+  ) {
+    return DragTarget<Group>(
+      key: ValueKey('root-group-end-drop-${scopeGroups.first.localityKey}'),
+      onWillAcceptWithDetails:
+          (details) =>
+              details.data.parentId == null &&
+              details.data.id != scopeGroups.last.id &&
+              _sameGroupScope(details.data, scopeGroups.last),
+      onAcceptWithDetails: (details) {
+        unawaited(
+          _handleGroupDropToEnd(context, ref, details.data, scopeGroups),
+        );
+      },
+      builder: (context, candidateData, rejectedData) {
+        final isDropTarget = candidateData.isNotEmpty;
+        return Container(
+          height: isDropTarget ? 24 : 4,
+          color:
+              isDropTarget
+                  ? Colors.blue.withValues(alpha: 0.15)
+                  : Colors.transparent,
+          child:
+              isDropTarget
+                  ? Center(child: Container(height: 2, color: Colors.blue))
+                  : null,
+        );
+      },
+    );
+  }
+
+  Future<void> _handleGroupDrop(
+    BuildContext context,
     WidgetRef ref,
     Group dragged,
     Group target,
     List<Group> rootGroups,
-  ) {
+  ) async {
     if (!_sameGroupScope(dragged, target)) {
       return;
     }
@@ -242,7 +332,42 @@ class Sidebar extends ConsumerWidget {
     for (int i = 0; i < groups.length; i++) {
       items.add({'id': groups[i].id, 'sort_order': i});
     }
-    ref.read(serverProvider.notifier).reorderGroups(items);
+    try {
+      await ref.read(serverProvider.notifier).reorderGroups(items);
+    } catch (_) {
+      if (!context.mounted) {
+        return;
+      }
+      _showReorderError(context, 'folders');
+    }
+  }
+
+  Future<void> _handleGroupDropToEnd(
+    BuildContext context,
+    WidgetRef ref,
+    Group dragged,
+    List<Group> scopeGroups,
+  ) async {
+    if (scopeGroups.isEmpty || !_sameGroupScope(dragged, scopeGroups.first)) {
+      return;
+    }
+
+    final groups = List<Group>.from(scopeGroups);
+    groups.removeWhere((group) => group.id == dragged.id);
+    groups.add(dragged);
+
+    final items = <Map<String, dynamic>>[];
+    for (int i = 0; i < groups.length; i++) {
+      items.add({'id': groups[i].id, 'sort_order': i});
+    }
+    try {
+      await ref.read(serverProvider.notifier).reorderGroups(items);
+    } catch (_) {
+      if (!context.mounted) {
+        return;
+      }
+      _showReorderError(context, 'folders');
+    }
   }
 
   Widget _buildSessionTile(
@@ -589,4 +714,71 @@ class Sidebar extends ConsumerWidget {
       },
     );
   }
+}
+
+List<_RootGroupScope> _buildRootScopes(List<Group> groups) {
+  final grouped = <String, List<Group>>{};
+  for (final group in groups.where((group) => group.parentId == null)) {
+    grouped.putIfAbsent(group.localityKey, () => []).add(group);
+  }
+
+  final scopes = <_RootGroupScope>[];
+  final localGroups = grouped.remove('local');
+  if (localGroups != null && localGroups.isNotEmpty) {
+    localGroups.sort(_compareGroups);
+    scopes.add(
+      _RootGroupScope(key: 'local', label: 'Local', groups: localGroups),
+    );
+  }
+
+  final remoteKeys = grouped.keys.toList()..sort();
+  for (final key in remoteKeys) {
+    final scopeGroups = grouped[key]!;
+    scopeGroups.sort(_compareGroups);
+    final host = key.startsWith('ssh:') ? key.substring(4) : key;
+    scopes.add(
+      _RootGroupScope(
+        key: key,
+        label: 'Remote: $host',
+        groups: scopeGroups,
+        isRemote: true,
+      ),
+    );
+  }
+
+  return scopes;
+}
+
+int _compareGroups(Group a, Group b) {
+  final bySortOrder = a.sortOrder.compareTo(b.sortOrder);
+  if (bySortOrder != 0) {
+    return bySortOrder;
+  }
+  return a.name.compareTo(b.name);
+}
+
+class _RootGroupScope {
+  final String key;
+  final String label;
+  final List<Group> groups;
+  final bool isRemote;
+
+  const _RootGroupScope({
+    required this.key,
+    required this.label,
+    required this.groups,
+    this.isRemote = false,
+  });
+}
+
+void _showReorderError(BuildContext context, String itemType) {
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  if (messenger == null) {
+    return;
+  }
+  messenger
+    ..removeCurrentSnackBar()
+    ..showSnackBar(
+      SnackBar(content: Text("Couldn't reorder $itemType. Reverted.")),
+    );
 }

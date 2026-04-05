@@ -96,6 +96,10 @@ fn ssh_tunnel_args(host_alias: &str, local_port: u16, remote_port: u16) -> Vec<S
         "-o".to_string(),
         "BatchMode=yes".to_string(),
         "-o".to_string(),
+        "StrictHostKeyChecking=no".to_string(),
+        "-o".to_string(),
+        "UserKnownHostsFile=/dev/null".to_string(),
+        "-o".to_string(),
         "ServerAliveInterval=10".to_string(),
         "-o".to_string(),
         "ServerAliveCountMax=3".to_string(),
@@ -173,6 +177,12 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|window| window == ["-o", "ControlMaster=no"]));
+        assert!(args
+            .windows(2)
+            .any(|window| window == ["-o", "StrictHostKeyChecking=no"]));
+        assert!(args
+            .windows(2)
+            .any(|window| window == ["-o", "UserKnownHostsFile=/dev/null"]));
         assert_eq!(args.last().map(String::as_str), Some("shared-host"));
     }
 }

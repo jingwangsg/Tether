@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/group.dart';
 import '../models/session.dart';
@@ -68,10 +68,17 @@ class ServerState {
 class ServerNotifier extends StateNotifier<ServerState> {
   static const _refreshInterval = Duration(seconds: 5);
   Timer? _refreshTimer;
+  int _groupStructureVersion = 0;
+  int _sessionStructureVersion = 0;
 
-  ServerNotifier() : super(const ServerState()) {
-    _tryAutoConnect();
+  ServerNotifier({bool autoConnect = true}) : super(const ServerState()) {
+    if (autoConnect) {
+      _tryAutoConnect();
+    }
   }
+
+  @visibleForTesting
+  ServerNotifier.test([super.state = const ServerState()]);
 
   Future<void> _tryAutoConnect() async {
     try {
@@ -162,9 +169,11 @@ class ServerNotifier extends StateNotifier<ServerState> {
             return merged;
           }).toList();
 
-      state = state.copyWith(
+      _replaceState(
         groups: results[0] as List<Group>,
+        groupsStructureChanged: true,
         sessions: refreshed,
+        sessionsStructureChanged: true,
         sshHosts: results[2] as List<SshHost>,
       );
     } catch (e) {
@@ -246,13 +255,55 @@ class ServerNotifier extends StateNotifier<ServerState> {
   }
 
   Future<void> reorderGroups(List<Map<String, dynamic>> items) async {
-    await state.api!.reorderGroups(items);
-    await refresh();
+    final previousGroups = state.groups;
+    final optimisticGroups = _applyGroupReorder(previousGroups, items);
+    final operationVersion = _replaceState(
+      groups: optimisticGroups,
+      groupsStructureChanged: true,
+    );
+
+    try {
+      await state.api!.reorderGroups(items);
+    } catch (_) {
+      _rollbackGroupReorder(
+        previousGroups: previousGroups,
+        optimisticGroups: optimisticGroups,
+        operationVersion: operationVersion.groupVersion,
+      );
+      rethrow;
+    }
+
+    try {
+      await refresh();
+    } catch (error) {
+      debugPrint('Group reorder refresh failed: $error');
+    }
   }
 
   Future<void> reorderSessions(List<Map<String, dynamic>> items) async {
-    await state.api!.reorderSessions(items);
-    await refresh();
+    final previousSessions = state.sessions;
+    final optimisticSessions = _applySessionReorder(previousSessions, items);
+    final operationVersion = _replaceState(
+      sessions: optimisticSessions,
+      sessionsStructureChanged: true,
+    );
+
+    try {
+      await state.api!.reorderSessions(items);
+    } catch (_) {
+      _rollbackSessionReorder(
+        previousSessions: previousSessions,
+        optimisticSessions: optimisticSessions,
+        operationVersion: operationVersion.sessionVersion,
+      );
+      rethrow;
+    }
+
+    try {
+      await refresh();
+    } catch (error) {
+      debugPrint('Session reorder refresh failed: $error');
+    }
   }
 
   void updateForegroundProcess(
@@ -284,7 +335,97 @@ class ServerNotifier extends StateNotifier<ServerState> {
         'after=$process/$toolState',
       );
     }
-    state = state.copyWith(sessions: sessions);
+    _replaceState(sessions: sessions);
+  }
+
+  _StructureVersion _replaceState({
+    List<Group>? groups,
+    bool groupsStructureChanged = false,
+    List<Session>? sessions,
+    bool sessionsStructureChanged = false,
+    List<SshHost>? sshHosts,
+  }) {
+    if (groupsStructureChanged) {
+      _groupStructureVersion++;
+    }
+    if (sessionsStructureChanged) {
+      _sessionStructureVersion++;
+    }
+    state = state.copyWith(
+      groups: groups,
+      sessions: sessions,
+      sshHosts: sshHosts,
+    );
+    return _StructureVersion(
+      groupVersion: _groupStructureVersion,
+      sessionVersion: _sessionStructureVersion,
+    );
+  }
+
+  void _rollbackGroupReorder({
+    required List<Group> previousGroups,
+    required List<Group> optimisticGroups,
+    required int operationVersion,
+  }) {
+    if (_groupStructureVersion != operationVersion) {
+      return;
+    }
+
+    final previousById = {for (final group in previousGroups) group.id: group};
+    final optimisticById = {
+      for (final group in optimisticGroups) group.id: group,
+    };
+
+    final rolledBackGroups =
+        state.groups.map((group) {
+          final previous = previousById[group.id];
+          final optimistic = optimisticById[group.id];
+          if (previous == null || optimistic == null) {
+            return group;
+          }
+          if (group.sortOrder != optimistic.sortOrder) {
+            return group;
+          }
+          return group.copyWith(sortOrder: previous.sortOrder);
+        }).toList();
+
+    _replaceState(groups: rolledBackGroups, groupsStructureChanged: true);
+  }
+
+  void _rollbackSessionReorder({
+    required List<Session> previousSessions,
+    required List<Session> optimisticSessions,
+    required int operationVersion,
+  }) {
+    if (_sessionStructureVersion != operationVersion) {
+      return;
+    }
+
+    final previousById = {
+      for (final session in previousSessions) session.id: session,
+    };
+    final optimisticById = {
+      for (final session in optimisticSessions) session.id: session,
+    };
+
+    final rolledBackSessions =
+        state.sessions.map((session) {
+          final previous = previousById[session.id];
+          final optimistic = optimisticById[session.id];
+          if (previous == null || optimistic == null) {
+            return session;
+          }
+          if (session.sortOrder != optimistic.sortOrder ||
+              session.groupId != optimistic.groupId) {
+            return session;
+          }
+          return session.copyWith(
+            sortOrder: previous.sortOrder,
+            groupId: previous.groupId,
+          );
+        }).toList();
+
+    _replaceState(sessions: rolledBackSessions, sessionsStructureChanged: true);
   }
 
   void disconnect() {
@@ -320,3 +461,71 @@ final serverProvider = StateNotifierProvider<ServerNotifier, ServerState>((
 ) {
   return ServerNotifier();
 });
+
+List<Group> _applyGroupReorder(
+  List<Group> groups,
+  List<Map<String, dynamic>> items,
+) {
+  final sortOrders = <String, int>{};
+  for (final item in items) {
+    final id = item['id'] as String?;
+    final sortOrder = item['sort_order'] as int?;
+    if (id == null || sortOrder == null) {
+      continue;
+    }
+    sortOrders[id] = sortOrder;
+  }
+
+  return groups
+      .map(
+        (group) =>
+            group.copyWith(sortOrder: sortOrders[group.id] ?? group.sortOrder),
+      )
+      .toList();
+}
+
+List<Session> _applySessionReorder(
+  List<Session> sessions,
+  List<Map<String, dynamic>> items,
+) {
+  final updates = <String, _SessionReorderUpdate>{};
+  for (final item in items) {
+    final id = item['id'] as String?;
+    final sortOrder = item['sort_order'] as int?;
+    if (id == null || sortOrder == null) {
+      continue;
+    }
+    updates[id] = _SessionReorderUpdate(
+      sortOrder: sortOrder,
+      groupId: item['group_id'] as String?,
+    );
+  }
+
+  return sessions.map((session) {
+    final update = updates[session.id];
+    if (update == null) {
+      return session;
+    }
+    return session.copyWith(
+      sortOrder: update.sortOrder,
+      groupId: update.groupId ?? session.groupId,
+    );
+  }).toList();
+}
+
+class _SessionReorderUpdate {
+  final int sortOrder;
+  final String? groupId;
+
+  const _SessionReorderUpdate({required this.sortOrder, this.groupId});
+}
+
+class _StructureVersion {
+  final int groupVersion;
+  final int sessionVersion;
+
+  const _StructureVersion({
+    required this.groupVersion,
+    required this.sessionVersion,
+  });
+}

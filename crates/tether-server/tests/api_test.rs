@@ -774,6 +774,48 @@ async fn test_create_group_with_ssh_host() {
 }
 
 #[tokio::test]
+async fn test_remote_groups_append_to_end_of_host_scope_by_default() {
+    let state = test_state();
+    let app = test_router(state.clone());
+    let remote_port = start_mock_remote_groups_server().await;
+    state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("devbox", remote_port);
+
+    for name in ["alpha", "beta"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/groups")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "name": name,
+                            "ssh_host": "devbox"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    let remote_groups = state.inner.db.get_groups_by_ssh_host("devbox").unwrap();
+    assert_eq!(remote_groups.len(), 2);
+    assert_eq!(remote_groups[0].name, "alpha");
+    assert_eq!(remote_groups[0].sort_order, 0);
+    assert_eq!(remote_groups[1].name, "beta");
+    assert_eq!(remote_groups[1].sort_order, 1);
+
+    cleanup_state(&state);
+}
+
+#[tokio::test]
 async fn test_create_group_with_ssh_host_succeeds_when_followup_sync_fails() {
     let state = test_state();
     let app = test_router(state.clone());
