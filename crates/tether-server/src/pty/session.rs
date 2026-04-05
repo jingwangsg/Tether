@@ -88,6 +88,12 @@ pub struct PtySession {
     command_phase: Mutex<Option<CommandPhase>>,
     /// Timestamp of the most recent shell lifecycle transition.
     last_command_phase_change: Mutex<Option<std::time::Instant>>,
+    /// Monotonic attention re-arm epoch. Incremented when a new task is known to
+    /// have started. Local attention uses this to ensure a single task can only
+    /// produce one completion bell.
+    attention_epoch: std::sync::atomic::AtomicU64,
+    /// Becomes true after we observe any OSC 133 shell-integration marker.
+    has_shell_integration: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -177,6 +183,8 @@ impl PtySession {
             last_alt_screen_exit_time: Mutex::new(None),
             command_phase: Mutex::new(None),
             last_command_phase_change: Mutex::new(None),
+            attention_epoch: std::sync::atomic::AtomicU64::new(0),
+            has_shell_integration: std::sync::atomic::AtomicBool::new(false),
         });
 
         // Spawn reader task
@@ -238,6 +246,13 @@ impl PtySession {
 
     pub fn write_input(&self, data: &[u8]) -> anyhow::Result<()> {
         *self.last_input_time.lock().unwrap() = Some(std::time::Instant::now());
+        if !self
+            .has_shell_integration
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.attention_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let mut writer = self.master_writer.lock().unwrap();
         writer.write_all(data)?;
         writer.flush()?;
@@ -299,6 +314,11 @@ impl PtySession {
 
     pub fn get_foreground(&self) -> SessionForeground {
         self.foreground.lock().unwrap().clone()
+    }
+
+    pub fn attention_epoch(&self) -> u64 {
+        self.attention_epoch
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Detect the current foreground process.
@@ -551,8 +571,14 @@ impl PtySession {
     }
 
     fn handle_semantic_prompt(session: &Arc<PtySession>, event: SemanticPromptKind) {
+        session
+            .has_shell_integration
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         match event {
             SemanticPromptKind::EndInputStartOutput => {
+                session
+                    .attention_epoch
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Self::set_command_phase(session, Some(CommandPhase::CommandActive));
             }
             SemanticPromptKind::EndCommand

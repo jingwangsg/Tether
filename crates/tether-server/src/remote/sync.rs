@@ -43,8 +43,7 @@ pub async fn sync_remote_host(
                     session.tool_state.clone(),
                 );
                 if let Some(state) = state {
-                    let observed_fg = next_fg.unwrap_or_default();
-                    crate::attention::observe_foreground(state, id, &observed_fg);
+                    let _ = next_fg.unwrap_or_default();
                     state.publish_session_status(id);
                 }
             }
@@ -469,6 +468,67 @@ mod tests {
             .expect("expected cached foreground");
         assert_eq!(fg.process.as_deref(), Some("claude"));
         assert_eq!(fg.tool_state, Some(crate::pty::session::ToolState::Waiting));
+    }
+
+    #[tokio::test]
+    async fn sync_remote_host_mirrors_remote_attention_state() {
+        let store = test_store();
+        let ssh_fg = DashMap::new();
+        let ssh_live_sessions = DashMap::new();
+        let host = "shared-host";
+
+        let group = group_row("11111111-1111-1111-1111-111111111111", "remote", None, 0);
+        let session = SessionRow {
+            id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string(),
+            group_id: group.id.clone(),
+            name: "alpha".to_string(),
+            shell: "/bin/bash".to_string(),
+            cols: 120,
+            rows: 40,
+            cwd: "/srv/alpha".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            last_active: "2024-01-02T00:00:00Z".to_string(),
+            sort_order: 0,
+            is_alive: true,
+            foreground_process: Some("claude".to_string()),
+            tool_state: Some(crate::pty::session::ToolState::Waiting),
+            local_group_id: None,
+            attention_seq: 3,
+            needs_attention: true,
+            attention_updated_at: Some("2026-04-05T00:00:00Z".to_string()),
+        };
+
+        let (port, _groups_state, sessions_state) =
+            start_mutable_mock_remote(vec![group.clone()], vec![session.clone()]).await;
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions, None)
+            .await
+            .unwrap();
+
+        let mirrored = store
+            .get_session(&session.id)
+            .unwrap()
+            .expect("mirrored session");
+        assert!(mirrored.needs_attention);
+        assert_eq!(mirrored.attention_seq, 3);
+        assert_eq!(
+            mirrored.attention_updated_at.as_deref(),
+            Some("2026-04-05T00:00:00Z")
+        );
+
+        *sessions_state.lock().await = vec![SessionRow {
+            needs_attention: false,
+            ..session
+        }];
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions, None)
+            .await
+            .unwrap();
+
+        let mirrored = store
+            .get_session("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+            .unwrap()
+            .expect("mirrored session");
+        assert!(!mirrored.needs_attention);
+        assert_eq!(mirrored.attention_seq, 3);
     }
 
     #[tokio::test]

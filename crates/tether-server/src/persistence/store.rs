@@ -58,6 +58,22 @@ pub struct SessionRow {
     pub attention_updated_at: Option<String>,
 }
 
+fn mirrored_attention_ack_seq(attention: &SessionAttentionState) -> i64 {
+    if attention.needs_attention {
+        attention.attention_seq.saturating_sub(1)
+    } else {
+        attention.attention_seq
+    }
+}
+
+fn mirrored_session_attention_ack_seq(session: &SessionRow) -> i64 {
+    if session.needs_attention {
+        session.attention_seq.saturating_sub(1)
+    } else {
+        session.attention_seq
+    }
+}
+
 impl Store {
     pub fn new(path: &str) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
@@ -631,12 +647,36 @@ impl Store {
         Ok(Some(row))
     }
 
+    pub fn update_session_attention_state(
+        &self,
+        id: &str,
+        attention: &SessionAttentionState,
+    ) -> anyhow::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let attention_ack_seq = mirrored_attention_ack_seq(attention);
+        let n = conn.execute(
+            "UPDATE sessions
+             SET attention_seq = ?1,
+                 attention_ack_seq = ?2,
+                 attention_updated_at = ?3
+             WHERE id = ?4",
+            params![
+                attention.attention_seq,
+                attention_ack_seq,
+                attention.attention_updated_at.as_deref(),
+                id
+            ],
+        )?;
+        Ok(n)
+    }
+
     pub fn upsert_remote_session_mirror(&self, session: &SessionRow) -> anyhow::Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
+        let attention_ack_seq = mirrored_session_attention_ack_seq(session);
         tx.execute(
             "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id, attention_seq, attention_ack_seq, attention_updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, 0, NULL)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(id) DO UPDATE SET
                  group_id = excluded.group_id,
                  name = excluded.name,
@@ -648,7 +688,10 @@ impl Store {
                  last_active = excluded.last_active,
                  sort_order = excluded.sort_order,
                  is_alive = excluded.is_alive,
-                 local_group_id = excluded.local_group_id",
+                 local_group_id = excluded.local_group_id,
+                 attention_seq = excluded.attention_seq,
+                 attention_ack_seq = excluded.attention_ack_seq,
+                 attention_updated_at = excluded.attention_updated_at",
             params![
                 session.id.as_str(),
                 session.group_id.as_str(),
@@ -661,7 +704,10 @@ impl Store {
                 session.last_active.as_str(),
                 session.sort_order,
                 session.is_alive as i32,
-                session.local_group_id.as_deref()
+                session.local_group_id.as_deref(),
+                session.attention_seq,
+                attention_ack_seq,
+                session.attention_updated_at.as_deref()
             ],
         )?;
         tx.execute(

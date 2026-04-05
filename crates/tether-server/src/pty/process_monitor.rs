@@ -32,6 +32,12 @@ pub async fn run_process_monitor(state: AppState) {
                         session.set_last_detected_alt_screen_tool(None);
                     }
                     let old_fg = session.get_foreground();
+                    crate::attention::observe_foreground(
+                        &state,
+                        session.id,
+                        &new_fg,
+                        Some(session.attention_epoch()),
+                    );
                     if new_fg != old_fg {
                         if should_log_foreground(&old_fg) || should_log_foreground(&new_fg) {
                             tracing::debug!(
@@ -47,7 +53,6 @@ pub async fn run_process_monitor(state: AppState) {
                             );
                         }
                         *session.foreground.lock().unwrap() = new_fg.clone();
-                        crate::attention::observe_foreground(&state, session.id, &new_fg);
                         state.publish_session_status(session.id);
                     }
                 }
@@ -59,11 +64,17 @@ pub async fn run_process_monitor(state: AppState) {
                     let old_fg = session.get_foreground();
                     if !PtySession::is_known_tool(old_fg.process.as_deref()) { continue; }
                     let tool_state = session.compute_tool_state();
-                    if tool_state != old_fg.tool_state {
-                        let new_fg = SessionForeground {
-                            process: old_fg.process.clone(),
-                            tool_state,
-                        };
+                    let new_fg = SessionForeground {
+                        process: old_fg.process.clone(),
+                        tool_state,
+                    };
+                    crate::attention::observe_foreground(
+                        &state,
+                        session.id,
+                        &new_fg,
+                        Some(session.attention_epoch()),
+                    );
+                    if new_fg.tool_state != old_fg.tool_state {
                         tracing::debug!(
                             target: "tool-state",
                             session_id = %session.id,
@@ -74,7 +85,6 @@ pub async fn run_process_monitor(state: AppState) {
                             "tool_state changed"
                         );
                         *session.foreground.lock().unwrap() = new_fg.clone();
-                        crate::attention::observe_foreground(&state, session.id, &new_fg);
                         state.publish_session_status(session.id);
                     }
                 }

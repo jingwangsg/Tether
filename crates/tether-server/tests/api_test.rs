@@ -115,6 +115,11 @@ struct MockRemoteGroupsState {
     fail_sessions_list: bool,
 }
 
+#[derive(Clone)]
+struct MockRemoteAttentionState {
+    attention: Arc<tokio::sync::Mutex<tether_server::attention::SessionAttentionState>>,
+}
+
 async fn remote_list_groups(State(state): State<MockRemoteGroupsState>) -> Json<Vec<Value>> {
     Json(state.groups.lock().await.clone())
 }
@@ -209,6 +214,22 @@ async fn remote_reorder_groups(
     StatusCode::OK
 }
 
+async fn remote_ack_attention(
+    Path(_id): Path<String>,
+    State(state): State<MockRemoteAttentionState>,
+    Json(body): Json<Value>,
+) -> Result<Json<tether_server::attention::SessionAttentionState>, StatusCode> {
+    let Some(attention_seq) = body.get("attention_seq").and_then(Value::as_i64) else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    let mut attention = state.attention.lock().await;
+    if attention_seq > 0 {
+        attention.needs_attention = false;
+        attention.attention_seq = attention.attention_seq.max(attention_seq);
+    }
+    Ok(Json(attention.clone()))
+}
+
 async fn start_mock_remote_groups_server() -> u16 {
     start_mock_remote_groups_server_with_options(false).await
 }
@@ -234,6 +255,30 @@ async fn start_mock_remote_groups_server_with_options(fail_sessions_list: bool) 
     });
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     port
+}
+
+async fn start_mock_remote_attention_server(
+    attention: tether_server::attention::SessionAttentionState,
+) -> (
+    u16,
+    Arc<tokio::sync::Mutex<tether_server::attention::SessionAttentionState>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let attention = Arc::new(tokio::sync::Mutex::new(attention));
+    let app = Router::new()
+        .route(
+            "/api/sessions/{id}/attention/ack",
+            post(remote_ack_attention),
+        )
+        .with_state(MockRemoteAttentionState {
+            attention: attention.clone(),
+        });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    (port, attention)
 }
 
 // --- Tests ---
@@ -1383,6 +1428,81 @@ async fn test_ack_session_attention_preserves_newer_completion() {
         .expect("attention row");
     assert!(attention.needs_attention);
     assert_eq!(attention.attention_seq, 2);
+
+    cleanup_state(&state);
+}
+
+#[tokio::test]
+async fn test_ack_session_attention_proxies_to_remote_sessions() {
+    let state = test_state();
+    let app = test_router(state.clone());
+
+    let group = state
+        .inner
+        .db
+        .create_group("remote", "~", None, Some("testhost"))
+        .expect("group");
+    let session = state
+        .inner
+        .db
+        .create_session("session-1", &group.id, "session", "ssh testhost", "~", None)
+        .expect("session");
+    state
+        .inner
+        .db
+        .update_session_attention_state(
+            &session.id,
+            &tether_server::attention::SessionAttentionState {
+                needs_attention: true,
+                attention_seq: 1,
+                attention_updated_at: Some("2026-04-05T00:00:00Z".to_string()),
+            },
+        )
+        .expect("seed local mirror attention");
+
+    let (remote_port, remote_attention) =
+        start_mock_remote_attention_server(tether_server::attention::SessionAttentionState {
+            needs_attention: true,
+            attention_seq: 1,
+            attention_updated_at: Some("2026-04-05T00:00:00Z".to_string()),
+        })
+        .await;
+    state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("testhost", remote_port);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{}/attention/ack", session.id))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"attention_seq":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["needs_attention"], false);
+    assert_eq!(json["attention_seq"], 1);
+
+    let mirrored = state
+        .inner
+        .db
+        .get_session_attention(&session.id)
+        .expect("attention lookup")
+        .expect("attention row");
+    assert!(!mirrored.needs_attention);
+    assert_eq!(mirrored.attention_seq, 1);
+
+    let remote = remote_attention.lock().await.clone();
+    assert!(!remote.needs_attention);
+    assert_eq!(remote.attention_seq, 1);
 
     cleanup_state(&state);
 }

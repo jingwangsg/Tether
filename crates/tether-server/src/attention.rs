@@ -75,37 +75,62 @@ struct PendingTransition {
 
 #[derive(Debug, Clone)]
 pub struct SessionAttentionTracker {
+    initialized: bool,
     stable_status: StableToolStatus,
     stable_since: Instant,
     running_since: Option<Instant>,
     candidate: Option<PendingTransition>,
+    seen_rearm_epoch: u64,
+    pending_rearm_epoch: Option<u64>,
+    armed_rearm_epoch: Option<u64>,
 }
 
 impl SessionAttentionTracker {
     fn new(now: Instant) -> Self {
         Self {
+            initialized: false,
             stable_status: StableToolStatus::Idle,
             stable_since: now,
             running_since: None,
             candidate: None,
+            seen_rearm_epoch: 0,
+            pending_rearm_epoch: None,
+            armed_rearm_epoch: None,
         }
     }
 
-    fn observe(&mut self, raw_status: StableToolStatus, now: Instant) -> AttentionAdvance {
-        let advance = self.advance(now);
+    fn observe(
+        &mut self,
+        raw_status: StableToolStatus,
+        rearm_epoch: Option<u64>,
+        now: Instant,
+    ) -> AttentionAdvance {
+        if !self.initialized {
+            self.initialized = true;
+            if let Some(epoch) = rearm_epoch {
+                self.seen_rearm_epoch = epoch;
+            }
+        } else {
+            self.observe_rearm_epoch(rearm_epoch);
+        }
+        let mut advance = self.advance(now);
         if raw_status == self.stable_status {
             self.candidate = None;
             return advance;
         }
 
         match self.candidate {
-            Some(candidate) if candidate.target == raw_status => self.advance(now),
+            Some(candidate) if candidate.target == raw_status => {
+                advance.merge(self.advance(now));
+                advance
+            }
             _ => {
                 self.candidate = Some(PendingTransition {
                     target: raw_status,
                     since: now,
                 });
-                self.advance(now)
+                advance.merge(self.advance(now));
+                advance
             }
         }
     }
@@ -135,25 +160,55 @@ impl SessionAttentionTracker {
         match candidate.target {
             StableToolStatus::Running => {
                 self.running_since = Some(now);
+                if self.pending_rearm_epoch.is_some() {
+                    self.armed_rearm_epoch = self.pending_rearm_epoch.take();
+                }
             }
             StableToolStatus::Idle | StableToolStatus::Waiting => {
                 self.running_since = None;
+                if candidate.target == StableToolStatus::Idle {
+                    self.armed_rearm_epoch = None;
+                }
             }
         }
 
-        AttentionAdvance {
-            completion_triggered: previous == StableToolStatus::Running
-                && candidate.target == StableToolStatus::Waiting
-                && running_duration
-                    .map(|duration| duration >= MIN_COMPLETION_RUNNING)
-                    .unwrap_or(false),
+        let completion_triggered = previous == StableToolStatus::Running
+            && candidate.target == StableToolStatus::Waiting
+            && self.armed_rearm_epoch.is_some()
+            && running_duration
+                .map(|duration| duration >= MIN_COMPLETION_RUNNING)
+                .unwrap_or(false);
+        if completion_triggered {
+            self.armed_rearm_epoch = None;
         }
+
+        AttentionAdvance {
+            completion_triggered,
+        }
+    }
+
+    fn observe_rearm_epoch(&mut self, rearm_epoch: Option<u64>) {
+        let Some(epoch) = rearm_epoch else {
+            return;
+        };
+        if epoch == 0 || epoch <= self.seen_rearm_epoch {
+            return;
+        }
+
+        self.seen_rearm_epoch = epoch;
+        self.pending_rearm_epoch = Some(epoch);
     }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 struct AttentionAdvance {
     completion_triggered: bool,
+}
+
+impl AttentionAdvance {
+    fn merge(&mut self, other: Self) {
+        self.completion_triggered |= other.completion_triggered;
+    }
 }
 
 fn transition_threshold(from: StableToolStatus, to: StableToolStatus) -> Duration {
@@ -168,7 +223,12 @@ fn transition_threshold(from: StableToolStatus, to: StableToolStatus) -> Duratio
     }
 }
 
-pub fn observe_foreground(state: &AppState, session_id: Uuid, foreground: &SessionForeground) {
+pub fn observe_foreground(
+    state: &AppState,
+    session_id: Uuid,
+    foreground: &SessionForeground,
+    rearm_epoch: Option<u64>,
+) {
     let raw_status = StableToolStatus::from_foreground(foreground);
     let now = Instant::now();
     let mut should_publish = false;
@@ -179,7 +239,7 @@ pub fn observe_foreground(state: &AppState, session_id: Uuid, foreground: &Sessi
             .attention_trackers
             .entry(session_id)
             .or_insert_with(|| SessionAttentionTracker::new(now));
-        let advance = tracker.observe(raw_status, now);
+        let advance = tracker.observe(raw_status, rearm_epoch, now);
         if advance.completion_triggered {
             should_publish = trigger_attention(state, session_id);
         }
@@ -254,6 +314,14 @@ mod tests {
         }
     }
 
+    fn baseline_tracker(tracker: &mut SessionAttentionTracker, now: Instant) {
+        assert!(
+            !tracker
+                .observe(StableToolStatus::Idle, Some(0), now)
+                .completion_triggered
+        );
+    }
+
     #[test]
     fn startup_green_then_waiting_does_not_trigger_completion() {
         let now = Instant::now();
@@ -261,7 +329,11 @@ mod tests {
 
         assert!(
             !tracker
-                .observe(StableToolStatus::from_foreground(&running_fg()), now)
+                .observe(
+                    StableToolStatus::from_foreground(&running_fg()),
+                    Some(1),
+                    now
+                )
                 .completion_triggered
         );
         assert!(
@@ -273,6 +345,7 @@ mod tests {
             !tracker
                 .observe(
                     StableToolStatus::from_foreground(&waiting_fg()),
+                    Some(1),
                     now + IDLE_TO_RUNNING_GRACE + Duration::from_millis(50),
                 )
                 .completion_triggered
@@ -290,12 +363,14 @@ mod tests {
     fn short_waiting_blip_does_not_trigger_completion() {
         let now = Instant::now();
         let mut tracker = SessionAttentionTracker::new(now);
-        tracker.observe(StableToolStatus::Running, now);
+        baseline_tracker(&mut tracker, now);
+        tracker.observe(StableToolStatus::Running, Some(1), now);
         tracker.tick(now + IDLE_TO_RUNNING_GRACE);
         tracker.tick(now + IDLE_TO_RUNNING_GRACE + MIN_COMPLETION_RUNNING);
 
         tracker.observe(
             StableToolStatus::Waiting,
+            Some(1),
             now + IDLE_TO_RUNNING_GRACE + MIN_COMPLETION_RUNNING,
         );
         assert!(!tracker
@@ -307,6 +382,7 @@ mod tests {
             !tracker
                 .observe(
                     StableToolStatus::Running,
+                    Some(1),
                     now + IDLE_TO_RUNNING_GRACE + MIN_COMPLETION_RUNNING + Duration::from_secs(1),
                 )
                 .completion_triggered
@@ -317,11 +393,13 @@ mod tests {
     fn long_running_then_waiting_triggers_completion() {
         let now = Instant::now();
         let mut tracker = SessionAttentionTracker::new(now);
-        tracker.observe(StableToolStatus::Running, now);
+        baseline_tracker(&mut tracker, now);
+        tracker.observe(StableToolStatus::Running, Some(1), now);
         tracker.tick(now + IDLE_TO_RUNNING_GRACE);
         tracker.tick(now + IDLE_TO_RUNNING_GRACE + MIN_COMPLETION_RUNNING);
         tracker.observe(
             StableToolStatus::Waiting,
+            Some(1),
             now + IDLE_TO_RUNNING_GRACE + MIN_COMPLETION_RUNNING,
         );
 
@@ -330,6 +408,113 @@ mod tests {
                 .tick(
                     now + IDLE_TO_RUNNING_GRACE + MIN_COMPLETION_RUNNING + RUNNING_TO_WAITING_GRACE,
                 )
+                .completion_triggered
+        );
+    }
+
+    #[test]
+    fn completion_requires_new_rearm_epoch_before_triggering_again() {
+        let now = Instant::now();
+        let mut tracker = SessionAttentionTracker::new(now);
+        baseline_tracker(&mut tracker, now);
+
+        tracker.observe(StableToolStatus::Running, Some(1), now);
+        tracker.tick(now + IDLE_TO_RUNNING_GRACE);
+        tracker.tick(now + IDLE_TO_RUNNING_GRACE + MIN_COMPLETION_RUNNING);
+        tracker.observe(
+            StableToolStatus::Waiting,
+            Some(1),
+            now + IDLE_TO_RUNNING_GRACE + MIN_COMPLETION_RUNNING,
+        );
+        assert!(
+            tracker
+                .tick(
+                    now + IDLE_TO_RUNNING_GRACE + MIN_COMPLETION_RUNNING + RUNNING_TO_WAITING_GRACE,
+                )
+                .completion_triggered
+        );
+
+        assert!(
+            !tracker
+                .observe(
+                    StableToolStatus::Running,
+                    Some(1),
+                    now + IDLE_TO_RUNNING_GRACE
+                        + MIN_COMPLETION_RUNNING
+                        + RUNNING_TO_WAITING_GRACE
+                        + WAITING_TO_RUNNING_GRACE,
+                )
+                .completion_triggered
+        );
+        assert!(
+            !tracker
+                .tick(
+                    now + IDLE_TO_RUNNING_GRACE
+                        + MIN_COMPLETION_RUNNING
+                        + RUNNING_TO_WAITING_GRACE
+                        + WAITING_TO_RUNNING_GRACE
+                        + MIN_COMPLETION_RUNNING,
+                )
+                .completion_triggered
+        );
+        tracker.observe(
+            StableToolStatus::Waiting,
+            Some(1),
+            now + IDLE_TO_RUNNING_GRACE
+                + MIN_COMPLETION_RUNNING
+                + RUNNING_TO_WAITING_GRACE
+                + WAITING_TO_RUNNING_GRACE
+                + MIN_COMPLETION_RUNNING,
+        );
+        assert!(
+            !tracker
+                .tick(
+                    now + IDLE_TO_RUNNING_GRACE
+                        + MIN_COMPLETION_RUNNING
+                        + RUNNING_TO_WAITING_GRACE
+                        + WAITING_TO_RUNNING_GRACE
+                        + MIN_COMPLETION_RUNNING
+                        + RUNNING_TO_WAITING_GRACE,
+                )
+                .completion_triggered
+        );
+    }
+
+    #[test]
+    fn new_rearm_epoch_allows_a_later_completion() {
+        let now = Instant::now();
+        let mut tracker = SessionAttentionTracker::new(now);
+        baseline_tracker(&mut tracker, now);
+        let first_completion_at =
+            now + IDLE_TO_RUNNING_GRACE + MIN_COMPLETION_RUNNING + RUNNING_TO_WAITING_GRACE;
+
+        tracker.observe(StableToolStatus::Running, Some(1), now);
+        tracker.tick(now + IDLE_TO_RUNNING_GRACE);
+        tracker.tick(now + IDLE_TO_RUNNING_GRACE + MIN_COMPLETION_RUNNING);
+        tracker.observe(
+            StableToolStatus::Waiting,
+            Some(1),
+            now + IDLE_TO_RUNNING_GRACE + MIN_COMPLETION_RUNNING,
+        );
+        assert!(tracker.tick(first_completion_at).completion_triggered);
+
+        tracker.observe(
+            StableToolStatus::Running,
+            Some(2),
+            first_completion_at + Duration::from_millis(50),
+        );
+        let second_running_at =
+            first_completion_at + WAITING_TO_RUNNING_GRACE + Duration::from_millis(50);
+        tracker.tick(second_running_at);
+        tracker.tick(second_running_at + MIN_COMPLETION_RUNNING);
+        tracker.observe(
+            StableToolStatus::Waiting,
+            Some(2),
+            second_running_at + MIN_COMPLETION_RUNNING,
+        );
+        assert!(
+            tracker
+                .tick(second_running_at + MIN_COMPLETION_RUNNING + RUNNING_TO_WAITING_GRACE)
                 .completion_triggered
         );
     }

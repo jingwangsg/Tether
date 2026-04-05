@@ -195,9 +195,9 @@ async fn ssh_proxy_forwards_remote_foreground_sequence_verbatim() {
         .unwrap();
 
     let (remote_port, shutdown_tx) = start_mock_remote_foreground_server(vec![
-        r#"{"type":"foreground_changed","process":"claude","tool_state":"running"}"#,
-        r#"{"type":"foreground_changed","process":"claude","tool_state":"waiting"}"#,
-        r#"{"type":"foreground_changed","process":"claude","tool_state":"running"}"#,
+        r#"{"type":"foreground_changed","process":"claude","tool_state":"running","needs_attention":false,"attention_seq":0}"#,
+        r#"{"type":"foreground_changed","process":"claude","tool_state":"waiting","needs_attention":true,"attention_seq":1,"attention_updated_at":"2026-04-05T00:00:00Z"}"#,
+        r#"{"type":"foreground_changed","process":"claude","tool_state":"running","needs_attention":true,"attention_seq":1,"attention_updated_at":"2026-04-05T00:00:00Z"}"#,
     ])
     .await;
     state
@@ -212,7 +212,11 @@ async fn ssh_proxy_forwards_remote_foreground_sequence_verbatim() {
     );
     let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
 
-    for expected in ["running", "waiting", "running"] {
+    for (expected_tool_state, expected_needs_attention, expected_seq) in [
+        ("running", false, 0),
+        ("waiting", true, 1),
+        ("running", true, 1),
+    ] {
         let next = tokio::time::timeout(Duration::from_secs(1), ws.next())
             .await
             .unwrap()
@@ -224,7 +228,9 @@ async fn ssh_proxy_forwards_remote_foreground_sequence_verbatim() {
         let json: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
         assert_eq!(json["type"], "foreground_changed");
         assert_eq!(json["process"], "claude");
-        assert_eq!(json["tool_state"], expected);
+        assert_eq!(json["tool_state"], expected_tool_state);
+        assert_eq!(json["needs_attention"], expected_needs_attention);
+        assert_eq!(json["attention_seq"], expected_seq);
     }
 
     let sessions = reqwest::get(format!("http://127.0.0.1:{}/api/sessions", port))
@@ -240,6 +246,9 @@ async fn ssh_proxy_forwards_remote_foreground_sequence_verbatim() {
         .expect("expected mirrored SSH session");
     assert_eq!(listed["foreground_process"], "claude");
     assert_eq!(listed["tool_state"], "running");
+    assert_eq!(listed["needs_attention"], true);
+    assert_eq!(listed["attention_seq"], 1);
+    assert_eq!(listed["attention_updated_at"], "2026-04-05T00:00:00Z");
 
     shutdown_tx.send(()).ok();
     cleanup(&state);

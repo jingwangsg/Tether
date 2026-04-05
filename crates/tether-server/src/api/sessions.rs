@@ -50,7 +50,7 @@ pub struct UpdateSessionRequest {
     pub local_group_id: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct AckAttentionRequest {
     pub attention_seq: i64,
 }
@@ -204,6 +204,42 @@ pub async fn ack_session_attention(
     Path(id): Path<String>,
     Json(req): Json<AckAttentionRequest>,
 ) -> Result<Json<SessionAttentionState>, StatusCode> {
+    if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&id) {
+        let port = ready_tunnel_port(&state, &ssh_host)?;
+        let response = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{port}/api/sessions/{id}/attention/ack"
+            ))
+            .json(&req)
+            .send()
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        if response.status() == reqwest::StatusCode::BAD_REQUEST {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        if !response.status().is_success() {
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+        let attention = response
+            .json::<SessionAttentionState>()
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        state
+            .inner
+            .db
+            .update_session_attention_state(&id, &attention)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        if let Ok(uuid) = Uuid::parse_str(&id) {
+            state.publish_session_status(uuid);
+        }
+
+        return Ok(Json(attention));
+    }
+
     let attention = state
         .inner
         .db

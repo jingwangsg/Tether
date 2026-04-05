@@ -517,6 +517,20 @@ async fn proxy_ws_to_remote(
                                     .get("process")
                                     .and_then(|x| x.as_str())
                                     .map(str::to_string);
+                                let attention = SessionAttentionState {
+                                    needs_attention: v
+                                        .get("needs_attention")
+                                        .and_then(|x| x.as_bool())
+                                        .unwrap_or(false),
+                                    attention_seq: v
+                                        .get("attention_seq")
+                                        .and_then(|x| x.as_i64())
+                                        .unwrap_or(0),
+                                    attention_updated_at: v
+                                        .get("attention_updated_at")
+                                        .and_then(|x| x.as_str())
+                                        .map(str::to_string),
+                                };
                                 if crate::pty::session::PtySession::is_known_tool(process.as_deref())
                                     || tool_state.is_some()
                                 {
@@ -529,18 +543,23 @@ async fn proxy_ws_to_remote(
                                         "intercepted remote foreground_changed"
                                     );
                                 }
+                                if let Err(error) = state.inner.db.update_session_attention_state(
+                                    &session_id.to_string(),
+                                    &attention,
+                                ) {
+                                    tracing::warn!(
+                                        "WS proxy: failed to mirror attention for {}: {}",
+                                        session_id,
+                                        error
+                                    );
+                                }
                                 let next_fg = update_ssh_foreground_cache(
                                     &state.inner.ssh_fg,
                                     session_id,
                                     process,
                                     tool_state,
                                 );
-                                let observed_fg = next_fg.unwrap_or_default();
-                                crate::attention::observe_foreground(
-                                    &state,
-                                    session_id,
-                                    &observed_fg,
-                                );
+                                let _ = next_fg.unwrap_or_default();
                                 state.publish_session_status(session_id);
                                 continue;
                             }
