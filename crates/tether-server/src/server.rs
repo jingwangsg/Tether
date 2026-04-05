@@ -43,10 +43,6 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
         .route("/api/sessions/{id}", patch(api::sessions::update_session))
         .route("/api/sessions/{id}", delete(api::sessions::delete_session))
         .route(
-            "/api/sessions/{id}/attention/ack",
-            post(api::sessions::ack_session_attention),
-        )
-        .route(
             "/api/sessions/{id}/scrollback",
             get(api::sessions::get_scrollback),
         )
@@ -92,11 +88,17 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
     tracing::info!("Tether server listening on {}", addr);
 
     // Start background process monitor
+    let semantic_event_rx = state
+        .inner
+        .semantic_event_rx
+        .lock()
+        .unwrap()
+        .take()
+        .expect("semantic_event_rx already taken");
     tokio::spawn(crate::pty::process_monitor::run_process_monitor(
         state.clone(),
+        semantic_event_rx,
     ));
-    tokio::spawn(crate::attention::run_attention_monitor(state.clone()));
-
     // Start remote SSH host scanner (disabled when running as a remote daemon)
     if !no_ssh_scan {
         // Subscribe before spawning scanner so no Ready events are missed.

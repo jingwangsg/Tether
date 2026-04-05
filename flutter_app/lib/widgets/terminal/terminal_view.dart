@@ -57,10 +57,6 @@ class TerminalViewState extends State<TerminalView> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
 
-  bool _shouldLogToolState(String? process, String? toolState) {
-    return process == 'claude' || process == 'codex' || toolState != null;
-  }
-
   @override
   void initState() {
     super.initState();
@@ -136,19 +132,9 @@ class TerminalViewState extends State<TerminalView> {
     _metadataSubscription = ws.messages.listen((message) {
       switch (message) {
         case ForegroundChangedMessage():
-          if (_shouldLogToolState(message.process, message.toolState)) {
-            debugPrint(
-              '[tool-state][metadata-ws] sid=${widget.sessionId} '
-              'process=${message.process} toolState=${message.toolState}',
-            );
-          }
           widget.onForegroundChanged?.call(
             message.process,
-            message.toolState,
-            attentionStatePresent: message.attentionStatePresent,
-            needsAttention: message.needsAttention,
-            attentionSeq: message.attentionSeq,
-            attentionUpdatedAt: message.attentionUpdatedAt,
+            message.oscTitle,
           );
         case SessionEventMessage():
           if (message.event == 'exited') {

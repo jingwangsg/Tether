@@ -389,7 +389,7 @@ mod tests {
         let mut saw_exit = false;
 
         let should_exit = handle_server_message(
-            r#"{"type":"foreground_changed","process":"codex","tool_state":"running"}"#,
+            r#"{"type":"foreground_changed","session_id":"test-123","process":"codex","osc_title":"· Codex CLI"}"#,
             &mut stdout,
             &mut exit_code,
             &mut saw_exit,

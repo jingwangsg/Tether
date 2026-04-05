@@ -302,7 +302,7 @@ void main() {
         notifier.updateForegroundProcess(
           dragged.id,
           'claude',
-          toolState: 'waiting',
+          oscTitle: 'claude: waiting',
         );
 
         completer.completeError(StateError('reorder failed'));
@@ -314,7 +314,7 @@ void main() {
         expect(restored.groupId, source.id);
         expect(restored.sortOrder, 0);
         expect(restored.foregroundProcess, 'claude');
-        expect(restored.toolState, 'waiting');
+        expect(restored.oscTitle, 'claude: waiting');
       },
     );
 

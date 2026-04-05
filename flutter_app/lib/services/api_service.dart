@@ -4,26 +4,6 @@ import '../models/group.dart';
 import '../models/session.dart';
 import '../models/ssh_host.dart';
 
-class SessionAttentionState {
-  final bool needsAttention;
-  final int attentionSeq;
-  final String? attentionUpdatedAt;
-
-  const SessionAttentionState({
-    required this.needsAttention,
-    required this.attentionSeq,
-    this.attentionUpdatedAt,
-  });
-
-  factory SessionAttentionState.fromJson(Map<String, dynamic> json) {
-    return SessionAttentionState(
-      needsAttention: json['needs_attention'] as bool? ?? false,
-      attentionSeq: (json['attention_seq'] as num?)?.toInt() ?? 0,
-      attentionUpdatedAt: json['attention_updated_at'] as String?,
-    );
-  }
-}
-
 class ApiService {
   final String baseUrl;
   final String? authToken;
@@ -193,21 +173,6 @@ class ApiService {
       headers: _headers,
     );
     _checkResponse(response);
-  }
-
-  Future<SessionAttentionState> ackSessionAttention(
-    String id,
-    int attentionSeq,
-  ) async {
-    final response = await _client.post(
-      _uri('/api/sessions/$id/attention/ack'),
-      headers: _headers,
-      body: jsonEncode({'attention_seq': attentionSeq}),
-    );
-    _checkResponse(response);
-    return SessionAttentionState.fromJson(
-      jsonDecode(response.body) as Map<String, dynamic>,
-    );
   }
 
   Future<void> reorderSessions(List<Map<String, dynamic>> items) async {

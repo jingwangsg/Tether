@@ -1,4 +1,3 @@
-use crate::attention::SessionStatusSnapshot;
 use crate::config::ServerConfig;
 use crate::persistence::Store;
 use crate::pty::session::{PtySession, SessionForeground};
@@ -19,8 +18,8 @@ pub struct AppStateInner {
     pub sessions: DashMap<SessionId, Arc<PtySession>>,
     pub db: Store,
     pub shutdown_tx: broadcast::Sender<()>,
-    /// Broadcast the latest session status snapshot per session.
-    pub status_tx: broadcast::Sender<(Uuid, SessionStatusSnapshot)>,
+    /// Broadcast the latest session foreground per session.
+    pub status_tx: broadcast::Sender<(Uuid, SessionForeground)>,
     pub remote_manager: RemoteManager,
     /// Cached foreground process for SSH-proxied sessions.
     /// Transient (not persisted). Updated by sync_remote_sessions and proxy_ws_to_remote.
@@ -29,8 +28,11 @@ pub struct AppStateInner {
     /// proxy exists, its foreground updates are more authoritative than periodic
     /// HTTP sync snapshots.
     pub ssh_live_sessions: DashMap<Uuid, usize>,
-    /// Local stability trackers for completion attention.
-    pub attention_trackers: DashMap<Uuid, crate::attention::SessionAttentionTracker>,
+    /// Channel sender for semantic prompt events (session_id).
+    /// Shared with all PtySession instances; the receiver goes to process_monitor.
+    pub semantic_event_tx: tokio::sync::mpsc::UnboundedSender<Uuid>,
+    /// Receiver for semantic prompt events, taken once by the process monitor.
+    pub semantic_event_rx: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Uuid>>>,
 }
 
 impl AppState {
@@ -53,6 +55,7 @@ impl AppState {
 
         let (shutdown_tx, _) = broadcast::channel(1);
         let (status_tx, _) = broadcast::channel(64);
+        let (semantic_event_tx, semantic_event_rx) = tokio::sync::mpsc::unbounded_channel();
 
         Ok(Self {
             inner: Arc::new(AppStateInner {
@@ -64,7 +67,8 @@ impl AppState {
                 remote_manager: RemoteManager::new_with_deploy(allow_remote_mutation),
                 ssh_fg: DashMap::new(),
                 ssh_live_sessions: DashMap::new(),
-                attention_trackers: DashMap::new(),
+                semantic_event_tx,
+                semantic_event_rx: std::sync::Mutex::new(Some(semantic_event_rx)),
             }),
         })
     }
@@ -78,14 +82,6 @@ impl AppState {
             SessionForeground::default()
         };
 
-        let attention = self
-            .inner
-            .db
-            .get_session_attention(&session_id.to_string())
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let snapshot = SessionStatusSnapshot::from_parts(foreground, attention);
-        let _ = self.inner.status_tx.send((session_id, snapshot));
+        let _ = self.inner.status_tx.send((session_id, foreground));
     }
 }

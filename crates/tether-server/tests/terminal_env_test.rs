@@ -58,7 +58,8 @@ fn test_state_with_shell(default_shell: &str) -> AppState {
             remote_manager: RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
-            attention_trackers: DashMap::new(),
+            semantic_event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            semantic_event_rx: std::sync::Mutex::new(None),
         }),
     }
 }
@@ -212,38 +213,24 @@ async fn default_bash_shell_wrapper_emits_lifecycle_markers_with_prompt_command_
         )
         .unwrap();
 
+    // Wait for the session to report shell integration (from OSC 133 markers)
     let prompt_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if session.compute_tool_state() == Some(tether_server::pty::session::ToolState::Waiting) {
+        if session.has_shell_integration() {
             break;
         }
         let snapshot = String::from_utf8_lossy(&session.get_scrollback_snapshot()).into_owned();
         assert!(
             tokio::time::Instant::now() < prompt_deadline,
-            "bash wrapper never reached prompt state; output so far: {snapshot:?}"
+            "bash wrapper never detected shell integration; output so far: {snapshot:?}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    session.write_input(b"sleep 1\n").unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(
-        session.compute_tool_state(),
-        Some(tether_server::pty::session::ToolState::Running),
-        "bash wrapper should mark command execution as running"
+    assert!(
+        session.has_shell_integration(),
+        "bash wrapper should emit OSC 133 markers enabling shell integration"
     );
-
-    let finish_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    loop {
-        if session.compute_tool_state() == Some(tether_server::pty::session::ToolState::Waiting) {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < finish_deadline,
-            "bash wrapper never returned to waiting after command completion"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 
     session.kill();
     cleanup(&state);

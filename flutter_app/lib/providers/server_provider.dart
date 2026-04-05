@@ -130,43 +130,20 @@ class ServerNotifier extends StateNotifier<ServerState> {
         api.listSshHosts(),
       ]);
 
-      // Preserve the freshest transient foreground state we have. Older or
-      // remote daemons may omit tool_state or the full foreground payload from
-      // the HTTP session list, while WebSocket events can be more current.
+      // Preserve the freshest transient foreground state we have from
+      // WebSocket events, since the HTTP session list may lag behind.
       final currentSessions = state.sessions;
       final refreshed =
           (results[1] as List<Session>).map((s) {
             final current =
                 currentSessions.where((c) => c.id == s.id).firstOrNull;
-            Session merged;
-            if (s.foregroundProcess != null || s.toolState != null) {
-              if (s.toolState == null && current?.toolState != null) {
-                merged = s.copyWith(toolState: current!.toolState);
-              } else {
-                merged = s;
-              }
-            } else if (current?.foregroundProcess != null) {
-              merged = s.copyWith(
+            if (s.foregroundProcess == null && current?.foregroundProcess != null) {
+              return s.copyWith(
                 foregroundProcess: current!.foregroundProcess,
-                toolState: current.toolState,
-              );
-            } else {
-              merged = s;
-            }
-            if (_shouldLogToolState(
-              s.foregroundProcess,
-              s.toolState,
-              current?.foregroundProcess,
-              current?.toolState,
-            )) {
-              debugPrint(
-                '[tool-state][refresh] sid=${s.id} '
-                'http=${s.foregroundProcess}/${s.toolState} '
-                'current=${current?.foregroundProcess}/${current?.toolState} '
-                'merged=${merged.foregroundProcess}/${merged.toolState}',
+                oscTitle: current.oscTitle,
               );
             }
-            return merged;
+            return s;
           }).toList();
 
       _replaceState(
@@ -309,85 +286,20 @@ class ServerNotifier extends StateNotifier<ServerState> {
   void updateForegroundProcess(
     String sessionId,
     String? process, {
-    String? toolState,
-    bool attentionStatePresent = false,
-    bool? needsAttention,
-    int? attentionSeq,
-    String? attentionUpdatedAt,
+    String? oscTitle,
   }) {
-    final before = state.sessions.where((s) => s.id == sessionId).firstOrNull;
     final sessions =
         state.sessions.map((s) {
           if (s.id == sessionId) {
             return s.copyWith(
               foregroundProcess: process,
-              toolState: toolState,
-              needsAttention:
-                  attentionStatePresent ? needsAttention : s.needsAttention,
-              attentionSeq:
-                  attentionStatePresent ? attentionSeq : s.attentionSeq,
-              attentionUpdatedAt:
-                  attentionStatePresent
-                      ? attentionUpdatedAt
-                      : s.attentionUpdatedAt,
+              oscTitle: oscTitle,
               clearForeground: process == null,
             );
           }
           return s;
         }).toList();
-    if (_shouldLogToolState(
-      process,
-      toolState,
-      before?.foregroundProcess,
-      before?.toolState,
-    )) {
-      debugPrint(
-        '[tool-state][provider-update] sid=$sessionId '
-        'before=${before?.foregroundProcess}/${before?.toolState} '
-        'after=$process/$toolState',
-      );
-    }
     _replaceState(sessions: sessions);
-  }
-
-  Future<void> ackSessionAttention(String sessionId, int attentionSeq) async {
-    final api = state.api;
-    if (api == null) return;
-
-    final before = state.sessions.where((s) => s.id == sessionId).firstOrNull;
-    if (before == null) return;
-
-    _replaceState(
-      sessions:
-          state.sessions.map((session) {
-            if (session.id != sessionId) return session;
-            return session.copyWith(needsAttention: false);
-          }).toList(),
-    );
-
-    try {
-      final attention = await api.ackSessionAttention(sessionId, attentionSeq);
-      _replaceState(
-        sessions:
-            state.sessions.map((session) {
-              if (session.id != sessionId) return session;
-              return session.copyWith(
-                needsAttention: attention.needsAttention,
-                attentionSeq: attention.attentionSeq,
-                attentionUpdatedAt: attention.attentionUpdatedAt,
-              );
-            }).toList(),
-      );
-    } catch (_) {
-      _replaceState(
-        sessions:
-            state.sessions.map((session) {
-              if (session.id != sessionId) return session;
-              return before;
-            }).toList(),
-      );
-      rethrow;
-    }
   }
 
   _StructureVersion _replaceState({
@@ -492,20 +404,6 @@ class ServerNotifier extends StateNotifier<ServerState> {
     state.api?.dispose();
     super.dispose();
   }
-}
-
-bool _isKnownTool(String? process) => process == 'claude' || process == 'codex';
-
-bool _shouldLogToolState(
-  String? process,
-  String? toolState,
-  String? otherProcess,
-  String? otherToolState,
-) {
-  return _isKnownTool(process) ||
-      _isKnownTool(otherProcess) ||
-      toolState != null ||
-      otherToolState != null;
 }
 
 final serverProvider = StateNotifierProvider<ServerNotifier, ServerState>((

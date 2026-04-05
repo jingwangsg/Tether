@@ -50,7 +50,8 @@ fn test_state() -> AppState {
             remote_manager: RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
-            attention_trackers: DashMap::new(),
+            semantic_event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            semantic_event_rx: std::sync::Mutex::new(None),
         }),
     }
 }
@@ -293,11 +294,8 @@ async fn server_startup_clears_legacy_ssh_mirrors_and_sync_rebuilds_shared_state
         sort_order: 0,
         is_alive: true,
         foreground_process: None,
-        tool_state: None,
+        osc_title: None,
         local_group_id: None,
-        attention_seq: 0,
-        needs_attention: false,
-        attention_updated_at: None,
     };
     let remote_port = start_mock_remote(
         vec![authoritative_group.clone()],

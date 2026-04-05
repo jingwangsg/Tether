@@ -1,9 +1,7 @@
-import 'dart:async';
 import 'dart:math' show min;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../models/session.dart';
 import '../providers/server_provider.dart';
 import '../providers/session_provider.dart';
 import '../providers/ui_provider.dart';
@@ -25,10 +23,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   final _terminalAreaKey = GlobalKey<TerminalAreaState>();
   bool _edgeDragActive = false;
   double _dragDistance = 0;
-  Timer? _attentionAckTimer;
-  String? _pendingAttentionSessionId;
-  int? _pendingAttentionSeq;
-  AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
 
   @override
   void initState() {
@@ -40,7 +34,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   void dispose() {
-    _cancelAttentionAck();
     HardwareKeyboard.instance.removeHandler(_handleGlobalKey);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -67,11 +60,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _lifecycleState = state;
-    _syncAttentionAck(
-      ref.read(sessionProvider).activeSessionId,
-      ref.read(serverProvider).sessions,
-    );
+    // Lifecycle tracking available for future use.
   }
 
   void _checkMobile() {
@@ -90,10 +79,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   Widget build(BuildContext context) {
     final uiState = ref.watch(uiProvider);
-    final serverState = ref.watch(serverProvider);
-    final sessionState = ref.watch(sessionProvider);
     final sidebarW = _sidebarWidth(context);
-    _syncAttentionAck(sessionState.activeSessionId, serverState.sessions);
 
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
@@ -223,59 +209,4 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  bool get _isAppForeground => _lifecycleState == AppLifecycleState.resumed;
-
-  void _syncAttentionAck(String? activeSessionId, List<Session> sessions) {
-    if (!_isAppForeground || activeSessionId == null) {
-      _cancelAttentionAck();
-      return;
-    }
-
-    final activeSession =
-        sessions.where((session) => session.id == activeSessionId).firstOrNull;
-    if (activeSession == null ||
-        !activeSession.needsAttention ||
-        activeSession.attentionSeq <= 0) {
-      _cancelAttentionAck();
-      return;
-    }
-
-    if (_pendingAttentionSessionId == activeSession.id &&
-        _pendingAttentionSeq == activeSession.attentionSeq &&
-        _attentionAckTimer != null) {
-      return;
-    }
-
-    _cancelAttentionAck();
-    _pendingAttentionSessionId = activeSession.id;
-    _pendingAttentionSeq = activeSession.attentionSeq;
-    _attentionAckTimer = Timer(const Duration(milliseconds: 750), () {
-      if (!mounted || !_isAppForeground) return;
-      final currentActive = ref.read(sessionProvider).activeSessionId;
-      if (currentActive != activeSession.id) return;
-      final currentSession =
-          ref
-              .read(serverProvider)
-              .sessions
-              .where((session) => session.id == activeSession.id)
-              .firstOrNull;
-      if (currentSession == null ||
-          !currentSession.needsAttention ||
-          currentSession.attentionSeq != activeSession.attentionSeq) {
-        return;
-      }
-      unawaited(
-        ref
-            .read(serverProvider.notifier)
-            .ackSessionAttention(activeSession.id, activeSession.attentionSeq),
-      );
-    });
-  }
-
-  void _cancelAttentionAck() {
-    _attentionAckTimer?.cancel();
-    _attentionAckTimer = null;
-    _pendingAttentionSessionId = null;
-    _pendingAttentionSeq = null;
-  }
 }

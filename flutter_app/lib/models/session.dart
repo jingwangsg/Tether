@@ -1,5 +1,3 @@
-const _sessionUnset = Object();
-
 class Session {
   final String id;
   final String groupId;
@@ -13,10 +11,7 @@ class Session {
   final String lastActive;
   final int sortOrder;
   final String? foregroundProcess;
-  final String? toolState; // "running", "waiting", or null
-  final bool needsAttention;
-  final int attentionSeq;
-  final String? attentionUpdatedAt;
+  final String? oscTitle;
 
   Session({
     required this.id,
@@ -31,10 +26,7 @@ class Session {
     required this.lastActive,
     this.sortOrder = 0,
     this.foregroundProcess,
-    this.toolState,
-    this.needsAttention = false,
-    this.attentionSeq = 0,
-    this.attentionUpdatedAt,
+    this.oscTitle,
   });
 
   factory Session.fromJson(Map<String, dynamic> json) {
@@ -51,10 +43,7 @@ class Session {
       lastActive: json['last_active'] as String? ?? '',
       sortOrder: json['sort_order'] as int? ?? 0,
       foregroundProcess: json['foreground_process'] as String?,
-      toolState: json['tool_state'] as String?,
-      needsAttention: json['needs_attention'] as bool? ?? false,
-      attentionSeq: (json['attention_seq'] as num?)?.toInt() ?? 0,
-      attentionUpdatedAt: json['attention_updated_at'] as String?,
+      oscTitle: json['osc_title'] as String?,
     );
   }
 
@@ -64,10 +53,7 @@ class Session {
     bool? isAlive,
     int? sortOrder,
     String? foregroundProcess,
-    String? toolState,
-    bool? needsAttention,
-    int? attentionSeq,
-    Object? attentionUpdatedAt = _sessionUnset,
+    String? oscTitle,
     bool clearForeground = false,
   }) {
     return Session(
@@ -86,13 +72,7 @@ class Session {
           clearForeground
               ? null
               : (foregroundProcess ?? this.foregroundProcess),
-      toolState: clearForeground ? null : (toolState ?? this.toolState),
-      needsAttention: needsAttention ?? this.needsAttention,
-      attentionSeq: attentionSeq ?? this.attentionSeq,
-      attentionUpdatedAt:
-          identical(attentionUpdatedAt, _sessionUnset)
-              ? this.attentionUpdatedAt
-              : attentionUpdatedAt as String?,
+      oscTitle: clearForeground ? null : (oscTitle ?? this.oscTitle),
     );
   }
 }

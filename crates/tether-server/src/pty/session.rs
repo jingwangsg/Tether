@@ -9,29 +9,19 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-/// Running state of an AI tool (claude/codex) inferred from terminal output activity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolState {
-    /// Tool is actively rendering (spinner / frequent writes in last 300ms).
-    Running,
-    /// Tool is idle in alternate screen, waiting for user input.
-    Waiting,
-}
-
 /// Transient foreground process info (not persisted).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionForeground {
     pub process: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_state: Option<ToolState>,
+    pub osc_title: Option<String>,
 }
 
 impl Default for SessionForeground {
     fn default() -> Self {
         Self {
             process: None,
-            tool_state: None,
+            osc_title: None,
         }
     }
 }
@@ -73,10 +63,6 @@ pub struct PtySession {
     output_detected_tool: Mutex<Option<String>>,
     /// Whether the terminal is currently in alternate screen mode.
     in_alternate_screen: std::sync::atomic::AtomicBool,
-    /// Timestamp of the last PTY output chunk (used for tool running/waiting detection).
-    last_output_time: Mutex<Option<std::time::Instant>>,
-    /// Timestamp of the last user input written to the PTY (used to suppress echo false positives).
-    last_input_time: Mutex<Option<std::time::Instant>>,
     /// Persists the last successfully detected tool while in alternate screen.
     /// Serves as a stable fallback while the terminal is in alternate screen mode.
     /// Cleared only when confirmed outside alt screen with no tool detected.
@@ -86,14 +72,11 @@ pub struct PtySession {
     last_alt_screen_exit_time: Mutex<Option<std::time::Instant>>,
     /// Shell lifecycle phase derived from OSC 133 integration.
     command_phase: Mutex<Option<CommandPhase>>,
-    /// Timestamp of the most recent shell lifecycle transition.
-    last_command_phase_change: Mutex<Option<std::time::Instant>>,
-    /// Monotonic attention re-arm epoch. Incremented when a new task is known to
-    /// have started. Local attention uses this to ensure a single task can only
-    /// produce one completion bell.
-    attention_epoch: std::sync::atomic::AtomicU64,
     /// Becomes true after we observe any OSC 133 shell-integration marker.
     has_shell_integration: std::sync::atomic::AtomicBool,
+    /// Channel to notify the process monitor when a semantic prompt event
+    /// has been processed (after all per-chunk state is settled).
+    semantic_event_tx: tokio::sync::mpsc::UnboundedSender<Uuid>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -114,6 +97,7 @@ impl PtySession {
         scrollback_memory_kb: usize,
         scrollback_disk_max_mb: usize,
         terminal_env: PtyTerminalEnv,
+        semantic_event_tx: tokio::sync::mpsc::UnboundedSender<Uuid>,
     ) -> anyhow::Result<Arc<Self>> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
@@ -177,14 +161,11 @@ impl PtySession {
             sticky_osc_tool: Mutex::new(None),
             output_detected_tool: Mutex::new(None),
             in_alternate_screen: std::sync::atomic::AtomicBool::new(false),
-            last_output_time: Mutex::new(None),
-            last_input_time: Mutex::new(None),
             last_detected_alt_screen_tool: Mutex::new(None),
             last_alt_screen_exit_time: Mutex::new(None),
             command_phase: Mutex::new(None),
-            last_command_phase_change: Mutex::new(None),
-            attention_epoch: std::sync::atomic::AtomicU64::new(0),
             has_shell_integration: std::sync::atomic::AtomicBool::new(false),
+            semantic_event_tx,
         });
 
         // Spawn reader task
@@ -212,27 +193,39 @@ impl PtySession {
                         sb.append(&buf[..n]);
                     }
                     // Parse OSC title sequences for remote process detection
+                    let mut had_title_change = false;
                     if let Ok(mut parser) = session.osc_parser.lock() {
                         if let Some(title) = parser.feed(&buf[..n]) {
                             if let Ok(mut t) = session.osc_title.lock() {
-                                *t = if title.is_empty() {
+                                let new_val = if title.is_empty() {
                                     None
                                 } else {
                                     Some(title.clone())
                                 };
+                                if *t != new_val {
+                                    had_title_change = true;
+                                }
+                                *t = new_val;
                             }
                             Self::update_sticky_osc_tool(&session, &title);
                         }
                     }
+                    let mut had_semantic_event = false;
                     if let Ok(mut parser) = session.semantic_prompt_parser.lock() {
                         for event in parser.feed(&buf[..n]) {
+                            had_semantic_event = true;
                             Self::handle_semantic_prompt(&session, event);
                         }
                     }
                     // Track alternate screen mode and detect tool signatures in output
                     Self::track_alternate_screen(&session, &buf[..n]);
                     Self::detect_tool_in_output(&session, &buf[..n]);
-                    *session.last_output_time.lock().unwrap() = Some(std::time::Instant::now());
+                    // Notify the process monitor AFTER all per-chunk state is settled.
+                    // Title changes also trigger re-evaluation because tools like
+                    // Claude Code signal their Running/Waiting state via the title.
+                    if had_semantic_event || had_title_change {
+                        let _ = session.semantic_event_tx.send(session.id);
+                    }
                     let _ = tx.send(data);
                 }
                 Err(_) => break,
@@ -245,14 +238,6 @@ impl PtySession {
     }
 
     pub fn write_input(&self, data: &[u8]) -> anyhow::Result<()> {
-        *self.last_input_time.lock().unwrap() = Some(std::time::Instant::now());
-        if !self
-            .has_shell_integration
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            self.attention_epoch
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
         let mut writer = self.master_writer.lock().unwrap();
         writer.write_all(data)?;
         writer.flush()?;
@@ -316,9 +301,8 @@ impl PtySession {
         self.foreground.lock().unwrap().clone()
     }
 
-    pub fn attention_epoch(&self) -> u64 {
-        self.attention_epoch
-            .load(std::sync::atomic::Ordering::Relaxed)
+    pub fn get_osc_title(&self) -> Option<String> {
+        self.osc_title.lock().ok()?.clone()
     }
 
     /// Detect the current foreground process.
@@ -326,71 +310,21 @@ impl PtySession {
     /// then resolves the process name via `ps`.
     pub fn detect_foreground(&self) -> SessionForeground {
         let process = self.detect_foreground_process();
-        let tool_state = if Self::is_known_tool(process.as_deref()) {
-            self.compute_tool_state()
-        } else {
-            None
-        };
+        let osc_title = self.get_osc_title();
         SessionForeground {
             process,
-            tool_state,
+            osc_title,
         }
-    }
-
-    /// Infer the running/waiting state of an AI tool from terminal activity.
-    /// Only meaningful when a known tool is the foreground process.
-    pub fn compute_tool_state(&self) -> Option<ToolState> {
-        const COMMAND_START_GRACE: std::time::Duration = std::time::Duration::from_millis(1200);
-
-        let input_is_recent = self
-            .last_input_time
-            .lock()
-            .unwrap()
-            .map(|t| t.elapsed() < std::time::Duration::from_millis(200))
-            .unwrap_or(false);
-        if input_is_recent {
-            // Suppress Running — output is likely echo of user input.
-            return Some(ToolState::Waiting);
-        }
-        let output_is_recent = self
-            .last_output_time
-            .lock()
-            .unwrap()
-            .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
-            .unwrap_or(false);
-        if output_is_recent {
-            return Some(ToolState::Running);
-        }
-
-        if self
-            .in_alternate_screen
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            return Some(ToolState::Waiting);
-        }
-
-        let phase = *self.command_phase.lock().unwrap();
-        if matches!(phase, Some(CommandPhase::CommandActive)) {
-            let command_started_recently = self
-                .last_command_phase_change
-                .lock()
-                .unwrap()
-                .map(|t| t.elapsed() < COMMAND_START_GRACE)
-                .unwrap_or(false);
-            return Some(if command_started_recently {
-                ToolState::Running
-            } else {
-                ToolState::Waiting
-            });
-        }
-
-        // Keep a visible idle state for known tools even when shell integration
-        // markers are unavailable (for example older or mismatched SSH sessions).
-        Some(ToolState::Waiting)
     }
 
     pub fn is_known_tool(process: Option<&str>) -> bool {
         matches!(process, Some("claude") | Some("codex"))
+    }
+
+    #[allow(dead_code)]
+    pub fn has_shell_integration(&self) -> bool {
+        self.has_shell_integration
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn is_in_alternate_screen(&self) -> bool {
@@ -479,9 +413,9 @@ impl PtySession {
     const KNOWN_TOOLS: [&str; 2] = ["claude", "codex"];
 
     /// Update sticky_osc_tool based on the latest OSC title.
-    /// - Title contains a tool name → set sticky
-    /// - Title non-empty, no tool → clear sticky (shell reclaimed the title)
-    /// - Title empty → keep sticky (tool likely cleared its own title)
+    /// - Title contains a tool name -> set sticky
+    /// - Title non-empty, no tool -> clear sticky (shell reclaimed the title)
+    /// - Title empty -> keep sticky (tool likely cleared its own title)
     fn update_sticky_osc_tool(session: &Arc<PtySession>, title: &str) {
         let title_lower = title.to_lowercase();
         for tool in &Self::KNOWN_TOOLS {
@@ -576,13 +510,12 @@ impl PtySession {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         match event {
             SemanticPromptKind::EndInputStartOutput => {
-                session
-                    .attention_epoch
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Self::set_command_phase(session, Some(CommandPhase::CommandActive));
             }
-            SemanticPromptKind::EndCommand
-            | SemanticPromptKind::FreshLineNewPrompt
+            SemanticPromptKind::EndCommand { exit_code: _ } => {
+                Self::set_command_phase(session, Some(CommandPhase::Prompt));
+            }
+            SemanticPromptKind::FreshLineNewPrompt
             | SemanticPromptKind::PromptStart
             | SemanticPromptKind::EndPromptStartInput
             | SemanticPromptKind::EndPromptStartInputTerminateEol
@@ -599,81 +532,36 @@ impl PtySession {
                 return;
             }
             *current_phase = phase;
-            if let Ok(mut changed_at) = session.last_command_phase_change.lock() {
-                *changed_at = Some(std::time::Instant::now());
-            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use super::SessionForeground;
 
-    fn spawn_idle_session() -> (Arc<PtySession>, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
-        let script_path = dir.path().join("idle.sh");
-        std::fs::write(&script_path, "#!/bin/sh\nsleep 30\n").unwrap();
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let session = PtySession::spawn(
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            "test",
-            script_path.to_str().unwrap(),
-            "/tmp",
-            80,
-            24,
-            dir.path().to_str().unwrap(),
-            64,
-            1,
-            PtyTerminalEnv::default(),
-        )
-        .unwrap();
-
-        (session, dir)
+    #[test]
+    fn session_foreground_serializes_with_osc_title() {
+        let fg = SessionForeground {
+            process: Some("claude".to_string()),
+            osc_title: Some("· Claude Code".to_string()),
+        };
+        let json = serde_json::to_value(&fg).unwrap();
+        assert_eq!(json["process"], "claude");
+        assert_eq!(json["osc_title"], "· Claude Code");
     }
 
-    #[tokio::test]
-    async fn compute_tool_state_defaults_to_waiting_without_markers_or_recent_output() {
-        let (session, _dir) = spawn_idle_session();
-        assert_eq!(session.compute_tool_state(), Some(ToolState::Waiting));
-        session.kill();
-    }
-
-    #[tokio::test]
-    async fn compute_tool_state_waits_when_prompt_phase_known() {
-        let (session, _dir) = spawn_idle_session();
-        *session.command_phase.lock().unwrap() = Some(CommandPhase::Prompt);
-        assert_eq!(session.compute_tool_state(), Some(ToolState::Waiting));
-        session.kill();
-    }
-
-    #[tokio::test]
-    async fn compute_tool_state_reports_running_for_fresh_command_start() {
-        let (session, _dir) = spawn_idle_session();
-        *session.command_phase.lock().unwrap() = Some(CommandPhase::CommandActive);
-        *session.last_command_phase_change.lock().unwrap() = Some(std::time::Instant::now());
-        assert_eq!(session.compute_tool_state(), Some(ToolState::Running));
-        session.kill();
-    }
-
-    #[tokio::test]
-    async fn compute_tool_state_waits_when_command_active_but_quiet() {
-        let (session, _dir) = spawn_idle_session();
-        *session.command_phase.lock().unwrap() = Some(CommandPhase::CommandActive);
-        *session.last_command_phase_change.lock().unwrap() =
-            Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
-        assert_eq!(session.compute_tool_state(), Some(ToolState::Waiting));
-        session.kill();
-    }
-
-    #[tokio::test]
-    async fn compute_tool_state_reports_running_for_recent_output_outside_alt_screen() {
-        let (session, _dir) = spawn_idle_session();
-        *session.last_output_time.lock().unwrap() = Some(std::time::Instant::now());
-        assert_eq!(session.compute_tool_state(), Some(ToolState::Running));
-        session.kill();
+    #[test]
+    fn session_foreground_skips_osc_title_when_none() {
+        let fg = SessionForeground {
+            process: Some("claude".to_string()),
+            osc_title: None,
+        };
+        let json = serde_json::to_value(&fg).unwrap();
+        assert_eq!(json["process"], "claude");
+        assert!(
+            json.get("osc_title").is_none(),
+            "osc_title should be omitted when None"
+        );
     }
 }

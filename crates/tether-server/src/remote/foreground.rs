@@ -1,4 +1,4 @@
-use crate::pty::session::{SessionForeground, ToolState};
+use crate::pty::session::SessionForeground;
 use dashmap::DashMap;
 use uuid::Uuid;
 
@@ -6,11 +6,11 @@ pub fn update_ssh_foreground_cache(
     cache: &DashMap<Uuid, SessionForeground>,
     session_id: Uuid,
     process: Option<String>,
-    tool_state: Option<ToolState>,
+    osc_title: Option<String>,
 ) -> Option<SessionForeground> {
     let next = process.map(|process| SessionForeground {
         process: Some(process),
-        tool_state,
+        osc_title,
     });
 
     match &next {
@@ -38,16 +38,16 @@ mod tests {
             &cache,
             session_id,
             Some("claude".to_string()),
-            Some(ToolState::Running),
+            Some("· Claude Code".to_string()),
         )
         .expect("expected foreground");
 
         assert_eq!(fg.process.as_deref(), Some("claude"));
-        assert_eq!(fg.tool_state, Some(ToolState::Running));
+        assert_eq!(fg.osc_title.as_deref(), Some("· Claude Code"));
     }
 
     #[test]
-    fn preserves_missing_remote_tool_state_as_none() {
+    fn preserves_missing_remote_osc_title_as_none() {
         let cache = DashMap::new();
         let session_id = Uuid::new_v4();
 
@@ -55,7 +55,7 @@ mod tests {
             .expect("expected foreground");
 
         assert_eq!(fg.process.as_deref(), Some("claude"));
-        assert_eq!(fg.tool_state, None);
+        assert_eq!(fg.osc_title, None);
     }
 
     #[test]
@@ -66,7 +66,7 @@ mod tests {
             session_id,
             SessionForeground {
                 process: Some("claude".to_string()),
-                tool_state: Some(ToolState::Waiting),
+                osc_title: Some("✱ Claude Code".to_string()),
             },
         );
 

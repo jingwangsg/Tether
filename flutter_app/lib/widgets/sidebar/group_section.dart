@@ -9,8 +9,6 @@ import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_display.dart';
 import '../../utils/session_interaction.dart';
-import '../attention_bell.dart';
-import '../tool_state_dot.dart';
 import 'group_dialog.dart';
 
 bool get _isDesktop =>
@@ -356,6 +354,20 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
     );
   }
 
+  /// If the oscTitle starts with a non-alphanumeric character (e.g. a spinner
+  /// glyph like `·`, `*`, or braille `\u28xx`), return that first grapheme as
+  /// a tiny status badge.  Returns null when there is nothing to show.
+  static String? _oscTitleBadge(String? oscTitle) {
+    if (oscTitle == null || oscTitle.isEmpty) return null;
+    final runes = oscTitle.runes;
+    final firstCodePoint = runes.first;
+    final first = String.fromCharCode(firstCodePoint);
+    // Show the badge when the leading character is NOT a plain letter/digit.
+    final isAlphaNum = RegExp(r'^[a-zA-Z0-9]$').hasMatch(first);
+    if (isAlphaNum) return null;
+    return first;
+  }
+
   Widget _buildSessionTile(Session session) {
     final activeId = ref.watch(sessionProvider).activeSessionId;
     final isActive = session.id == activeId;
@@ -388,20 +400,20 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
           color: isActive ? Colors.white.withValues(alpha: 0.08) : null,
           child: Row(
             children: [
-              Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  display.iconAsset != null
-                      ? Image.asset(display.iconAsset!, width: 14, height: 14)
-                      : Icon(display.icon, size: 14, color: display.iconColor),
-                  if (session.toolState != null)
-                    Positioned(
-                      right: -3,
-                      bottom: -3,
-                      child: ToolStateDot(session.toolState),
+              display.iconAsset != null
+                  ? Image.asset(display.iconAsset!, width: 14, height: 14)
+                  : Icon(display.icon, size: 14, color: display.iconColor),
+              if (_oscTitleBadge(session.oscTitle) case final badge?)
+                Padding(
+                  padding: const EdgeInsets.only(left: 3),
+                  child: Text(
+                    badge,
+                    style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 11,
                     ),
-                ],
-              ),
+                  ),
+                ),
               const SizedBox(width: 6),
               Expanded(
                 child: Column(
@@ -422,11 +434,6 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                   ],
                 ),
               ),
-              if (session.needsAttention)
-                const Padding(
-                  padding: EdgeInsets.only(right: 4),
-                  child: AttentionBell(iconSize: 14),
-                ),
               _buildSessionMenuButton(session),
               SizedBox(
                 width: 24,

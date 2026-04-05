@@ -32,20 +32,9 @@ class ErrorMessage extends ServerMessage {
 
 class ForegroundChangedMessage extends ServerMessage {
   final String? process;
-  final String? toolState;
-  final bool attentionStatePresent;
-  final bool? needsAttention;
-  final int? attentionSeq;
-  final String? attentionUpdatedAt;
+  final String? oscTitle;
 
-  ForegroundChangedMessage(
-    this.process,
-    this.toolState, {
-    this.attentionStatePresent = false,
-    this.needsAttention,
-    this.attentionSeq,
-    this.attentionUpdatedAt,
-  });
+  ForegroundChangedMessage(this.process, this.oscTitle);
 }
 
 class ConnectionStateMessage extends ServerMessage {
@@ -165,27 +154,10 @@ class WebSocketService {
         case 'pong':
           _messageController.add(PongMessage());
         case 'foreground_changed':
-          final attentionStatePresent =
-              json.containsKey('needs_attention') ||
-              json.containsKey('attention_seq') ||
-              json.containsKey('attention_updated_at');
           _messageController.add(
             ForegroundChangedMessage(
               json['process'] as String?,
-              json['tool_state'] as String?,
-              attentionStatePresent: attentionStatePresent,
-              needsAttention:
-                  json.containsKey('needs_attention')
-                      ? json['needs_attention'] as bool? ?? false
-                      : null,
-              attentionSeq:
-                  json.containsKey('attention_seq')
-                      ? (json['attention_seq'] as num?)?.toInt() ?? 0
-                      : null,
-              attentionUpdatedAt:
-                  json.containsKey('attention_updated_at')
-                      ? json['attention_updated_at'] as String?
-                      : null,
+              json['osc_title'] as String?,
             ),
           );
         default:

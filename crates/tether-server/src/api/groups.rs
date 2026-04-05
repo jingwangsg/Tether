@@ -192,7 +192,6 @@ pub async fn delete_group(State(state): State<AppState>, Path(id): Path<String>)
             for session in sessions {
                 if let Ok(uuid) = Uuid::parse_str(&session.id) {
                     state.inner.ssh_fg.remove(&uuid);
-                    crate::attention::remove_session(&state, uuid);
                 }
             }
         }

@@ -40,7 +40,7 @@ pub async fn sync_remote_host(
                     ssh_fg,
                     id,
                     session.foreground_process.clone(),
-                    session.tool_state.clone(),
+                    session.osc_title.clone(),
                 );
                 if let Some(state) = state {
                     let _ = next_fg.unwrap_or_default();
@@ -66,9 +66,6 @@ pub async fn sync_remote_host(
         .collect::<Vec<_>>();
     for id in stale_fg_ids {
         ssh_fg.remove(&id);
-        if let Some(state) = state {
-            crate::attention::remove_session(state, id);
-        }
     }
 
     let remote_group_ids = remote_groups
@@ -202,11 +199,8 @@ mod tests {
             sort_order,
             is_alive: true,
             foreground_process: foreground_process.map(str::to_string),
-            tool_state: None,
+            osc_title: None,
             local_group_id: None,
-            attention_seq: 0,
-            needs_attention: false,
-            attention_updated_at: None,
         }
     }
 
@@ -232,7 +226,7 @@ mod tests {
             Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
             SessionForeground {
                 process: Some("codex".to_string()),
-                tool_state: None,
+                osc_title: None,
             },
         );
 
@@ -259,11 +253,8 @@ mod tests {
             sort_order: 7,
             is_alive: true,
             foreground_process: Some("claude".to_string()),
-            tool_state: None,
+            osc_title: None,
             local_group_id: None,
-            attention_seq: 0,
-            needs_attention: false,
-            attention_updated_at: None,
         };
 
         let port = start_mock_remote(vec![group.clone()], vec![session.clone()]).await;
@@ -355,7 +346,7 @@ mod tests {
             name: "alpha-moved".to_string(),
             sort_order: 5,
             foreground_process: None,
-            tool_state: None,
+            osc_title: None,
             ..session_a.clone()
         };
         let session_c = session_row(
@@ -438,24 +429,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_remote_host_applies_remote_tool_state_verbatim_when_present() {
+    async fn sync_remote_host_applies_remote_osc_title_when_present() {
         let store = test_store();
         let ssh_fg = DashMap::new();
         let ssh_live_sessions = DashMap::new();
         let host = "shared-host";
 
         let group = group_row("11111111-1111-1111-1111-111111111111", "remote", None, 0);
-        let session = session_row(
+        let mut session = session_row(
             "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
             &group.id,
             "alpha",
             0,
             Some("claude"),
         );
-        let session = SessionRow {
-            tool_state: Some(crate::pty::session::ToolState::Waiting),
-            ..session
-        };
+        session.osc_title = Some("· Claude Code".to_string());
 
         let port = start_mock_remote(vec![group], vec![session]).await;
         sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions, None)
@@ -467,72 +455,11 @@ mod tests {
             .map(|entry| entry.value().clone())
             .expect("expected cached foreground");
         assert_eq!(fg.process.as_deref(), Some("claude"));
-        assert_eq!(fg.tool_state, Some(crate::pty::session::ToolState::Waiting));
+        assert_eq!(fg.osc_title.as_deref(), Some("· Claude Code"));
     }
 
     #[tokio::test]
-    async fn sync_remote_host_mirrors_remote_attention_state() {
-        let store = test_store();
-        let ssh_fg = DashMap::new();
-        let ssh_live_sessions = DashMap::new();
-        let host = "shared-host";
-
-        let group = group_row("11111111-1111-1111-1111-111111111111", "remote", None, 0);
-        let session = SessionRow {
-            id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string(),
-            group_id: group.id.clone(),
-            name: "alpha".to_string(),
-            shell: "/bin/bash".to_string(),
-            cols: 120,
-            rows: 40,
-            cwd: "/srv/alpha".to_string(),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            last_active: "2024-01-02T00:00:00Z".to_string(),
-            sort_order: 0,
-            is_alive: true,
-            foreground_process: Some("claude".to_string()),
-            tool_state: Some(crate::pty::session::ToolState::Waiting),
-            local_group_id: None,
-            attention_seq: 3,
-            needs_attention: true,
-            attention_updated_at: Some("2026-04-05T00:00:00Z".to_string()),
-        };
-
-        let (port, _groups_state, sessions_state) =
-            start_mutable_mock_remote(vec![group.clone()], vec![session.clone()]).await;
-        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions, None)
-            .await
-            .unwrap();
-
-        let mirrored = store
-            .get_session(&session.id)
-            .unwrap()
-            .expect("mirrored session");
-        assert!(mirrored.needs_attention);
-        assert_eq!(mirrored.attention_seq, 3);
-        assert_eq!(
-            mirrored.attention_updated_at.as_deref(),
-            Some("2026-04-05T00:00:00Z")
-        );
-
-        *sessions_state.lock().await = vec![SessionRow {
-            needs_attention: false,
-            ..session
-        }];
-        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions, None)
-            .await
-            .unwrap();
-
-        let mirrored = store
-            .get_session("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-            .unwrap()
-            .expect("mirrored session");
-        assert!(!mirrored.needs_attention);
-        assert_eq!(mirrored.attention_seq, 3);
-    }
-
-    #[tokio::test]
-    async fn sync_remote_host_preserves_missing_remote_tool_state_as_none() {
+    async fn sync_remote_host_preserves_missing_remote_osc_title_as_none() {
         let store = test_store();
         let ssh_fg = DashMap::new();
         let ssh_live_sessions = DashMap::new();
@@ -557,7 +484,7 @@ mod tests {
             .map(|entry| entry.value().clone())
             .expect("expected cached foreground");
         assert_eq!(fg.process.as_deref(), Some("claude"));
-        assert_eq!(fg.tool_state, None);
+        assert_eq!(fg.osc_title, None);
     }
 
     #[tokio::test]
@@ -568,31 +495,20 @@ mod tests {
         let host = "shared-host";
 
         let group = group_row("11111111-1111-1111-1111-111111111111", "remote", None, 0);
-        let session = SessionRow {
-            id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string(),
-            group_id: group.id.clone(),
-            name: "alpha".to_string(),
-            shell: "/bin/bash".to_string(),
-            cols: 120,
-            rows: 40,
-            cwd: "/srv/alpha".to_string(),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            last_active: "2024-01-02T00:00:00Z".to_string(),
-            sort_order: 0,
-            is_alive: true,
-            foreground_process: Some("claude".to_string()),
-            tool_state: Some(crate::pty::session::ToolState::Waiting),
-            local_group_id: None,
-            attention_seq: 0,
-            needs_attention: false,
-            attention_updated_at: None,
-        };
+        let mut session = session_row(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            &group.id,
+            "alpha",
+            0,
+            Some("claude"),
+        );
+        session.osc_title = Some("✱ Claude Code".to_string());
         let session_id = Uuid::parse_str(&session.id).unwrap();
         ssh_fg.insert(
             session_id,
             SessionForeground {
                 process: Some("claude".to_string()),
-                tool_state: Some(crate::pty::session::ToolState::Running),
+                osc_title: Some("· Claude Code".to_string()),
             },
         );
         ssh_live_sessions.insert(session_id, 1usize);
@@ -607,7 +523,7 @@ mod tests {
             .map(|entry| entry.value().clone())
             .expect("expected cached foreground");
         assert_eq!(fg.process.as_deref(), Some("claude"));
-        assert_eq!(fg.tool_state, Some(crate::pty::session::ToolState::Running));
+        assert_eq!(fg.osc_title.as_deref(), Some("· Claude Code"));
     }
 
     #[tokio::test]
@@ -618,31 +534,20 @@ mod tests {
         let host = "shared-host";
 
         let group = group_row("11111111-1111-1111-1111-111111111111", "remote", None, 0);
-        let session = SessionRow {
-            id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string(),
-            group_id: group.id.clone(),
-            name: "alpha".to_string(),
-            shell: "/bin/bash".to_string(),
-            cols: 120,
-            rows: 40,
-            cwd: "/srv/alpha".to_string(),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            last_active: "2024-01-02T00:00:00Z".to_string(),
-            sort_order: 0,
-            is_alive: true,
-            foreground_process: Some("claude".to_string()),
-            tool_state: Some(crate::pty::session::ToolState::Waiting),
-            local_group_id: None,
-            attention_seq: 0,
-            needs_attention: false,
-            attention_updated_at: None,
-        };
+        let mut session = session_row(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            &group.id,
+            "alpha",
+            0,
+            Some("claude"),
+        );
+        session.osc_title = Some("✱ Claude Code".to_string());
         let session_id = Uuid::parse_str(&session.id).unwrap();
         ssh_fg.insert(
             session_id,
             SessionForeground {
                 process: Some("claude".to_string()),
-                tool_state: Some(crate::pty::session::ToolState::Running),
+                osc_title: Some("· Claude Code".to_string()),
             },
         );
         ssh_live_sessions.insert(session_id, 1usize);
@@ -662,6 +567,6 @@ mod tests {
             .map(|entry| entry.value().clone())
             .expect("expected cached foreground");
         assert_eq!(fg.process.as_deref(), Some("claude"));
-        assert_eq!(fg.tool_state, Some(crate::pty::session::ToolState::Waiting));
+        assert_eq!(fg.osc_title.as_deref(), Some("✱ Claude Code"));
     }
 }

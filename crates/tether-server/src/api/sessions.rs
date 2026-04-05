@@ -1,4 +1,3 @@
-use crate::attention::SessionAttentionState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -50,11 +49,6 @@ pub struct UpdateSessionRequest {
     pub local_group_id: Option<String>,
 }
 
-#[derive(Deserialize, Serialize)]
-pub struct AckAttentionRequest {
-    pub attention_seq: i64,
-}
-
 #[derive(Deserialize)]
 pub struct ScrollbackQuery {
     #[serde(default)]
@@ -82,36 +76,10 @@ pub async fn list_sessions(
                 row.is_alive = session.is_alive();
                 let fg = session.get_foreground();
                 row.foreground_process = fg.process;
-                row.tool_state = fg.tool_state;
-                if crate::pty::session::PtySession::is_known_tool(row.foreground_process.as_deref())
-                    || row.tool_state.is_some()
-                {
-                    tracing::debug!(
-                        target: "tool-state",
-                        session_id = %row.id,
-                        source = "list_sessions_live",
-                        process = ?row.foreground_process,
-                        tool_state = ?row.tool_state,
-                        is_alive = row.is_alive,
-                        "list_sessions foreground snapshot"
-                    );
-                }
+                row.osc_title = fg.osc_title;
             } else if let Some(fg) = state.inner.ssh_fg.get(&id) {
                 row.foreground_process = fg.process.clone();
-                row.tool_state = fg.tool_state.clone();
-                if crate::pty::session::PtySession::is_known_tool(row.foreground_process.as_deref())
-                    || row.tool_state.is_some()
-                {
-                    tracing::debug!(
-                        target: "tool-state",
-                        session_id = %row.id,
-                        source = "list_sessions_ssh_cache",
-                        process = ?row.foreground_process,
-                        tool_state = ?row.tool_state,
-                        is_alive = row.is_alive,
-                        "list_sessions foreground snapshot"
-                    );
-                }
+                row.osc_title = fg.osc_title.clone();
             }
         }
     }
@@ -189,69 +157,11 @@ pub async fn create_session(
         sort_order: 0,
         is_alive: session.is_alive(),
         foreground_process: None,
-        tool_state: None,
+        osc_title: None,
         local_group_id: None,
-        attention_seq: 0,
-        needs_attention: false,
-        attention_updated_at: None,
     };
 
     Ok((StatusCode::CREATED, Json(row)))
-}
-
-pub async fn ack_session_attention(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(req): Json<AckAttentionRequest>,
-) -> Result<Json<SessionAttentionState>, StatusCode> {
-    if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&id) {
-        let port = ready_tunnel_port(&state, &ssh_host)?;
-        let response = reqwest::Client::new()
-            .post(format!(
-                "http://127.0.0.1:{port}/api/sessions/{id}/attention/ack"
-            ))
-            .json(&req)
-            .send()
-            .await
-            .map_err(|_| StatusCode::BAD_GATEWAY)?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(StatusCode::NOT_FOUND);
-        }
-        if response.status() == reqwest::StatusCode::BAD_REQUEST {
-            return Err(StatusCode::BAD_REQUEST);
-        }
-        if !response.status().is_success() {
-            return Err(StatusCode::BAD_GATEWAY);
-        }
-        let attention = response
-            .json::<SessionAttentionState>()
-            .await
-            .map_err(|_| StatusCode::BAD_GATEWAY)?;
-        state
-            .inner
-            .db
-            .update_session_attention_state(&id, &attention)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        if let Ok(uuid) = Uuid::parse_str(&id) {
-            state.publish_session_status(uuid);
-        }
-
-        return Ok(Json(attention));
-    }
-
-    let attention = state
-        .inner
-        .db
-        .ack_session_attention(&id, req.attention_seq)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-
-    if let Ok(uuid) = Uuid::parse_str(&id) {
-        state.publish_session_status(uuid);
-    }
-
-    Ok(Json(attention))
 }
 
 pub async fn update_session(
@@ -422,7 +332,6 @@ pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String
         state.inner.db.delete_session(&id).ok();
         if let Ok(uuid) = Uuid::parse_str(&id) {
             state.inner.ssh_fg.remove(&uuid);
-            crate::attention::remove_session(&state, uuid);
         }
         return StatusCode::OK;
     }

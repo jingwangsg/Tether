@@ -50,7 +50,8 @@ fn test_state() -> AppState {
             remote_manager: RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
-            attention_trackers: DashMap::new(),
+            semantic_event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            semantic_event_rx: std::sync::Mutex::new(None),
         }),
     }
 }
@@ -195,9 +196,9 @@ async fn ssh_proxy_forwards_remote_foreground_sequence_verbatim() {
         .unwrap();
 
     let (remote_port, shutdown_tx) = start_mock_remote_foreground_server(vec![
-        r#"{"type":"foreground_changed","process":"claude","tool_state":"running","needs_attention":false,"attention_seq":0}"#,
-        r#"{"type":"foreground_changed","process":"claude","tool_state":"waiting","needs_attention":true,"attention_seq":1,"attention_updated_at":"2026-04-05T00:00:00Z"}"#,
-        r#"{"type":"foreground_changed","process":"claude","tool_state":"running","needs_attention":true,"attention_seq":1,"attention_updated_at":"2026-04-05T00:00:00Z"}"#,
+        r#"{"type":"foreground_changed","process":"claude","osc_title":"· Claude Code"}"#,
+        r#"{"type":"foreground_changed","process":"claude","osc_title":"✱ Claude Code"}"#,
+        r#"{"type":"foreground_changed","process":"claude","osc_title":"· Claude Code"}"#,
     ])
     .await;
     state
@@ -212,10 +213,10 @@ async fn ssh_proxy_forwards_remote_foreground_sequence_verbatim() {
     );
     let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
 
-    for (expected_tool_state, expected_needs_attention, expected_seq) in [
-        ("running", false, 0),
-        ("waiting", true, 1),
-        ("running", true, 1),
+    for expected_osc_title in [
+        "· Claude Code",
+        "✱ Claude Code",
+        "· Claude Code",
     ] {
         let next = tokio::time::timeout(Duration::from_secs(1), ws.next())
             .await
@@ -228,9 +229,7 @@ async fn ssh_proxy_forwards_remote_foreground_sequence_verbatim() {
         let json: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
         assert_eq!(json["type"], "foreground_changed");
         assert_eq!(json["process"], "claude");
-        assert_eq!(json["tool_state"], expected_tool_state);
-        assert_eq!(json["needs_attention"], expected_needs_attention);
-        assert_eq!(json["attention_seq"], expected_seq);
+        assert_eq!(json["osc_title"], expected_osc_title);
     }
 
     let sessions = reqwest::get(format!("http://127.0.0.1:{}/api/sessions", port))
@@ -245,10 +244,7 @@ async fn ssh_proxy_forwards_remote_foreground_sequence_verbatim() {
         .find(|entry| entry["id"].as_str() == Some(session_id.as_str()))
         .expect("expected mirrored SSH session");
     assert_eq!(listed["foreground_process"], "claude");
-    assert_eq!(listed["tool_state"], "running");
-    assert_eq!(listed["needs_attention"], true);
-    assert_eq!(listed["attention_seq"], 1);
-    assert_eq!(listed["attention_updated_at"], "2026-04-05T00:00:00Z");
+    assert_eq!(listed["osc_title"], "· Claude Code");
 
     shutdown_tx.send(()).ok();
     cleanup(&state);

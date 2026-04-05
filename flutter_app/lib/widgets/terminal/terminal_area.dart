@@ -12,7 +12,6 @@ import '../../utils/session_display.dart';
 import '../../utils/session_interaction.dart';
 import 'terminal_controller.dart';
 import 'mobile_key_bar.dart';
-import '../tool_state_dot.dart';
 
 class TerminalArea extends ConsumerStatefulWidget {
   final TerminalBackend backend;
@@ -192,25 +191,13 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                                 _sessionTitles[tab.sessionId] = clean;
                               });
                             },
-                            onForegroundChanged: (
-                              process,
-                              toolState, {
-                              required bool attentionStatePresent,
-                              bool? needsAttention,
-                              int? attentionSeq,
-                              String? attentionUpdatedAt,
-                            }) {
+                            onForegroundChanged: (process, oscTitle) {
                               ref
                                   .read(serverProvider.notifier)
                                   .updateForegroundProcess(
                                     tab.sessionId,
                                     process,
-                                    toolState: toolState,
-                                    attentionStatePresent:
-                                        attentionStatePresent,
-                                    needsAttention: needsAttention,
-                                    attentionSeq: attentionSeq,
-                                    attentionUpdatedAt: attentionUpdatedAt,
+                                    oscTitle: oscTitle,
                                   );
                             },
                           ),
@@ -380,36 +367,25 @@ class _TerminalTabBar extends ConsumerWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          display.iconAsset != null
-                              ? Opacity(
-                                opacity: isActive ? 1.0 : 0.5,
-                                child: Image.asset(
-                                  display.iconAsset!,
-                                  width: 14,
-                                  height: 14,
-                                ),
-                              )
-                              : Icon(
-                                display.icon,
-                                size: 14,
-                                color:
-                                    isActive
-                                        ? display.iconColor
-                                        : display.iconColor.withValues(
-                                          alpha: 0.5,
-                                        ),
-                              ),
-                          if (session.toolState != null)
-                            Positioned(
-                              right: -3,
-                              bottom: -3,
-                              child: ToolStateDot(session.toolState),
+                      display.iconAsset != null
+                          ? Opacity(
+                            opacity: isActive ? 1.0 : 0.5,
+                            child: Image.asset(
+                              display.iconAsset!,
+                              width: 14,
+                              height: 14,
                             ),
-                        ],
-                      ),
+                          )
+                          : Icon(
+                            display.icon,
+                            size: 14,
+                            color:
+                                isActive
+                                    ? display.iconColor
+                                    : display.iconColor.withValues(
+                                      alpha: 0.5,
+                                    ),
+                          ),
                       const SizedBox(width: 6),
                       Column(
                         mainAxisSize: MainAxisSize.min,

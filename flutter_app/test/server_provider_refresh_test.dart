@@ -18,12 +18,12 @@ List<Session> _merge(List<Session> fromHttp, List<Session> current) {
     if (c?.foregroundProcess == null) return s;
     return s.copyWith(
       foregroundProcess: c!.foregroundProcess,
-      toolState: c.toolState,
+      oscTitle: c.oscTitle,
     );
   }).toList();
 }
 
-Session _session(String id, {String? fg, String? toolState}) => Session(
+Session _session(String id, {String? fg, String? oscTitle}) => Session(
       id: id,
       groupId: 'g',
       name: 'test',
@@ -35,7 +35,7 @@ Session _session(String id, {String? fg, String? toolState}) => Session(
       createdAt: '',
       lastActive: '',
       foregroundProcess: fg,
-      toolState: toolState,
+      oscTitle: oscTitle,
     );
 
 void main() {
@@ -43,13 +43,13 @@ void main() {
     test('preserves WebSocket-pushed "claude" when HTTP returns null', () {
       // BEFORE fix: icon reverts to terminal every 10 s while claude is idle.
       // AFTER fix: foreground is kept from the last WebSocket push.
-      final current = [_session('s1', fg: 'claude', toolState: 'waiting')];
+      final current = [_session('s1', fg: 'claude', oscTitle: 'idle')];
       final fromHttp = [_session('s1')]; // local server returns null
 
       final merged = _merge(fromHttp, current);
 
       expect(merged[0].foregroundProcess, 'claude');
-      expect(merged[0].toolState, 'waiting');
+      expect(merged[0].oscTitle, 'idle');
     });
 
     test('does not preserve when WebSocket already cleared the foreground', () {
@@ -85,7 +85,7 @@ void main() {
     test('handles multiple sessions — only SSH sessions (null HTTP fg) are preserved', () {
       final current = [
         _session('local', fg: null),       // local session, no tool running
-        _session('ssh-claude', fg: 'claude', toolState: 'waiting'), // SSH, tool running
+        _session('ssh-claude', fg: 'claude', oscTitle: 'idle'), // SSH, tool running
         _session('ssh-none', fg: null),    // SSH, no tool
       ];
       final fromHttp = [

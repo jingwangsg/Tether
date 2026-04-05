@@ -25,6 +25,7 @@ fn write_script(dir: &str, content: &str) -> String {
 }
 
 fn spawn_session(script: &str, dir: &str) -> Arc<PtySession> {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     PtySession::spawn(
         Uuid::new_v4(),
         Uuid::new_v4(),
@@ -37,6 +38,7 @@ fn spawn_session(script: &str, dir: &str) -> Arc<PtySession> {
         64,
         1,
         PtyTerminalEnv::default(),
+        tx,
     )
     .unwrap()
 }
@@ -78,6 +80,14 @@ async fn test_osc_detects_claude_code() {
 
     let result = poll_foreground(&session, Some("claude")).await;
     assert_eq!(result, Some("claude".to_string()));
+
+    // osc_title should be populated from the OSC sequence
+    let fg = session.detect_foreground();
+    assert_eq!(
+        fg.osc_title,
+        Some("Claude Code".to_string()),
+        "detect_foreground should include the raw OSC title"
+    );
 
     session.kill();
     let _ = std::fs::remove_dir_all(&dir);

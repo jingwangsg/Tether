@@ -1,5 +1,3 @@
-use crate::attention::SessionAttentionState;
-use crate::pty::session::ToolState;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -36,9 +34,7 @@ pub enum ServerMessage {
     ForegroundChanged {
         process: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        tool_state: Option<ToolState>,
-        #[serde(flatten)]
-        attention: SessionAttentionState,
+        osc_title: Option<String>,
     },
 }
 

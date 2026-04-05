@@ -7,7 +7,7 @@ pub enum SemanticPromptKind {
     EndPromptStartInput,
     EndPromptStartInputTerminateEol,
     EndInputStartOutput,
-    EndCommand,
+    EndCommand { exit_code: Option<i32> },
     FreshLine,
     NewCommand,
 }
@@ -109,7 +109,17 @@ fn parse_payload(payload: &[u8]) -> Option<SemanticPromptKind> {
         b'A' => Some(SemanticPromptKind::FreshLineNewPrompt),
         b'B' => Some(SemanticPromptKind::EndPromptStartInput),
         b'C' => Some(SemanticPromptKind::EndInputStartOutput),
-        b'D' => Some(SemanticPromptKind::EndCommand),
+        b'D' => {
+            // D may carry an exit code: "D;0", "D;1", or just "D"
+            let exit_code = if payload.len() > 2 && payload[1] == b';' {
+                std::str::from_utf8(&payload[2..])
+                    .ok()
+                    .and_then(|s| s.parse::<i32>().ok())
+            } else {
+                None
+            };
+            Some(SemanticPromptKind::EndCommand { exit_code })
+        }
         b'I' => Some(SemanticPromptKind::EndPromptStartInputTerminateEol),
         b'L' if payload.len() == 1 => Some(SemanticPromptKind::FreshLine),
         b'N' => Some(SemanticPromptKind::NewCommand),
@@ -140,7 +150,34 @@ mod tests {
         let mut parser = SemanticPromptParser::new();
         assert!(parser.feed(b"\x1b]133;D;0\x1b").is_empty());
         let events = parser.feed(b"\\");
-        assert_eq!(events, vec![SemanticPromptKind::EndCommand]);
+        assert_eq!(
+            events,
+            vec![SemanticPromptKind::EndCommand {
+                exit_code: Some(0)
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_d_without_exit_code() {
+        let mut parser = SemanticPromptParser::new();
+        let events = parser.feed(b"\x1b]133;D\x07");
+        assert_eq!(
+            events,
+            vec![SemanticPromptKind::EndCommand { exit_code: None }]
+        );
+    }
+
+    #[test]
+    fn parses_d_with_nonzero_exit_code() {
+        let mut parser = SemanticPromptParser::new();
+        let events = parser.feed(b"\x1b]133;D;127\x07");
+        assert_eq!(
+            events,
+            vec![SemanticPromptKind::EndCommand {
+                exit_code: Some(127)
+            }]
+        );
     }
 
     #[test]

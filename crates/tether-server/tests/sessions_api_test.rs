@@ -26,7 +26,7 @@ use tether_server::api;
 use tether_server::auth;
 use tether_server::config::{PersistenceSection, ServerConfig, ServerSection, TerminalSection};
 use tether_server::persistence::Store;
-use tether_server::pty::session::{SessionForeground, ToolState};
+use tether_server::pty::session::SessionForeground;
 use tether_server::state::{AppState, AppStateInner};
 
 // ─── Test infrastructure (mirrors api_test.rs exactly) ───────────────────────
@@ -56,6 +56,7 @@ fn test_state() -> AppState {
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let (status_tx, _) = tokio::sync::broadcast::channel(64);
+    let (semantic_event_tx, semantic_event_rx) = tokio::sync::mpsc::unbounded_channel();
 
     AppState {
         inner: Arc::new(AppStateInner {
@@ -67,7 +68,8 @@ fn test_state() -> AppState {
             remote_manager: tether_server::remote::manager::RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
-            attention_trackers: DashMap::new(),
+            semantic_event_tx,
+            semantic_event_rx: std::sync::Mutex::new(Some(semantic_event_rx)),
         }),
     }
 }
@@ -600,7 +602,7 @@ async fn test_batch_reorder_sessions() {
 }
 
 #[tokio::test]
-async fn test_list_sessions_includes_transient_tool_state_from_cache() {
+async fn test_list_sessions_includes_transient_osc_title_from_cache() {
     let state = test_state();
     let app = test_router(state.clone());
     let gid = create_group(&app, "remote").await;
@@ -611,7 +613,7 @@ async fn test_list_sessions_includes_transient_tool_state_from_cache() {
         session_id,
         SessionForeground {
             process: Some("codex".to_string()),
-            tool_state: Some(ToolState::Waiting),
+            osc_title: Some("✱ Codex".to_string()),
         },
     );
 
@@ -621,13 +623,13 @@ async fn test_list_sessions_includes_transient_tool_state_from_cache() {
         .find(|entry| entry["id"].as_str() == session["id"].as_str())
         .unwrap();
     assert_eq!(listed["foreground_process"], "codex");
-    assert_eq!(listed["tool_state"], "waiting");
+    assert_eq!(listed["osc_title"], "✱ Codex");
 
     cleanup_state(&state);
 }
 
 #[tokio::test]
-async fn test_list_sessions_reports_waiting_for_markerless_known_tool_session() {
+async fn test_list_sessions_reports_process_for_known_tool_session() {
     use std::os::unix::fs::PermissionsExt;
 
     let state = test_state();
@@ -636,7 +638,7 @@ async fn test_list_sessions_reports_waiting_for_markerless_known_tool_session() 
     let group_id = uuid::Uuid::parse_str(&gid).unwrap();
 
     let script_dir = std::env::temp_dir().join(format!(
-        "tether-markerless-tool-state-{}",
+        "tether-tool-process-{}",
         uuid::Uuid::new_v4()
     ));
     std::fs::create_dir_all(&script_dir).unwrap();
@@ -654,19 +656,27 @@ async fn test_list_sessions_reports_waiting_for_markerless_known_tool_session() 
         )
         .unwrap();
 
+    let semantic_event_rx = state
+        .inner
+        .semantic_event_rx
+        .lock()
+        .unwrap()
+        .take()
+        .expect("semantic_event_rx already taken");
     let monitor = tokio::spawn(tether_server::pty::process_monitor::run_process_monitor(
         state.clone(),
+        semantic_event_rx,
     ));
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let fg = session.get_foreground();
-        if fg.process.as_deref() == Some("claude") && fg.tool_state == Some(ToolState::Waiting) {
+        if fg.process.as_deref() == Some("claude") {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "foreground never converged to claude/waiting; got {:?}",
+            "foreground never converged to claude; got {:?}",
             fg
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -679,7 +689,6 @@ async fn test_list_sessions_reports_waiting_for_markerless_known_tool_session() 
         .find(|entry| entry["id"].as_str() == Some(session_id.as_str()))
         .unwrap();
     assert_eq!(listed["foreground_process"], "claude");
-    assert_eq!(listed["tool_state"], "waiting");
 
     session.kill();
     monitor.abort();

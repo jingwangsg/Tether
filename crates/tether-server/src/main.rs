@@ -1,5 +1,4 @@
 mod api;
-mod attention;
 mod auth;
 mod config;
 mod persistence;
