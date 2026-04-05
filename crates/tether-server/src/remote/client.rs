@@ -54,6 +54,20 @@ impl SshClient {
         ))
     }
 
+    /// Run a command on the remote and fail if it exits non-zero.
+    pub async fn exec_checked(&self, cmd: &str) -> anyhow::Result<(String, String)> {
+        let (code, stdout, stderr) = self.exec(cmd).await?;
+        if code != 0 {
+            anyhow::bail!(
+                "Remote command on {} failed with exit {}: {}",
+                self.host_alias,
+                code,
+                stderr.trim()
+            );
+        }
+        Ok((stdout, stderr))
+    }
+
     /// Upload `data` to `remote_path` by piping through `cat` over SSH.
     pub async fn upload(&self, data: &[u8], remote_path: &str) -> anyhow::Result<()> {
         use tokio::io::AsyncWriteExt;

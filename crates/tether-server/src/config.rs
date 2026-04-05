@@ -17,6 +17,14 @@ const SHELL_INTEGRATION_BASH_RC: &str =
 const SHELL_INTEGRATION_BASH_SCRIPT: &str =
     include_str!("../assets/shell-integration/bash/tether-integration.bash");
 
+pub(crate) fn ghostty_terminfo_asset() -> (&'static str, &'static str, &'static [u8]) {
+    (
+        GHOSTTY_TERMINFO_SUBDIR,
+        GHOSTTY_TERMINFO_FILENAME,
+        GHOSTTY_TERMINFO,
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     #[serde(default)]
@@ -155,6 +163,19 @@ impl ServerConfig {
         self.terminal_runtime_dir().join("bin")
     }
 
+    fn user_terminfo_entry_path(&self) -> Option<PathBuf> {
+        let home = std::env::var_os("HOME")?;
+        if home.is_empty() {
+            return None;
+        }
+        Some(
+            PathBuf::from(home)
+                .join(".terminfo")
+                .join(GHOSTTY_TERMINFO_SUBDIR)
+                .join(GHOSTTY_TERMINFO_FILENAME),
+        )
+    }
+
     pub fn zsh_wrapper_path(&self) -> PathBuf {
         self.shell_wrapper_dir().join("tether-zsh")
     }
@@ -164,15 +185,22 @@ impl ServerConfig {
     }
 
     pub fn materialize_terminal_runtime(&self) -> anyhow::Result<()> {
-        let entry_dir = self.ghostty_terminfo_dir().join(GHOSTTY_TERMINFO_SUBDIR);
-        std::fs::create_dir_all(&entry_dir)?;
-        let entry_path = entry_dir.join(GHOSTTY_TERMINFO_FILENAME);
-        let needs_write = match std::fs::read(&entry_path) {
-            Ok(existing) => existing != GHOSTTY_TERMINFO,
-            Err(_) => true,
-        };
-        if needs_write {
-            std::fs::write(&entry_path, GHOSTTY_TERMINFO)?;
+        let runtime_entry_path = self
+            .ghostty_terminfo_dir()
+            .join(GHOSTTY_TERMINFO_SUBDIR)
+            .join(GHOSTTY_TERMINFO_FILENAME);
+        write_runtime_bytes(&runtime_entry_path, GHOSTTY_TERMINFO, false)?;
+
+        if let Some(user_entry_path) = self.user_terminfo_entry_path() {
+            if let Err(error) = write_runtime_bytes(&user_entry_path, GHOSTTY_TERMINFO, false) {
+                tracing::warn!(
+                    "Failed to install user terminfo at {}: {}",
+                    user_entry_path.display(),
+                    error
+                );
+            }
+        } else {
+            tracing::warn!("Skipping user terminfo install because HOME is not set");
         }
 
         let shell_dir = self.shell_integration_dir();
@@ -223,12 +251,12 @@ impl ServerConfig {
     }
 }
 
-fn write_runtime_text(path: &Path, contents: &str, executable: bool) -> anyhow::Result<()> {
+fn write_runtime_bytes(path: &Path, contents: &[u8], executable: bool) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let needs_write = match std::fs::read_to_string(path) {
+    let needs_write = match std::fs::read(path) {
         Ok(existing) => existing != contents,
         Err(_) => true,
     };
@@ -245,6 +273,10 @@ fn write_runtime_text(path: &Path, contents: &str, executable: bool) -> anyhow::
     }
 
     Ok(())
+}
+
+fn write_runtime_text(path: &Path, contents: &str, executable: bool) -> anyhow::Result<()> {
+    write_runtime_bytes(path, contents.as_bytes(), executable)
 }
 
 #[cfg(test)]
@@ -370,7 +402,10 @@ scrollback_disk_max_mb = 100
     fn materialize_terminal_runtime_writes_terminfo() {
         let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("HOME");
         std::env::set_var("TETHER_DATA_DIR", tmp.path());
+        std::env::set_var("HOME", home.path());
 
         let config = ServerConfig::default();
         config.materialize_terminal_runtime().unwrap();
@@ -383,14 +418,30 @@ scrollback_disk_max_mb = 100
         assert!(!data.is_empty());
         assert_eq!(data, GHOSTTY_TERMINFO);
 
+        let user_entry = home
+            .path()
+            .join(".terminfo")
+            .join(GHOSTTY_TERMINFO_SUBDIR)
+            .join(GHOSTTY_TERMINFO_FILENAME);
+        let user_data = std::fs::read(user_entry).unwrap();
+        assert_eq!(user_data, GHOSTTY_TERMINFO);
+
         std::env::remove_var("TETHER_DATA_DIR");
+        if let Some(home) = old_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
     }
 
     #[test]
     fn materialize_terminal_runtime_writes_shell_integration_assets() {
         let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("HOME");
         std::env::set_var("TETHER_DATA_DIR", tmp.path());
+        std::env::set_var("HOME", home.path());
 
         let config = ServerConfig::default();
         config.materialize_terminal_runtime().unwrap();
@@ -412,13 +463,21 @@ scrollback_disk_max_mb = 100
             .exists());
 
         std::env::remove_var("TETHER_DATA_DIR");
+        if let Some(home) = old_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
     }
 
     #[test]
     fn ghostty_terminal_env_contains_expected_vars() {
         let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("HOME");
         std::env::set_var("TETHER_DATA_DIR", tmp.path());
+        std::env::set_var("HOME", home.path());
 
         let config = ServerConfig::default();
         let env = config.ghostty_terminal_env().unwrap();
@@ -445,5 +504,35 @@ scrollback_disk_max_mb = 100
         );
 
         std::env::remove_var("TETHER_DATA_DIR");
+        if let Some(home) = old_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    fn materialize_terminal_runtime_succeeds_without_home() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("TETHER_DATA_DIR", tmp.path());
+        std::env::remove_var("HOME");
+
+        let config = ServerConfig::default();
+        config.materialize_terminal_runtime().unwrap();
+
+        let runtime_entry = config
+            .ghostty_terminfo_dir()
+            .join(GHOSTTY_TERMINFO_SUBDIR)
+            .join(GHOSTTY_TERMINFO_FILENAME);
+        assert_eq!(std::fs::read(runtime_entry).unwrap(), GHOSTTY_TERMINFO);
+
+        std::env::remove_var("TETHER_DATA_DIR");
+        if let Some(home) = old_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
     }
 }

@@ -8,7 +8,10 @@ use tokio::sync::broadcast;
 use tokio::time::timeout;
 
 use super::client::SshClient;
-use super::deploy::{ensure_deployed, ensure_started_without_restart, remote_binary_version};
+use super::deploy::{
+    ensure_deployed, ensure_remote_ghostty_terminfo, ensure_started_without_restart,
+    remote_binary_version,
+};
 use super::tunnel::Tunnel;
 use crate::ssh_config::{parse_ssh_config, SshHost};
 
@@ -272,6 +275,13 @@ async fn connect_remote(
     allow_deploy: bool,
 ) -> Result<(SshClient, Tunnel), ConnectError> {
     let client = SshClient::connect(host).await?;
+    if let Err(error) = ensure_remote_ghostty_terminfo(&client).await {
+        tracing::warn!(
+            "Failed to sync Ghostty terminfo to {}: {}",
+            client.host_alias,
+            error
+        );
+    }
 
     if allow_deploy {
         ensure_deployed(&client).await?;

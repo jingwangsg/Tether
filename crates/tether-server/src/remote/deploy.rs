@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use super::client::SshClient;
+use crate::config::ghostty_terminfo_asset;
 
 /// Workspace root embedded at compile time (two levels up from this crate's manifest).
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
@@ -96,6 +97,31 @@ fn current_cache_stamp() -> anyhow::Result<String> {
     ))
 }
 
+fn remote_ghostty_terminfo_dir() -> String {
+    let (subdir, _, _) = ghostty_terminfo_asset();
+    format!("~/.terminfo/{subdir}")
+}
+
+fn remote_ghostty_terminfo_path() -> String {
+    let (subdir, filename, _) = ghostty_terminfo_asset();
+    format!("~/.terminfo/{subdir}/{filename}")
+}
+
+pub async fn ensure_remote_ghostty_terminfo(client: &SshClient) -> anyhow::Result<()> {
+    let (_, _, terminfo) = ghostty_terminfo_asset();
+    let remote_dir = remote_ghostty_terminfo_dir();
+    let remote_path = remote_ghostty_terminfo_path();
+
+    client
+        .exec_checked(&format!("mkdir -p {remote_dir}"))
+        .await?;
+    client.upload(terminfo, &remote_path).await?;
+    client
+        .exec_checked(&format!("chmod 644 {remote_path}"))
+        .await?;
+    Ok(())
+}
+
 /// Ensure `~/.tether/bin/tether-server` on the remote is present, up-to-date,
 /// and running as a daemon.
 pub async fn ensure_deployed(client: &SshClient) -> anyhow::Result<()> {
@@ -132,11 +158,13 @@ async fn ensure_available(client: &SshClient, allow_replace_running: bool) -> an
             remote_ver
         );
         let binary = get_or_build_linux_binary(target)?;
-        client.exec("mkdir -p ~/.tether/bin").await?;
+        client.exec_checked("mkdir -p ~/.tether/bin").await?;
         client
             .upload(&binary, "~/.tether/bin/tether-server")
             .await?;
-        client.exec("chmod +x ~/.tether/bin/tether-server").await?;
+        client
+            .exec_checked("chmod +x ~/.tether/bin/tether-server")
+            .await?;
         tracing::info!("Binary uploaded to {}", client.host_alias);
 
         if allow_replace_running {
@@ -174,7 +202,7 @@ async fn ensure_available(client: &SshClient, allow_replace_running: bool) -> an
     if alive_out.trim() != "alive" {
         tracing::info!("Starting tether-server daemon on {}", client.host_alias);
         // --no-ssh-scan: remote daemon only manages PTY sessions, never re-deploys
-        client.exec(&remote_start_command()).await?;
+        client.exec_checked(&remote_start_command()).await?;
     } else {
         tracing::debug!(
             "tether-server daemon already running on {}",
@@ -344,6 +372,9 @@ async fn wait_for_ready(client: &SshClient) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn uname_linux_x86_64() {
@@ -388,5 +419,56 @@ mod tests {
             uname_to_target("Linux x86_64\n"),
             Some("x86_64-unknown-linux-musl")
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_remote_ghostty_terminfo_uploads_asset_to_user_terminfo_dir() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let fake_ssh = temp.path().join("ssh");
+        let log_path = temp.path().join("ssh.log");
+        let upload_path = temp.path().join("uploaded-terminfo");
+        let old_path = std::env::var_os("PATH");
+
+        std::fs::write(
+            &fake_ssh,
+            format!(
+                "#!/bin/sh\nset -eu\nlast=\"\"\nfor arg in \"$@\"; do last=\"$arg\"; done\nprintf '%s\\n' \"$*\" >> \"{}\"\ncase \"$last\" in\n  \"cat > ~/.terminfo/78/xterm-ghostty\")\n    cat > \"{}\"\n    ;;\n  *)\n    :\n    ;;\nesac\n",
+                log_path.display(),
+                upload_path.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut path = std::ffi::OsString::from(temp.path());
+        if let Some(old_path_value) = &old_path {
+            path.push(":");
+            path.push(old_path_value);
+        }
+        std::env::set_var("PATH", path);
+
+        let client = SshClient {
+            host_alias: "fake-host".to_string(),
+        };
+        ensure_remote_ghostty_terminfo(&client).await.unwrap();
+
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(log.contains("mkdir -p ~/.terminfo/78"));
+        assert!(log.contains("cat > ~/.terminfo/78/xterm-ghostty"));
+        assert!(log.contains("chmod 644 ~/.terminfo/78/xterm-ghostty"));
+
+        let (_, _, expected) = ghostty_terminfo_asset();
+        let uploaded = std::fs::read(&upload_path).unwrap();
+        assert_eq!(uploaded, expected);
+
+        if let Some(path) = old_path {
+            std::env::set_var("PATH", path);
+        } else {
+            std::env::remove_var("PATH");
+        }
     }
 }

@@ -69,6 +69,11 @@ fn cleanup(state: &AppState) {
 
 #[tokio::test]
 async fn local_session_reports_ghostty_terminal_identity() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let home = tempdir().unwrap();
+    let old_home = std::env::var_os("HOME");
+    std::env::set_var("HOME", home.path());
+
     let state = test_state();
     let group = state.inner.db.create_group("g", "~", None, None).unwrap();
     let temp = tempdir().unwrap();
@@ -115,12 +120,79 @@ async fn local_session_reports_ghostty_terminal_identity() {
     assert!(std::path::Path::new(parts[1]).exists());
 
     cleanup(&state);
+    if let Some(home) = old_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
+}
+
+#[tokio::test]
+async fn local_session_clear_succeeds_after_terminfo_env_is_unset() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let home = tempdir().unwrap();
+    let old_home = std::env::var_os("HOME");
+    std::env::set_var("HOME", home.path());
+
+    let state = test_state();
+    let group = state.inner.db.create_group("g", "~", None, None).unwrap();
+    let temp = tempdir().unwrap();
+    let script_path = temp.path().join("clear-without-terminfo.sh");
+    std::fs::write(
+        &script_path,
+        "#!/bin/sh\nunset TERMINFO\nclear >/dev/null 2>&1\nstatus=$?\nprintf '%s|%s|%s\\n' \"$TERM\" \"${TERMINFO:-unset}\" \"$status\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let user_terminfo = home.path().join(".terminfo/78/xterm-ghostty");
+    assert!(
+        user_terminfo.exists(),
+        "expected installed terminfo at {:?}",
+        user_terminfo
+    );
+
+    let session = state
+        .create_session(
+            Uuid::parse_str(&group.id).unwrap(),
+            Some("clear".to_string()),
+            Some(script_path.display().to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let output = loop {
+        let output = String::from_utf8_lossy(&session.get_scrollback_snapshot()).into_owned();
+        if output.contains("xterm-ghostty|unset|") || tokio::time::Instant::now() >= deadline {
+            break output;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let line = output
+        .lines()
+        .find(|line| line.contains("xterm-ghostty|unset|"))
+        .expect("expected clear result line in PTY output");
+    let parts: Vec<&str> = line.split('|').collect();
+    assert_eq!(parts.len(), 3, "unexpected clear output: {line}");
+    assert_eq!(parts[0], "xterm-ghostty");
+    assert_eq!(parts[1], "unset");
+    assert_eq!(parts[2], "0");
+
+    cleanup(&state);
+    if let Some(home) = old_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
 }
 
 #[tokio::test]
 async fn default_bash_shell_wrapper_emits_lifecycle_markers_with_prompt_command_array() {
     let _guard = ENV_MUTEX.lock().unwrap();
     let home = tempdir().unwrap();
+    let old_home = std::env::var_os("HOME");
     std::env::set_var("HOME", home.path());
     std::fs::write(
         home.path().join(".bashrc"),
@@ -175,5 +247,9 @@ async fn default_bash_shell_wrapper_emits_lifecycle_markers_with_prompt_command_
 
     session.kill();
     cleanup(&state);
-    std::env::remove_var("HOME");
+    if let Some(home) = old_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
 }
