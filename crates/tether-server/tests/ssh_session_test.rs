@@ -293,7 +293,7 @@ fn test_state() -> AppState {
     db.init_tables().unwrap();
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
-    let (fg_tx, _) = tokio::sync::broadcast::channel(64);
+    let (status_tx, _) = tokio::sync::broadcast::channel(64);
 
     AppState {
         inner: Arc::new(AppStateInner {
@@ -301,10 +301,11 @@ fn test_state() -> AppState {
             sessions: DashMap::new(),
             db,
             shutdown_tx,
-            fg_tx,
+            status_tx,
             remote_manager: tether_server::remote::manager::RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
+            attention_trackers: DashMap::new(),
         }),
     }
 }

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart' as xterm;
+import '../../platform/terminal_backend.dart';
 import '../../providers/server_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../services/websocket_service.dart';
@@ -17,7 +18,7 @@ class XtermTerminalView extends ConsumerStatefulWidget {
   final bool isActive;
   final VoidCallback? onSessionExited;
   final void Function(String? title)? onTitleChanged;
-  final void Function(String? process, String? toolState)? onForegroundChanged;
+  final ForegroundChangedCallback? onForegroundChanged;
 
   const XtermTerminalView({
     super.key,
@@ -322,7 +323,14 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
         case ForegroundChangedMessage():
           _foregroundDebounce?.cancel();
           _foregroundDebounce = Timer(const Duration(milliseconds: 100), () {
-            widget.onForegroundChanged?.call(msg.process, msg.toolState);
+            widget.onForegroundChanged?.call(
+              msg.process,
+              msg.toolState,
+              attentionStatePresent: msg.attentionStatePresent,
+              needsAttention: msg.needsAttention,
+              attentionSeq: msg.attentionSeq,
+              attentionUpdatedAt: msg.attentionUpdatedAt,
+            );
           });
         case ConnectionStateMessage():
           if (msg.connected) {

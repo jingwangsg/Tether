@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../platform/terminal_backend.dart';
 import '../../providers/server_provider.dart';
 import '../../services/websocket_service.dart';
 import 'terminal_controller.dart';
@@ -20,7 +21,7 @@ class TerminalView extends StatefulWidget {
   final bool isActive;
   final VoidCallback? onSessionExited;
   final void Function(String? title)? onTitleChanged;
-  final void Function(String? process, String? toolState)? onForegroundChanged;
+  final ForegroundChangedCallback? onForegroundChanged;
   final WebSocketService Function(String url)? metadataWsFactory;
 
   const TerminalView({
@@ -141,7 +142,14 @@ class TerminalViewState extends State<TerminalView> {
               'process=${message.process} toolState=${message.toolState}',
             );
           }
-          widget.onForegroundChanged?.call(message.process, message.toolState);
+          widget.onForegroundChanged?.call(
+            message.process,
+            message.toolState,
+            attentionStatePresent: message.attentionStatePresent,
+            needsAttention: message.needsAttention,
+            attentionSeq: message.attentionSeq,
+            attentionUpdatedAt: message.attentionUpdatedAt,
+          );
         case SessionEventMessage():
           if (message.event == 'exited') {
             _emitExit();

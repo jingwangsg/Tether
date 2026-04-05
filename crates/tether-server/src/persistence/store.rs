@@ -1,3 +1,4 @@
+use crate::attention::SessionAttentionState;
 use crate::pty::session::ToolState;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,12 @@ pub struct SessionRow {
     /// sessions to their correct local group, overriding any poisoned registry entry.
     #[serde(default)]
     pub local_group_id: Option<String>,
+    #[serde(default)]
+    pub attention_seq: i64,
+    #[serde(default)]
+    pub needs_attention: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_updated_at: Option<String>,
 }
 
 impl Store {
@@ -84,7 +91,10 @@ impl Store {
                 cwd         TEXT NOT NULL,
                 created_at  TEXT NOT NULL,
                 last_active TEXT NOT NULL,
-                is_alive    INTEGER NOT NULL DEFAULT 1
+                is_alive    INTEGER NOT NULL DEFAULT 1,
+                attention_seq INTEGER NOT NULL DEFAULT 0,
+                attention_ack_seq INTEGER NOT NULL DEFAULT 0,
+                attention_updated_at TEXT
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
@@ -114,6 +124,16 @@ impl Store {
             .ok();
         // Migration: add local_group_id to sessions (for remote group assignment persistence)
         conn.execute_batch("ALTER TABLE sessions ADD COLUMN local_group_id TEXT;")
+            .ok();
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN attention_seq INTEGER NOT NULL DEFAULT 0;",
+        )
+        .ok();
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN attention_ack_seq INTEGER NOT NULL DEFAULT 0;",
+        )
+        .ok();
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN attention_updated_at TEXT;")
             .ok();
         Ok(())
     }
@@ -410,10 +430,12 @@ impl Store {
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id FROM sessions ORDER BY sort_order, created_at",
+            "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id, attention_seq, attention_ack_seq, attention_updated_at FROM sessions ORDER BY sort_order, created_at",
         )?;
         let rows = stmt
             .query_map([], |row| {
+                let attention_seq: i64 = row.get(12)?;
+                let attention_ack_seq: i64 = row.get(13)?;
                 Ok(SessionRow {
                     id: row.get(0)?,
                     group_id: row.get(1)?,
@@ -429,6 +451,9 @@ impl Store {
                     foreground_process: None,
                     tool_state: None,
                     local_group_id: row.get(11)?,
+                    attention_seq,
+                    needs_attention: attention_seq > attention_ack_seq,
+                    attention_updated_at: row.get(14)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -448,7 +473,7 @@ impl Store {
         let now = chrono::Utc::now().to_rfc3339();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id) VALUES (?1, ?2, ?3, ?4, 80, 24, ?5, ?6, ?7, 0, 1, ?8)",
+            "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id, attention_seq, attention_ack_seq, attention_updated_at) VALUES (?1, ?2, ?3, ?4, 80, 24, ?5, ?6, ?7, 0, 1, ?8, 0, 0, NULL)",
             params![id, group_id, name, shell, cwd, now, now, local_group_id],
         )?;
         tx.execute(
@@ -471,17 +496,22 @@ impl Store {
             foreground_process: None,
             tool_state: None,
             local_group_id: local_group_id.map(|s| s.to_string()),
+            attention_seq: 0,
+            needs_attention: false,
+            attention_updated_at: None,
         })
     }
 
     pub fn get_session(&self, id: &str) -> anyhow::Result<Option<SessionRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id \
+            "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id, attention_seq, attention_ack_seq, attention_updated_at \
              FROM sessions WHERE id = ?1",
         )?;
         let row = stmt
             .query_row(params![id], |row| {
+                let attention_seq: i64 = row.get(12)?;
+                let attention_ack_seq: i64 = row.get(13)?;
                 Ok(SessionRow {
                     id: row.get(0)?,
                     group_id: row.get(1)?,
@@ -497,18 +527,114 @@ impl Store {
                     foreground_process: None,
                     tool_state: None,
                     local_group_id: row.get(11)?,
+                    attention_seq,
+                    needs_attention: attention_seq > attention_ack_seq,
+                    attention_updated_at: row.get(14)?,
                 })
             })
             .ok();
         Ok(row)
     }
 
+    pub fn get_session_attention(&self, id: &str) -> anyhow::Result<Option<SessionAttentionState>> {
+        let conn = self.conn.lock().unwrap();
+        let row = conn
+            .query_row(
+                "SELECT attention_seq, attention_ack_seq, attention_updated_at FROM sessions WHERE id = ?1",
+                params![id],
+                |row| {
+                    let attention_seq: i64 = row.get(0)?;
+                    let attention_ack_seq: i64 = row.get(1)?;
+                    let attention_updated_at: Option<String> = row.get(2)?;
+                    Ok(SessionAttentionState {
+                        needs_attention: attention_seq > attention_ack_seq,
+                        attention_seq,
+                        attention_updated_at,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    pub fn increment_session_attention(
+        &self,
+        id: &str,
+        attention_updated_at: &str,
+    ) -> anyhow::Result<Option<SessionAttentionState>> {
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE sessions
+             SET attention_seq = attention_seq + 1,
+                 attention_updated_at = ?1
+             WHERE id = ?2",
+            params![attention_updated_at, id],
+        )?;
+        if updated == 0 {
+            return Ok(None);
+        }
+        let row = conn.query_row(
+            "SELECT attention_seq, attention_ack_seq, attention_updated_at FROM sessions WHERE id = ?1",
+            params![id],
+            |row| {
+                let attention_seq: i64 = row.get(0)?;
+                let attention_ack_seq: i64 = row.get(1)?;
+                let attention_updated_at: Option<String> = row.get(2)?;
+                Ok(SessionAttentionState {
+                    needs_attention: attention_seq > attention_ack_seq,
+                    attention_seq,
+                    attention_updated_at,
+                })
+            },
+        )?;
+        Ok(Some(row))
+    }
+
+    pub fn ack_session_attention(
+        &self,
+        id: &str,
+        attention_seq: i64,
+    ) -> anyhow::Result<Option<SessionAttentionState>> {
+        let conn = self.conn.lock().unwrap();
+        let current = conn
+            .query_row(
+                "SELECT attention_seq, attention_ack_seq FROM sessions WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        let Some((current_seq, current_ack_seq)) = current else {
+            return Ok(None);
+        };
+        let next_ack_seq =
+            std::cmp::max(current_ack_seq, std::cmp::min(attention_seq, current_seq));
+        conn.execute(
+            "UPDATE sessions SET attention_ack_seq = ?1 WHERE id = ?2",
+            params![next_ack_seq, id],
+        )?;
+        let row = conn.query_row(
+            "SELECT attention_seq, attention_ack_seq, attention_updated_at FROM sessions WHERE id = ?1",
+            params![id],
+            |row| {
+                let attention_seq: i64 = row.get(0)?;
+                let attention_ack_seq: i64 = row.get(1)?;
+                let attention_updated_at: Option<String> = row.get(2)?;
+                Ok(SessionAttentionState {
+                    needs_attention: attention_seq > attention_ack_seq,
+                    attention_seq,
+                    attention_updated_at,
+                })
+            },
+        )?;
+        Ok(Some(row))
+    }
+
     pub fn upsert_remote_session_mirror(&self, session: &SessionRow) -> anyhow::Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id, attention_seq, attention_ack_seq, attention_updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, 0, NULL)
              ON CONFLICT(id) DO UPDATE SET
                  group_id = excluded.group_id,
                  name = excluded.name,
@@ -713,12 +839,15 @@ impl Store {
             .join(", ");
         let sql = format!(
             "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, \
-             sort_order, is_alive, local_group_id FROM sessions WHERE group_id IN ({})",
+             sort_order, is_alive, local_group_id, attention_seq, attention_ack_seq, attention_updated_at \
+             FROM sessions WHERE group_id IN ({})",
             placeholders
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(group_ids.iter()), |row| {
+                let attention_seq: i64 = row.get(12)?;
+                let attention_ack_seq: i64 = row.get(13)?;
                 Ok(SessionRow {
                     id: row.get(0)?,
                     group_id: row.get(1)?,
@@ -734,6 +863,9 @@ impl Store {
                     foreground_process: None,
                     tool_state: None,
                     local_group_id: row.get(11)?,
+                    attention_seq,
+                    needs_attention: attention_seq > attention_ack_seq,
+                    attention_updated_at: row.get(14)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

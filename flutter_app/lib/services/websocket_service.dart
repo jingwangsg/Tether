@@ -33,7 +33,19 @@ class ErrorMessage extends ServerMessage {
 class ForegroundChangedMessage extends ServerMessage {
   final String? process;
   final String? toolState;
-  ForegroundChangedMessage(this.process, this.toolState);
+  final bool attentionStatePresent;
+  final bool? needsAttention;
+  final int? attentionSeq;
+  final String? attentionUpdatedAt;
+
+  ForegroundChangedMessage(
+    this.process,
+    this.toolState, {
+    this.attentionStatePresent = false,
+    this.needsAttention,
+    this.attentionSeq,
+    this.attentionUpdatedAt,
+  });
 }
 
 class ConnectionStateMessage extends ServerMessage {
@@ -115,7 +127,10 @@ class WebSocketService {
   }
 
   Duration _calculateBackoff() {
-    final seconds = min(pow(2, _reconnectAttempts).toInt(), _maxReconnectDelay.inSeconds);
+    final seconds = min(
+      pow(2, _reconnectAttempts).toInt(),
+      _maxReconnectDelay.inSeconds,
+    );
     return Duration(seconds: seconds);
   }
 
@@ -141,17 +156,38 @@ class WebSocketService {
           final b64 = json['data'] as String;
           _messageController.add(ScrollbackMessage(base64Decode(b64)));
         case 'session_event':
-          _messageController.add(SessionEventMessage(
-            json['event'] as String? ?? '',
-            json['exit_code'] as int?,
-          ));
+          _messageController.add(
+            SessionEventMessage(
+              json['event'] as String? ?? '',
+              json['exit_code'] as int?,
+            ),
+          );
         case 'pong':
           _messageController.add(PongMessage());
         case 'foreground_changed':
-          _messageController.add(ForegroundChangedMessage(
-            json['process'] as String?,
-            json['tool_state'] as String?,
-          ));
+          final attentionStatePresent =
+              json.containsKey('needs_attention') ||
+              json.containsKey('attention_seq') ||
+              json.containsKey('attention_updated_at');
+          _messageController.add(
+            ForegroundChangedMessage(
+              json['process'] as String?,
+              json['tool_state'] as String?,
+              attentionStatePresent: attentionStatePresent,
+              needsAttention:
+                  json.containsKey('needs_attention')
+                      ? json['needs_attention'] as bool? ?? false
+                      : null,
+              attentionSeq:
+                  json.containsKey('attention_seq')
+                      ? (json['attention_seq'] as num?)?.toInt() ?? 0
+                      : null,
+              attentionUpdatedAt:
+                  json.containsKey('attention_updated_at')
+                      ? json['attention_updated_at'] as String?
+                      : null,
+            ),
+          );
         default:
           break;
       }

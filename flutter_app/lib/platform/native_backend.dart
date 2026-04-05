@@ -23,7 +23,7 @@ class NativeBackend implements TerminalBackend {
     required bool isActive,
     VoidCallback? onSessionExited,
     void Function(String? title)? onTitleChanged,
-    void Function(String? process, String? toolState)? onForegroundChanged,
+    ForegroundChangedCallback? onForegroundChanged,
   }) {
     return TerminalView(
       key: key,

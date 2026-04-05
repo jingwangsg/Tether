@@ -1,3 +1,5 @@
+const _sessionUnset = Object();
+
 class Session {
   final String id;
   final String groupId;
@@ -12,6 +14,9 @@ class Session {
   final int sortOrder;
   final String? foregroundProcess;
   final String? toolState; // "running", "waiting", or null
+  final bool needsAttention;
+  final int attentionSeq;
+  final String? attentionUpdatedAt;
 
   Session({
     required this.id,
@@ -27,6 +32,9 @@ class Session {
     this.sortOrder = 0,
     this.foregroundProcess,
     this.toolState,
+    this.needsAttention = false,
+    this.attentionSeq = 0,
+    this.attentionUpdatedAt,
   });
 
   factory Session.fromJson(Map<String, dynamic> json) {
@@ -44,6 +52,9 @@ class Session {
       sortOrder: json['sort_order'] as int? ?? 0,
       foregroundProcess: json['foreground_process'] as String?,
       toolState: json['tool_state'] as String?,
+      needsAttention: json['needs_attention'] as bool? ?? false,
+      attentionSeq: (json['attention_seq'] as num?)?.toInt() ?? 0,
+      attentionUpdatedAt: json['attention_updated_at'] as String?,
     );
   }
 
@@ -54,6 +65,9 @@ class Session {
     int? sortOrder,
     String? foregroundProcess,
     String? toolState,
+    bool? needsAttention,
+    int? attentionSeq,
+    Object? attentionUpdatedAt = _sessionUnset,
     bool clearForeground = false,
   }) {
     return Session(
@@ -73,6 +87,12 @@ class Session {
               ? null
               : (foregroundProcess ?? this.foregroundProcess),
       toolState: clearForeground ? null : (toolState ?? this.toolState),
+      needsAttention: needsAttention ?? this.needsAttention,
+      attentionSeq: attentionSeq ?? this.attentionSeq,
+      attentionUpdatedAt:
+          identical(attentionUpdatedAt, _sessionUnset)
+              ? this.attentionUpdatedAt
+              : attentionUpdatedAt as String?,
     );
   }
 }

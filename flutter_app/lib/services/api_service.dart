@@ -4,21 +4,36 @@ import '../models/group.dart';
 import '../models/session.dart';
 import '../models/ssh_host.dart';
 
+class SessionAttentionState {
+  final bool needsAttention;
+  final int attentionSeq;
+  final String? attentionUpdatedAt;
+
+  const SessionAttentionState({
+    required this.needsAttention,
+    required this.attentionSeq,
+    this.attentionUpdatedAt,
+  });
+
+  factory SessionAttentionState.fromJson(Map<String, dynamic> json) {
+    return SessionAttentionState(
+      needsAttention: json['needs_attention'] as bool? ?? false,
+      attentionSeq: (json['attention_seq'] as num?)?.toInt() ?? 0,
+      attentionUpdatedAt: json['attention_updated_at'] as String?,
+    );
+  }
+}
+
 class ApiService {
   final String baseUrl;
   final String? authToken;
   final http.Client _client;
 
-  ApiService({
-    required this.baseUrl,
-    this.authToken,
-    http.Client? client,
-  }) : _client = client ?? http.Client();
+  ApiService({required this.baseUrl, this.authToken, http.Client? client})
+    : _client = client ?? http.Client();
 
   Map<String, String> get _headers {
-    final headers = <String, String>{
-      'Content-Type': 'application/json',
-    };
+    final headers = <String, String>{'Content-Type': 'application/json'};
     if (authToken != null && authToken!.isNotEmpty) {
       headers['Authorization'] = 'Bearer $authToken';
     }
@@ -26,24 +41,17 @@ class ApiService {
   }
 
   Uri _uri(String path, [Map<String, String>? queryParams]) {
-    return Uri.parse('$baseUrl$path')
-        .replace(queryParameters: queryParams);
+    return Uri.parse('$baseUrl$path').replace(queryParameters: queryParams);
   }
 
   Future<Map<String, dynamic>> getInfo() async {
-    final response = await _client.get(
-      _uri('/api/info'),
-      headers: _headers,
-    );
+    final response = await _client.get(_uri('/api/info'), headers: _headers);
     _checkResponse(response);
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
 
   Future<List<Group>> listGroups() async {
-    final response = await _client.get(
-      _uri('/api/groups'),
-      headers: _headers,
-    );
+    final response = await _client.get(_uri('/api/groups'), headers: _headers);
     _checkResponse(response);
     final list = jsonDecode(response.body) as List;
     return list.map((j) => Group.fromJson(j as Map<String, dynamic>)).toList();
@@ -132,7 +140,9 @@ class ApiService {
     );
     _checkResponse(response);
     final list = jsonDecode(response.body) as List;
-    return list.map((j) => Session.fromJson(j as Map<String, dynamic>)).toList();
+    return list
+        .map((j) => Session.fromJson(j as Map<String, dynamic>))
+        .toList();
   }
 
   // local=true tells the server to store DB record only — no PTY spawn
@@ -158,7 +168,12 @@ class ApiService {
     return Session.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
   }
 
-  Future<void> updateSession(String id, {String? name, int? sortOrder, String? groupId}) async {
+  Future<void> updateSession(
+    String id, {
+    String? name,
+    int? sortOrder,
+    String? groupId,
+  }) async {
     final body = <String, dynamic>{};
     if (name != null) body['name'] = name;
     if (sortOrder != null) body['sort_order'] = sortOrder;
@@ -180,6 +195,21 @@ class ApiService {
     _checkResponse(response);
   }
 
+  Future<SessionAttentionState> ackSessionAttention(
+    String id,
+    int attentionSeq,
+  ) async {
+    final response = await _client.post(
+      _uri('/api/sessions/$id/attention/ack'),
+      headers: _headers,
+      body: jsonEncode({'attention_seq': attentionSeq}),
+    );
+    _checkResponse(response);
+    return SessionAttentionState.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
   Future<void> reorderSessions(List<Map<String, dynamic>> items) async {
     final response = await _client.post(
       _uri('/api/sessions/reorder'),
@@ -196,7 +226,9 @@ class ApiService {
     );
     _checkResponse(response);
     final list = jsonDecode(response.body) as List;
-    return list.map((j) => SshHost.fromJson(j as Map<String, dynamic>)).toList();
+    return list
+        .map((j) => SshHost.fromJson(j as Map<String, dynamic>))
+        .toList();
   }
 
   void _checkResponse(http.Response response) {

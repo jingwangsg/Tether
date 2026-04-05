@@ -1,3 +1,5 @@
+use crate::attention::{SessionAttentionState, SessionStatusSnapshot};
+use crate::pty::session::SessionForeground;
 use crate::remote::foreground::update_ssh_foreground_cache;
 use crate::state::AppState;
 use crate::ws::protocol::{ClientMessage, ServerMessage};
@@ -15,6 +17,36 @@ use uuid::Uuid;
 pub struct WsQuery {
     pub token: Option<String>,
     pub mode: Option<String>,
+}
+
+fn current_attention_state(state: &AppState, session_id: Uuid) -> SessionAttentionState {
+    state
+        .inner
+        .db
+        .get_session_attention(&session_id.to_string())
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+fn current_status_snapshot(
+    state: &AppState,
+    session_id: Uuid,
+    foreground: SessionForeground,
+) -> SessionStatusSnapshot {
+    SessionStatusSnapshot::from_parts(foreground, current_attention_state(state, session_id))
+}
+
+fn status_message(snapshot: SessionStatusSnapshot) -> ServerMessage {
+    ServerMessage::ForegroundChanged {
+        process: snapshot.process,
+        tool_state: snapshot.tool_state,
+        attention: SessionAttentionState {
+            needs_attention: snapshot.needs_attention,
+            attention_seq: snapshot.attention_seq,
+            attention_updated_at: snapshot.attention_updated_at,
+        },
+    }
 }
 
 pub async fn ws_handler(
@@ -106,11 +138,12 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, mode: String, state:
     // Send current foreground state immediately so the client reflects it
     // without waiting for the next process_monitor broadcast cycle.
     let current_fg = session.get_foreground();
-    if current_fg.process.is_some() {
-        let msg = ServerMessage::ForegroundChanged {
-            process: current_fg.process,
-            tool_state: current_fg.tool_state,
-        };
+    let current_status = current_status_snapshot(&state, session_id, current_fg);
+    if current_status.process.is_some()
+        || current_status.tool_state.is_some()
+        || current_status.needs_attention
+    {
+        let msg = status_message(current_status);
         if let Ok(json) = serde_json::to_string(&msg) {
             let _ = ws_sink.send(Message::Text(json.into())).await;
         }
@@ -139,7 +172,7 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, mode: String, state:
 
     // Spawn task to forward session output + control messages + foreground changes to WS
     let mut shutdown_rx = state.inner.shutdown_tx.subscribe();
-    let mut fg_rx = state.inner.fg_tx.subscribe();
+    let mut status_rx = state.inner.status_tx.subscribe();
     let mut exit_check = tokio::time::interval(std::time::Duration::from_millis(250));
     let send_task = tokio::spawn(async move {
         let b64_send = base64::engine::general_purpose::STANDARD;
@@ -173,17 +206,18 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, mode: String, state:
                     }
                 }
                 Some(json) = ctrl_rx.recv() => {
-                    if ws_sink.send(Message::Text(json.into())).await.is_err() {
+                    if ws_sink
+                        .send(Message::Text(axum::extract::ws::Utf8Bytes::from(json)))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
-                result = fg_rx.recv() => {
+                result = status_rx.recv() => {
                     match result {
-                        Ok((sid, fg)) if sid == session_id => {
-                            let msg = ServerMessage::ForegroundChanged {
-                                process: fg.process,
-                                tool_state: fg.tool_state,
-                            };
+                        Ok((sid, snapshot)) if sid == session_id => {
+                            let msg = status_message(snapshot);
                             if let Ok(json) = serde_json::to_string(&msg) {
                                 if ws_sink.send(Message::Text(json.into())).await.is_err() {
                                     break;
@@ -261,22 +295,22 @@ async fn handle_events_socket(
     let (mut ws_sink, mut ws_stream) = socket.split();
 
     let current_fg = session.get_foreground();
-    if crate::pty::session::PtySession::is_known_tool(current_fg.process.as_deref())
-        || current_fg.tool_state.is_some()
+    let current_status = current_status_snapshot(&state, session_id, current_fg);
+    if crate::pty::session::PtySession::is_known_tool(current_status.process.as_deref())
+        || current_status.tool_state.is_some()
+        || current_status.needs_attention
     {
         tracing::debug!(
             target: "tool-state",
             session_id = %session_id,
             source = "events_ws_initial",
-            process = ?current_fg.process,
-            tool_state = ?current_fg.tool_state,
+            process = ?current_status.process,
+            tool_state = ?current_status.tool_state,
+            needs_attention = current_status.needs_attention,
             "sending initial foreground_changed"
         );
     }
-    let initial = ServerMessage::ForegroundChanged {
-        process: current_fg.process,
-        tool_state: current_fg.tool_state,
-    };
+    let initial = status_message(current_status);
     if let Ok(json) = serde_json::to_string(&initial) {
         if ws_sink.send(Message::Text(json.into())).await.is_err() {
             return;
@@ -309,7 +343,7 @@ async fn handle_events_socket(
         }
     };
     let mut shutdown_rx = state.inner.shutdown_tx.subscribe();
-    let mut fg_rx = state.inner.fg_tx.subscribe();
+    let mut status_rx = state.inner.status_tx.subscribe();
     let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let mut exit_check = tokio::time::interval(std::time::Duration::from_millis(250));
 
@@ -333,29 +367,32 @@ async fn handle_events_socket(
                     }
                 }
                 Some(json) = ctrl_rx.recv() => {
-                    if ws_sink.send(Message::Text(json.into())).await.is_err() {
+                    if ws_sink
+                        .send(Message::Text(axum::extract::ws::Utf8Bytes::from(json)))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
-                result = fg_rx.recv() => {
+                result = status_rx.recv() => {
                     match result {
-                        Ok((sid, fg)) if sid == session_id => {
-                            if crate::pty::session::PtySession::is_known_tool(fg.process.as_deref())
-                                || fg.tool_state.is_some()
+                        Ok((sid, snapshot)) if sid == session_id => {
+                            if crate::pty::session::PtySession::is_known_tool(snapshot.process.as_deref())
+                                || snapshot.tool_state.is_some()
+                                || snapshot.needs_attention
                             {
                                 tracing::debug!(
                                     target: "tool-state",
                                     session_id = %session_id,
                                     source = "events_ws_stream",
-                                    process = ?fg.process,
-                                    tool_state = ?fg.tool_state,
+                                    process = ?snapshot.process,
+                                    tool_state = ?snapshot.tool_state,
+                                    needs_attention = snapshot.needs_attention,
                                     "sending foreground_changed"
                                 );
                             }
-                            let msg = ServerMessage::ForegroundChanged {
-                                process: fg.process,
-                                tool_state: fg.tool_state,
-                            };
+                            let msg = status_message(snapshot);
                             if let Ok(json) = serde_json::to_string(&msg) {
                                 if ws_sink.send(Message::Text(json.into())).await.is_err() {
                                     break;
@@ -426,6 +463,25 @@ async fn proxy_ws_to_remote(
     let (mut client_sink, mut client_stream) = client_ws.split();
     let (mut remote_sink, mut remote_stream) = remote_ws.split();
     let _live_proxy_guard = ActiveSshProxyGuard::new(state.clone(), session_id);
+    let mut status_rx = state.inner.status_tx.subscribe();
+
+    let initial_fg = state
+        .inner
+        .ssh_fg
+        .get(&session_id)
+        .map(|fg| fg.clone())
+        .unwrap_or_default();
+    let initial_status = current_status_snapshot(&state, session_id, initial_fg);
+    if initial_status.process.is_some()
+        || initial_status.tool_state.is_some()
+        || initial_status.needs_attention
+    {
+        if let Ok(json) = serde_json::to_string(&status_message(initial_status)) {
+            if client_sink.send(Message::Text(json.into())).await.is_err() {
+                return;
+            }
+        }
+    }
 
     let client_to_remote = tokio::spawn(async move {
         while let Some(Ok(msg)) = client_stream.next().await {
@@ -443,51 +499,78 @@ async fn proxy_ws_to_remote(
         }
     });
 
-    // remote → client; intercept foreground_changed to keep ssh_fg cache live
-    while let Some(Ok(msg)) = remote_stream.next().await {
-        let axum_msg = match msg {
-            tungstenite::Message::Text(ref t) => {
-                // Update ssh_fg cache when remote sends a foreground_changed message.
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(t.as_str()) {
-                    if v.get("type").and_then(|x| x.as_str()) == Some("foreground_changed") {
-                        let tool_state = v
-                            .get("tool_state")
-                            .cloned()
-                            .and_then(|value| serde_json::from_value(value).ok());
-                        let process = v
-                            .get("process")
-                            .and_then(|x| x.as_str())
-                            .map(str::to_string);
-                        if crate::pty::session::PtySession::is_known_tool(process.as_deref())
-                            || tool_state.is_some()
-                        {
-                            tracing::debug!(
-                                target: "tool-state",
-                                session_id = %session_id,
-                                source = "ssh_proxy_intercept",
-                                process = ?process,
-                                tool_state = ?tool_state,
-                                "intercepted remote foreground_changed"
-                            );
+    loop {
+        tokio::select! {
+            message = remote_stream.next() => {
+                let Some(Ok(msg)) = message else {
+                    break;
+                };
+                let axum_msg = match msg {
+                    tungstenite::Message::Text(ref t) => {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(t.as_str()) {
+                            if v.get("type").and_then(|x| x.as_str()) == Some("foreground_changed") {
+                                let tool_state = v
+                                    .get("tool_state")
+                                    .cloned()
+                                    .and_then(|value| serde_json::from_value(value).ok());
+                                let process = v
+                                    .get("process")
+                                    .and_then(|x| x.as_str())
+                                    .map(str::to_string);
+                                if crate::pty::session::PtySession::is_known_tool(process.as_deref())
+                                    || tool_state.is_some()
+                                {
+                                    tracing::debug!(
+                                        target: "tool-state",
+                                        session_id = %session_id,
+                                        source = "ssh_proxy_intercept",
+                                        process = ?process,
+                                        tool_state = ?tool_state,
+                                        "intercepted remote foreground_changed"
+                                    );
+                                }
+                                let next_fg = update_ssh_foreground_cache(
+                                    &state.inner.ssh_fg,
+                                    session_id,
+                                    process,
+                                    tool_state,
+                                );
+                                let observed_fg = next_fg.unwrap_or_default();
+                                crate::attention::observe_foreground(
+                                    &state,
+                                    session_id,
+                                    &observed_fg,
+                                );
+                                state.publish_session_status(session_id);
+                                continue;
+                            }
                         }
-                        update_ssh_foreground_cache(
-                            &state.inner.ssh_fg,
-                            session_id,
-                            process,
-                            tool_state,
-                        );
+                        Message::Text(t.to_string().into())
                     }
+                    tungstenite::Message::Binary(b) => Message::Binary(b.to_vec().into()),
+                    tungstenite::Message::Ping(p) => Message::Ping(p.to_vec().into()),
+                    tungstenite::Message::Pong(p) => Message::Pong(p.to_vec().into()),
+                    tungstenite::Message::Close(_) => break,
+                    tungstenite::Message::Frame(_) => continue,
+                };
+                if client_sink.send(axum_msg).await.is_err() {
+                    break;
                 }
-                Message::Text(t.to_string().into())
             }
-            tungstenite::Message::Binary(b) => Message::Binary(b.to_vec().into()),
-            tungstenite::Message::Ping(p) => Message::Ping(p.to_vec().into()),
-            tungstenite::Message::Pong(p) => Message::Pong(p.to_vec().into()),
-            tungstenite::Message::Close(_) => break,
-            tungstenite::Message::Frame(_) => continue,
-        };
-        if client_sink.send(axum_msg).await.is_err() {
-            break;
+            result = status_rx.recv() => {
+                match result {
+                    Ok((sid, snapshot)) if sid == session_id => {
+                        if let Ok(json) = serde_json::to_string(&status_message(snapshot)) {
+                            if client_sink.send(Message::Text(json.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
         }
     }
 

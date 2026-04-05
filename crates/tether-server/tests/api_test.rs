@@ -43,7 +43,7 @@ fn test_state() -> AppState {
     db.init_tables().unwrap();
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
-    let (fg_tx, _) = tokio::sync::broadcast::channel(64);
+    let (status_tx, _) = tokio::sync::broadcast::channel(64);
 
     AppState {
         inner: Arc::new(AppStateInner {
@@ -51,10 +51,11 @@ fn test_state() -> AppState {
             sessions: DashMap::new(),
             db,
             shutdown_tx,
-            fg_tx,
+            status_tx,
             remote_manager: tether_server::remote::manager::RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
+            attention_trackers: DashMap::new(),
         }),
     }
 }
@@ -74,6 +75,10 @@ fn test_router(state: AppState) -> Router {
         .route("/api/sessions", post(api::sessions::create_session))
         .route("/api/sessions/{id}", patch(api::sessions::update_session))
         .route("/api/sessions/{id}", delete(api::sessions::delete_session))
+        .route(
+            "/api/sessions/{id}/attention/ack",
+            post(api::sessions::ack_session_attention),
+        )
         .route(
             "/api/sessions/{id}/scrollback",
             get(api::sessions::get_scrollback),
@@ -641,17 +646,18 @@ async fn test_auth_required_when_token_set() {
     db.init_tables().unwrap();
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
-    let (fg_tx, _) = tokio::sync::broadcast::channel(64);
+    let (status_tx, _) = tokio::sync::broadcast::channel(64);
     let state = AppState {
         inner: Arc::new(AppStateInner {
             config,
             sessions: DashMap::new(),
             db,
             shutdown_tx,
-            fg_tx,
+            status_tx,
             remote_manager: tether_server::remote::manager::RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
+            attention_trackers: DashMap::new(),
         }),
     };
 
@@ -1320,6 +1326,63 @@ async fn test_delete_group_cascades_sessions() {
         sessions.is_empty(),
         "deleting group should cascade to its sessions"
     );
+
+    cleanup_state(&state);
+}
+
+#[tokio::test]
+async fn test_ack_session_attention_preserves_newer_completion() {
+    let state = test_state();
+    let app = test_router(state.clone());
+
+    let group = state
+        .inner
+        .db
+        .create_group("local", "~", None, None)
+        .expect("group");
+    let session = state
+        .inner
+        .db
+        .create_session("session-1", &group.id, "session", "/bin/bash", "~", None)
+        .expect("session");
+    state
+        .inner
+        .db
+        .increment_session_attention(&session.id, "2026-04-05T00:00:00Z")
+        .expect("first completion");
+    state
+        .inner
+        .db
+        .increment_session_attention(&session.id, "2026-04-05T00:00:01Z")
+        .expect("second completion");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{}/attention/ack", session.id))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"attention_seq":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["needs_attention"], true);
+    assert_eq!(json["attention_seq"], 2);
+
+    let attention = state
+        .inner
+        .db
+        .get_session_attention(&session.id)
+        .expect("attention lookup")
+        .expect("attention row");
+    assert!(attention.needs_attention);
+    assert_eq!(attention.attention_seq, 2);
 
     cleanup_state(&state);
 }

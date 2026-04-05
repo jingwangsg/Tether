@@ -10,6 +10,7 @@ import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_display.dart';
 import '../../utils/session_interaction.dart';
+import '../attention_bell.dart';
 import 'group_dialog.dart';
 import 'group_section.dart';
 import 'settings_dialog.dart';
@@ -34,6 +35,28 @@ bool _sameGroupScope(Group first, Group second) {
 
 class Sidebar extends ConsumerWidget {
   const Sidebar({super.key});
+
+  List<Session> _attentionSessions(ServerState state) {
+    final sessions =
+        visibleSessions(state.sessions, state.groups)
+            .where(
+              (session) =>
+                  session.needsAttention &&
+                  isSessionInteractive(session, state.groups),
+            )
+            .toList();
+    sessions.sort((a, b) {
+      final left = DateTime.tryParse(a.attentionUpdatedAt ?? '');
+      final right = DateTime.tryParse(b.attentionUpdatedAt ?? '');
+      if (left != null && right != null) {
+        return left.compareTo(right);
+      }
+      if (left != null) return -1;
+      if (right != null) return 1;
+      return a.attentionSeq.compareTo(b.attentionSeq);
+    });
+    return sessions;
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -64,6 +87,7 @@ class Sidebar extends ConsumerWidget {
   }
 
   Widget _buildHeader(BuildContext context, WidgetRef ref, ServerState state) {
+    final attentionSessions = _attentionSessions(state);
     return Container(
       height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -80,6 +104,29 @@ class Sidebar extends ConsumerWidget {
                 fontWeight: FontWeight.w600,
               ),
             ),
+          ),
+          IconButton(
+            icon: AttentionBell(count: attentionSessions.length),
+            color:
+                attentionSessions.isNotEmpty
+                    ? const Color(0xFFFFC107)
+                    : Colors.white24,
+            tooltip:
+                attentionSessions.isNotEmpty
+                    ? 'Open oldest unseen completed session'
+                    : 'No unseen completed sessions',
+            onPressed:
+                attentionSessions.isNotEmpty
+                    ? () {
+                      final session = attentionSessions.first;
+                      ref.read(sessionProvider.notifier).openTab(session.id);
+                      if (ref.read(uiProvider).isMobile) {
+                        ref.read(uiProvider.notifier).setSidebarOpen(false);
+                      }
+                    }
+                    : null,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
           ),
           IconButton(
             icon: const Icon(Icons.settings, size: 18),
@@ -421,17 +468,30 @@ class Sidebar extends ConsumerWidget {
                 )
                 : null,
         trailing: SizedBox(
-          width: 24,
-          height: 24,
-          child: IconButton(
-            icon: const Icon(Icons.close, size: 14),
-            color: Colors.white38,
-            padding: EdgeInsets.zero,
-            tooltip: 'Delete Session',
-            onPressed: () {
-              ref.read(serverProvider.notifier).deleteSession(session.id);
-              ref.read(sessionProvider.notifier).closeTab(session.id);
-            },
+          width: 44,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (session.needsAttention)
+                const Padding(
+                  padding: EdgeInsets.only(right: 4),
+                  child: AttentionBell(iconSize: 14),
+                ),
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: IconButton(
+                  icon: const Icon(Icons.close, size: 14),
+                  color: Colors.white38,
+                  padding: EdgeInsets.zero,
+                  tooltip: 'Delete Session',
+                  onPressed: () {
+                    ref.read(serverProvider.notifier).deleteSession(session.id);
+                    ref.read(sessionProvider.notifier).closeTab(session.id);
+                  },
+                ),
+              ),
+            ],
           ),
         ),
         onTap:

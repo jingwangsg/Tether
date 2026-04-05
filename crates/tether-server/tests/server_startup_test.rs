@@ -38,7 +38,7 @@ fn test_state() -> AppState {
     db.init_tables().unwrap();
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
-    let (fg_tx, _) = tokio::sync::broadcast::channel(64);
+    let (status_tx, _) = tokio::sync::broadcast::channel(64);
 
     AppState {
         inner: Arc::new(AppStateInner {
@@ -46,10 +46,11 @@ fn test_state() -> AppState {
             sessions: DashMap::new(),
             db,
             shutdown_tx,
-            fg_tx,
+            status_tx,
             remote_manager: RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
+            attention_trackers: DashMap::new(),
         }),
     }
 }
@@ -294,6 +295,9 @@ async fn server_startup_clears_legacy_ssh_mirrors_and_sync_rebuilds_shared_state
         foreground_process: None,
         tool_state: None,
         local_group_id: None,
+        attention_seq: 0,
+        needs_attention: false,
+        attention_updated_at: None,
     };
     let remote_port = start_mock_remote(
         vec![authoritative_group.clone()],
@@ -306,6 +310,7 @@ async fn server_startup_clears_legacy_ssh_mirrors_and_sync_rebuilds_shared_state
         remote_port,
         &state.inner.ssh_fg,
         &state.inner.ssh_live_sessions,
+        Some(&state),
     )
     .await
     .unwrap();

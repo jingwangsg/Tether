@@ -2,6 +2,16 @@ import 'package:flutter/widgets.dart';
 import '../providers/server_provider.dart';
 import '../widgets/terminal/terminal_controller.dart';
 
+typedef ForegroundChangedCallback =
+    void Function(
+      String? process,
+      String? toolState, {
+      required bool attentionStatePresent,
+      bool? needsAttention,
+      int? attentionSeq,
+      String? attentionUpdatedAt,
+    });
+
 /// Abstract interface for platform-specific terminal rendering.
 /// macOS uses NativeBackend (Metal).
 /// Android (future) uses TermuxBackend or XtermBackend.
@@ -16,7 +26,7 @@ abstract class TerminalBackend {
     required bool isActive,
     VoidCallback? onSessionExited,
     void Function(String? title)? onTitleChanged,
-    void Function(String? process, String? toolState)? onForegroundChanged,
+    ForegroundChangedCallback? onForegroundChanged,
   });
 
   bool get isLocalPty;

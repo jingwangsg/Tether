@@ -192,6 +192,7 @@ pub async fn delete_group(State(state): State<AppState>, Path(id): Path<String>)
             for session in sessions {
                 if let Ok(uuid) = Uuid::parse_str(&session.id) {
                     state.inner.ssh_fg.remove(&uuid);
+                    crate::attention::remove_session(&state, uuid);
                 }
             }
         }
@@ -348,6 +349,7 @@ async fn sync_remote_host(state: &AppState, host_alias: &str, port: u16) -> Resu
         port,
         &state.inner.ssh_fg,
         &state.inner.ssh_live_sessions,
+        Some(state),
     )
     .await
     .map_err(|_| StatusCode::BAD_GATEWAY)

@@ -171,6 +171,7 @@ impl AppState {
             session.kill();
             session.flush_scrollback();
         }
+        crate::attention::remove_session(self, session_id);
         self.inner.db.delete_session(&session_id.to_string())?;
         // Clean up scrollback files
         let session_dir = format!("{}/sessions/{}", self.inner.config.data_dir(), session_id);

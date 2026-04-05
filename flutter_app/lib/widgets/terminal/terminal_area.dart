@@ -192,13 +192,25 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                                 _sessionTitles[tab.sessionId] = clean;
                               });
                             },
-                            onForegroundChanged: (process, toolState) {
+                            onForegroundChanged: (
+                              process,
+                              toolState, {
+                              required bool attentionStatePresent,
+                              bool? needsAttention,
+                              int? attentionSeq,
+                              String? attentionUpdatedAt,
+                            }) {
                               ref
                                   .read(serverProvider.notifier)
                                   .updateForegroundProcess(
                                     tab.sessionId,
                                     process,
                                     toolState: toolState,
+                                    attentionStatePresent:
+                                        attentionStatePresent,
+                                    needsAttention: needsAttention,
+                                    attentionSeq: attentionSeq,
+                                    attentionUpdatedAt: attentionUpdatedAt,
                                   );
                             },
                           ),

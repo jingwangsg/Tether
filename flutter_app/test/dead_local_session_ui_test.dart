@@ -296,7 +296,7 @@ class _FakeTerminalBackend implements TerminalBackend {
     required bool isActive,
     VoidCallback? onSessionExited,
     void Function(String? title)? onTitleChanged,
-    void Function(String? process, String? toolState)? onForegroundChanged,
+    ForegroundChangedCallback? onForegroundChanged,
   }) {
     return SizedBox(key: key);
   }

@@ -46,7 +46,7 @@ fn test_state_with_shell(default_shell: &str) -> AppState {
     db.init_tables().unwrap();
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
-    let (fg_tx, _) = tokio::sync::broadcast::channel(64);
+    let (status_tx, _) = tokio::sync::broadcast::channel(64);
 
     AppState {
         inner: Arc::new(AppStateInner {
@@ -54,10 +54,11 @@ fn test_state_with_shell(default_shell: &str) -> AppState {
             sessions: DashMap::new(),
             db,
             shutdown_tx,
-            fg_tx,
+            status_tx,
             remote_manager: RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
+            attention_trackers: DashMap::new(),
         }),
     }
 }

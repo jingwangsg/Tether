@@ -43,6 +43,10 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
         .route("/api/sessions/{id}", patch(api::sessions::update_session))
         .route("/api/sessions/{id}", delete(api::sessions::delete_session))
         .route(
+            "/api/sessions/{id}/attention/ack",
+            post(api::sessions::ack_session_attention),
+        )
+        .route(
             "/api/sessions/{id}/scrollback",
             get(api::sessions::get_scrollback),
         )
@@ -91,12 +95,14 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
     tokio::spawn(crate::pty::process_monitor::run_process_monitor(
         state.clone(),
     ));
+    tokio::spawn(crate::attention::run_attention_monitor(state.clone()));
 
     // Start remote SSH host scanner (disabled when running as a remote daemon)
     if !no_ssh_scan {
         // Subscribe before spawning scanner so no Ready events are missed.
         let mut ready_rx = state.inner.remote_manager.ready_tx.subscribe();
         let inner_for_sync = state.inner.clone();
+        let state_for_sync = state.clone();
         tokio::spawn(async move {
             use tokio::sync::broadcast::error::RecvError;
             loop {
@@ -108,6 +114,7 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
                             tunnel_port,
                             &inner_for_sync.ssh_fg,
                             &inner_for_sync.ssh_live_sessions,
+                            Some(&state_for_sync),
                         )
                         .await
                         {
@@ -124,6 +131,7 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
 
         let manager_for_sync = state.inner.remote_manager.clone();
         let inner_for_periodic_sync = state.inner.clone();
+        let state_for_periodic_sync = state.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             interval.tick().await;
@@ -136,6 +144,7 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
                         tunnel_port,
                         &inner_for_periodic_sync.ssh_fg,
                         &inner_for_periodic_sync.ssh_live_sessions,
+                        Some(&state_for_periodic_sync),
                     )
                     .await
                     {

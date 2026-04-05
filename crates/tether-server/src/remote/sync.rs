@@ -1,6 +1,7 @@
 use crate::persistence::store::{GroupRow, SessionRow, Store};
 use crate::pty::session::SessionForeground;
 use crate::remote::foreground::update_ssh_foreground_cache;
+use crate::state::AppState;
 use dashmap::DashMap;
 use uuid::Uuid;
 
@@ -13,6 +14,7 @@ pub async fn sync_remote_host(
     tunnel_port: u16,
     ssh_fg: &DashMap<Uuid, SessionForeground>,
     ssh_live_sessions: &DashMap<Uuid, usize>,
+    state: Option<&AppState>,
 ) -> anyhow::Result<()> {
     let base = format!("http://127.0.0.1:{tunnel_port}");
     let client = reqwest::Client::new();
@@ -34,12 +36,17 @@ pub async fn sync_remote_host(
         db.upsert_remote_session_mirror(session)?;
         if let Ok(id) = Uuid::parse_str(&session.id) {
             if !ssh_live_sessions.contains_key(&id) {
-                update_ssh_foreground_cache(
+                let next_fg = update_ssh_foreground_cache(
                     ssh_fg,
                     id,
                     session.foreground_process.clone(),
                     session.tool_state.clone(),
                 );
+                if let Some(state) = state {
+                    let observed_fg = next_fg.unwrap_or_default();
+                    crate::attention::observe_foreground(state, id, &observed_fg);
+                    state.publish_session_status(id);
+                }
             }
         }
     }
@@ -60,6 +67,9 @@ pub async fn sync_remote_host(
         .collect::<Vec<_>>();
     for id in stale_fg_ids {
         ssh_fg.remove(&id);
+        if let Some(state) = state {
+            crate::attention::remove_session(state, id);
+        }
     }
 
     let remote_group_ids = remote_groups
@@ -195,6 +205,9 @@ mod tests {
             foreground_process: foreground_process.map(str::to_string),
             tool_state: None,
             local_group_id: None,
+            attention_seq: 0,
+            needs_attention: false,
+            attention_updated_at: None,
         }
     }
 
@@ -249,10 +262,13 @@ mod tests {
             foreground_process: Some("claude".to_string()),
             tool_state: None,
             local_group_id: None,
+            attention_seq: 0,
+            needs_attention: false,
+            attention_updated_at: None,
         };
 
         let port = start_mock_remote(vec![group.clone()], vec![session.clone()]).await;
-        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions, None)
             .await
             .unwrap();
 
@@ -313,7 +329,7 @@ mod tests {
         )
         .await;
 
-        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions, None)
             .await
             .unwrap();
 
@@ -358,7 +374,7 @@ mod tests {
         ];
         *sessions_state.lock().await = vec![session_a_moved.clone(), session_c.clone()];
 
-        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions, None)
             .await
             .unwrap();
 
@@ -443,7 +459,7 @@ mod tests {
         };
 
         let port = start_mock_remote(vec![group], vec![session]).await;
-        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions, None)
             .await
             .unwrap();
 
@@ -472,7 +488,7 @@ mod tests {
         );
 
         let port = start_mock_remote(vec![group], vec![session]).await;
-        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions, None)
             .await
             .unwrap();
 
@@ -507,6 +523,9 @@ mod tests {
             foreground_process: Some("claude".to_string()),
             tool_state: Some(crate::pty::session::ToolState::Waiting),
             local_group_id: None,
+            attention_seq: 0,
+            needs_attention: false,
+            attention_updated_at: None,
         };
         let session_id = Uuid::parse_str(&session.id).unwrap();
         ssh_fg.insert(
@@ -519,7 +538,7 @@ mod tests {
         ssh_live_sessions.insert(session_id, 1usize);
 
         let port = start_mock_remote(vec![group], vec![session]).await;
-        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions, None)
             .await
             .unwrap();
 
@@ -554,6 +573,9 @@ mod tests {
             foreground_process: Some("claude".to_string()),
             tool_state: Some(crate::pty::session::ToolState::Waiting),
             local_group_id: None,
+            attention_seq: 0,
+            needs_attention: false,
+            attention_updated_at: None,
         };
         let session_id = Uuid::parse_str(&session.id).unwrap();
         ssh_fg.insert(
@@ -566,12 +588,12 @@ mod tests {
         ssh_live_sessions.insert(session_id, 1usize);
 
         let port = start_mock_remote(vec![group.clone()], vec![session.clone()]).await;
-        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions, None)
             .await
             .unwrap();
         ssh_live_sessions.remove(&session_id);
 
-        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions)
+        sync_remote_host(&store, host, port, &ssh_fg, &ssh_live_sessions, None)
             .await
             .unwrap();
 

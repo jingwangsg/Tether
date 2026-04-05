@@ -310,6 +310,10 @@ class ServerNotifier extends StateNotifier<ServerState> {
     String sessionId,
     String? process, {
     String? toolState,
+    bool attentionStatePresent = false,
+    bool? needsAttention,
+    int? attentionSeq,
+    String? attentionUpdatedAt,
   }) {
     final before = state.sessions.where((s) => s.id == sessionId).firstOrNull;
     final sessions =
@@ -318,6 +322,14 @@ class ServerNotifier extends StateNotifier<ServerState> {
             return s.copyWith(
               foregroundProcess: process,
               toolState: toolState,
+              needsAttention:
+                  attentionStatePresent ? needsAttention : s.needsAttention,
+              attentionSeq:
+                  attentionStatePresent ? attentionSeq : s.attentionSeq,
+              attentionUpdatedAt:
+                  attentionStatePresent
+                      ? attentionUpdatedAt
+                      : s.attentionUpdatedAt,
               clearForeground: process == null,
             );
           }
@@ -336,6 +348,46 @@ class ServerNotifier extends StateNotifier<ServerState> {
       );
     }
     _replaceState(sessions: sessions);
+  }
+
+  Future<void> ackSessionAttention(String sessionId, int attentionSeq) async {
+    final api = state.api;
+    if (api == null) return;
+
+    final before = state.sessions.where((s) => s.id == sessionId).firstOrNull;
+    if (before == null) return;
+
+    _replaceState(
+      sessions:
+          state.sessions.map((session) {
+            if (session.id != sessionId) return session;
+            return session.copyWith(needsAttention: false);
+          }).toList(),
+    );
+
+    try {
+      final attention = await api.ackSessionAttention(sessionId, attentionSeq);
+      _replaceState(
+        sessions:
+            state.sessions.map((session) {
+              if (session.id != sessionId) return session;
+              return session.copyWith(
+                needsAttention: attention.needsAttention,
+                attentionSeq: attention.attentionSeq,
+                attentionUpdatedAt: attention.attentionUpdatedAt,
+              );
+            }).toList(),
+      );
+    } catch (_) {
+      _replaceState(
+        sessions:
+            state.sessions.map((session) {
+              if (session.id != sessionId) return session;
+              return before;
+            }).toList(),
+      );
+      rethrow;
+    }
   }
 
   _StructureVersion _replaceState({

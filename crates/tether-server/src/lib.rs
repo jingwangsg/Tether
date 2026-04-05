@@ -1,4 +1,5 @@
 pub mod api;
+pub mod attention;
 pub mod auth;
 pub mod config;
 pub mod persistence;

@@ -1,3 +1,4 @@
+use crate::attention::SessionStatusSnapshot;
 use crate::config::ServerConfig;
 use crate::persistence::Store;
 use crate::pty::session::{PtySession, SessionForeground};
@@ -18,8 +19,8 @@ pub struct AppStateInner {
     pub sessions: DashMap<SessionId, Arc<PtySession>>,
     pub db: Store,
     pub shutdown_tx: broadcast::Sender<()>,
-    /// Broadcast foreground process changes per session
-    pub fg_tx: broadcast::Sender<(Uuid, SessionForeground)>,
+    /// Broadcast the latest session status snapshot per session.
+    pub status_tx: broadcast::Sender<(Uuid, SessionStatusSnapshot)>,
     pub remote_manager: RemoteManager,
     /// Cached foreground process for SSH-proxied sessions.
     /// Transient (not persisted). Updated by sync_remote_sessions and proxy_ws_to_remote.
@@ -28,6 +29,8 @@ pub struct AppStateInner {
     /// proxy exists, its foreground updates are more authoritative than periodic
     /// HTTP sync snapshots.
     pub ssh_live_sessions: DashMap<Uuid, usize>,
+    /// Local stability trackers for completion attention.
+    pub attention_trackers: DashMap<Uuid, crate::attention::SessionAttentionTracker>,
 }
 
 impl AppState {
@@ -48,7 +51,7 @@ impl AppState {
         db.init_tables()?;
 
         let (shutdown_tx, _) = broadcast::channel(1);
-        let (fg_tx, _) = broadcast::channel(64);
+        let (status_tx, _) = broadcast::channel(64);
 
         Ok(Self {
             inner: Arc::new(AppStateInner {
@@ -56,11 +59,32 @@ impl AppState {
                 sessions: DashMap::new(),
                 db,
                 shutdown_tx,
-                fg_tx,
+                status_tx,
                 remote_manager: RemoteManager::new_with_deploy(allow_remote_mutation),
                 ssh_fg: DashMap::new(),
                 ssh_live_sessions: DashMap::new(),
+                attention_trackers: DashMap::new(),
             }),
         })
+    }
+
+    pub fn publish_session_status(&self, session_id: Uuid) {
+        let foreground = if let Some(session) = self.get_session(session_id) {
+            session.get_foreground()
+        } else if let Some(fg) = self.inner.ssh_fg.get(&session_id) {
+            fg.clone()
+        } else {
+            SessionForeground::default()
+        };
+
+        let attention = self
+            .inner
+            .db
+            .get_session_attention(&session_id.to_string())
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let snapshot = SessionStatusSnapshot::from_parts(foreground, attention);
+        let _ = self.inner.status_tx.send((session_id, snapshot));
     }
 }

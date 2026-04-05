@@ -1,3 +1,4 @@
+use crate::attention::SessionAttentionState;
 use crate::pty::session::ToolState;
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +37,8 @@ pub enum ServerMessage {
         process: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_state: Option<ToolState>,
+        #[serde(flatten)]
+        attention: SessionAttentionState,
     },
 }
 

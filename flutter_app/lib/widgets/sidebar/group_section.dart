@@ -9,6 +9,7 @@ import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_display.dart';
 import '../../utils/session_interaction.dart';
+import '../attention_bell.dart';
 import '../tool_state_dot.dart';
 import 'group_dialog.dart';
 
@@ -421,6 +422,11 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                   ],
                 ),
               ),
+              if (session.needsAttention)
+                const Padding(
+                  padding: EdgeInsets.only(right: 4),
+                  child: AttentionBell(iconSize: 14),
+                ),
               _buildSessionMenuButton(session),
               SizedBox(
                 width: 24,

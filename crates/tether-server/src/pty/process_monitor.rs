@@ -47,7 +47,8 @@ pub async fn run_process_monitor(state: AppState) {
                             );
                         }
                         *session.foreground.lock().unwrap() = new_fg.clone();
-                        let _ = state.inner.fg_tx.send((session.id, new_fg));
+                        crate::attention::observe_foreground(&state, session.id, &new_fg);
+                        state.publish_session_status(session.id);
                     }
                 }
             }
@@ -73,7 +74,8 @@ pub async fn run_process_monitor(state: AppState) {
                             "tool_state changed"
                         );
                         *session.foreground.lock().unwrap() = new_fg.clone();
-                        let _ = state.inner.fg_tx.send((session.id, new_fg));
+                        crate::attention::observe_foreground(&state, session.id, &new_fg);
+                        state.publish_session_status(session.id);
                     }
                 }
             }

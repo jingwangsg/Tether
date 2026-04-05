@@ -1,3 +1,4 @@
+use crate::attention::SessionAttentionState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -47,6 +48,11 @@ pub struct UpdateSessionRequest {
     pub group_id: Option<String>,
     /// Legacy field retained for compatibility with older remote daemons.
     pub local_group_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct AckAttentionRequest {
+    pub attention_seq: i64,
 }
 
 #[derive(Deserialize)]
@@ -185,9 +191,31 @@ pub async fn create_session(
         foreground_process: None,
         tool_state: None,
         local_group_id: None,
+        attention_seq: 0,
+        needs_attention: false,
+        attention_updated_at: None,
     };
 
     Ok((StatusCode::CREATED, Json(row)))
+}
+
+pub async fn ack_session_attention(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<AckAttentionRequest>,
+) -> Result<Json<SessionAttentionState>, StatusCode> {
+    let attention = state
+        .inner
+        .db
+        .ack_session_attention(&id, req.attention_seq)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    if let Ok(uuid) = Uuid::parse_str(&id) {
+        state.publish_session_status(uuid);
+    }
+
+    Ok(Json(attention))
 }
 
 pub async fn update_session(
@@ -358,6 +386,7 @@ pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String
         state.inner.db.delete_session(&id).ok();
         if let Ok(uuid) = Uuid::parse_str(&id) {
             state.inner.ssh_fg.remove(&uuid);
+            crate::attention::remove_session(&state, uuid);
         }
         return StatusCode::OK;
     }
@@ -658,6 +687,7 @@ async fn sync_remote_host(state: &AppState, host_alias: &str, port: u16) -> Resu
         port,
         &state.inner.ssh_fg,
         &state.inner.ssh_live_sessions,
+        Some(state),
     )
     .await
     .map_err(|_| StatusCode::BAD_GATEWAY)
