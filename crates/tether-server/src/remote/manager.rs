@@ -56,6 +56,7 @@ impl From<anyhow::Error> for ConnectError {
 }
 
 impl RemoteManager {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::new_with_deploy(false)
     }

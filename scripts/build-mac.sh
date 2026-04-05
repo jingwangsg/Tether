@@ -27,6 +27,19 @@ build_flutter_macos() {
   flutter build macos --release
 }
 
+run_flutter_pub_get() {
+  local pub_get_log
+  pub_get_log="$(mktemp)"
+
+  if ! flutter pub get >"$pub_get_log" 2>&1; then
+    cat "$pub_get_log"
+    rm -f "$pub_get_log"
+    return 1
+  fi
+
+  rm -f "$pub_get_log"
+}
+
 echo "=== Building Rust binaries ==="
 cd "$PROJECT_DIR"
 cargo build --release -p tether-server -p tether-client
@@ -38,7 +51,7 @@ echo "Client binary: $CLIENT_BIN"
 echo ""
 echo "=== Building macOS app (Flutter) ==="
 cd "$PROJECT_DIR/flutter_app"
-flutter pub get
+run_flutter_pub_get
 wait_for_flutter_macos_build_idle
 if ! build_flutter_macos; then
   # `flutter build macos` can reuse stale Swift precompiled modules after
@@ -48,7 +61,7 @@ if ! build_flutter_macos; then
   echo "Initial macOS build failed; cleaning Flutter outputs and retrying once..."
   wait_for_flutter_macos_build_idle
   flutter clean
-  flutter pub get
+  run_flutter_pub_get
   wait_for_flutter_macos_build_idle
   build_flutter_macos
 fi

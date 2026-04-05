@@ -34,6 +34,7 @@ pub struct AppStateInner {
 }
 
 impl AppState {
+    #[allow(dead_code)]
     pub async fn new(config: ServerConfig) -> anyhow::Result<Self> {
         Self::new_with_remote_policy(config, false).await
     }

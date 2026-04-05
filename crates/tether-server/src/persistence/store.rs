@@ -138,6 +138,7 @@ impl Store {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn mark_shared_remote_model_initialized(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -411,6 +412,7 @@ impl Store {
     }
 
     /// Return the `ssh_host` field of a group directly (avoids constructing a full GroupRow).
+    #[allow(dead_code)]
     pub fn get_group_ssh_host(&self, group_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         let result = conn.query_row(
@@ -710,6 +712,7 @@ impl Store {
 
     /// Update the `local_group_id` field on a session. Used when the remote server
     /// receives a proxied PATCH from the local server after the user moves a session.
+    #[allow(dead_code)]
     pub fn update_session_local_group_id(
         &self,
         id: &str,
@@ -787,6 +790,7 @@ impl Store {
     }
 
     /// Return the IDs of all sessions belonging to SSH-backed groups.
+    #[allow(dead_code)]
     pub fn get_remote_session_ids(&self) -> anyhow::Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -815,6 +819,7 @@ impl Store {
     /// Called on startup; these sessions are re-imported by the sync mechanism when
     /// SSH tunnels reconnect. Intentionally does NOT touch `session_group_registry` —
     /// that table persists group assignments so sessions are restored to the right group.
+    #[allow(dead_code)]
     pub fn delete_remote_sessions(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -992,6 +997,7 @@ impl Store {
     ///    any poisoned registry entry via INSERT OR REPLACE.
     /// 2. `session_group_registry` — used when `local_group_id` is absent (old sessions).
     /// 3. `fallback_group_id` — last resort; does NOT write to registry (avoids poisoning).
+    #[allow(dead_code)]
     pub fn try_insert_remote_session(
         &self,
         id: &str,
