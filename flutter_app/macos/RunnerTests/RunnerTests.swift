@@ -17,6 +17,7 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(command.contains("--server 'http://localhost:7680'"))
     XCTAssertTrue(command.contains("--session 'session-123'"))
     XCTAssertTrue(command.contains("--token 'tok'\"'\"'en value'"))
+    XCTAssertTrue(command.contains("--tail-bytes 524288"))
   }
 
   func testBuildAttachCommandFallsBackWhenServerUnavailable() {
@@ -129,6 +130,56 @@ class RunnerTests: XCTestCase {
     )
 
     XCTAssertNil(action)
+  }
+
+  func testScrollSynchronizationResultDefersOffsetWhileInactive() {
+    let result = TerminalView.scrollSynchronizationResult(
+      contentHeight: 200,
+      cellHeight: 10,
+      scrollbarState: TerminalScrollbarState(total: 100, offset: 20, len: 10),
+      isLiveScrolling: false,
+      shouldApplyScrollOffset: false
+    )
+
+    XCTAssertEqual(result.documentHeight, 1100)
+    XCTAssertNil(result.targetOffsetY)
+    XCTAssertNil(result.lastSentRow)
+  }
+
+  func testScrollSynchronizationResultAppliesLatestOffsetWhenActive() {
+    let result = TerminalView.scrollSynchronizationResult(
+      contentHeight: 200,
+      cellHeight: 10,
+      scrollbarState: TerminalScrollbarState(total: 100, offset: 5, len: 10),
+      isLiveScrolling: false,
+      shouldApplyScrollOffset: true
+    )
+
+    XCTAssertEqual(result.documentHeight, 1100)
+    XCTAssertEqual(result.targetOffsetY, 850)
+    XCTAssertEqual(result.lastSentRow, 5)
+  }
+
+  func testScrollbarActivationCoordinatorCoalescesUpdatesAroundReactivation() {
+    var coordinator = ScrollbarActivationCoordinator()
+    let inactiveLatest = TerminalScrollbarState(total: 100, offset: 12, len: 10)
+    let intermediate = TerminalScrollbarState(total: 100, offset: 6, len: 10)
+    let final = TerminalScrollbarState(total: 100, offset: 2, len: 10)
+
+    XCTAssertEqual(coordinator.receive(inactiveLatest), .apply(inactiveLatest))
+    XCTAssertEqual(coordinator.setActive(false), .defer)
+    XCTAssertEqual(coordinator.receive(inactiveLatest), .defer)
+
+    XCTAssertEqual(coordinator.setActive(true), .apply(inactiveLatest))
+    XCTAssertEqual(coordinator.receive(intermediate), .defer)
+    XCTAssertEqual(coordinator.receive(final), .defer)
+    XCTAssertEqual(
+      coordinator.flushDeferredActivationState(),
+      .apply(final)
+    )
+
+    let steadyState = TerminalScrollbarState(total: 100, offset: 0, len: 10)
+    XCTAssertEqual(coordinator.receive(steadyState), .apply(steadyState))
   }
 
   func testPasteFallbackSkipsWhenSuperHandled() {

@@ -42,6 +42,9 @@ struct AttachArgs {
 
     #[arg(long)]
     token: Option<String>,
+
+    #[arg(long)]
+    tail_bytes: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -138,6 +141,7 @@ async fn run_attach(args: AttachArgs) -> Result<i32> {
             &args.session,
             args.token.as_deref(),
             Some(acked_offset),
+            args.tail_bytes,
         )?;
         let (stream, _) = match connect_async(ws_url.as_str()).await {
             Ok(result) => {
@@ -332,6 +336,7 @@ fn build_session_ws_url(
     session: &str,
     token: Option<&str>,
     offset: Option<u64>,
+    tail_bytes: Option<u64>,
 ) -> Result<Url> {
     let mut url = Url::parse(server).with_context(|| format!("invalid server URL: {server}"))?;
     match url.scheme() {
@@ -348,13 +353,16 @@ fn build_session_ws_url(
     url.set_path(&format!("/ws/session/{session}"));
     url.set_query(None);
 
-    if token.is_some() || offset.unwrap_or_default() > 0 {
+    if token.is_some() || offset.unwrap_or_default() > 0 || tail_bytes.unwrap_or_default() > 0 {
         let mut query_pairs = url.query_pairs_mut();
         if let Some(token) = token {
             query_pairs.append_pair("token", token);
         }
         if let Some(offset) = offset.filter(|offset| *offset > 0) {
             query_pairs.append_pair("offset", &offset.to_string());
+        }
+        if let Some(tail_bytes) = tail_bytes.filter(|tail_bytes| *tail_bytes > 0) {
+            query_pairs.append_pair("tail_bytes", &tail_bytes.to_string());
         }
     }
 
@@ -465,14 +473,20 @@ mod tests {
 
     #[test]
     fn http_server_becomes_ws() {
-        let url = build_session_ws_url("http://localhost:7680", "abc", None, None).unwrap();
+        let url = build_session_ws_url("http://localhost:7680", "abc", None, None, None).unwrap();
         assert_eq!(url.as_str(), "ws://localhost:7680/ws/session/abc");
     }
 
     #[test]
     fn https_server_becomes_wss_with_token() {
-        let url =
-            build_session_ws_url("https://example.com", "abc", Some("hello world"), None).unwrap();
+        let url = build_session_ws_url(
+            "https://example.com",
+            "abc",
+            Some("hello world"),
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             url.as_str(),
             "wss://example.com/ws/session/abc?token=hello+world"
@@ -481,10 +495,38 @@ mod tests {
 
     #[test]
     fn ws_url_includes_offset_when_present() {
-        let url = build_session_ws_url("http://localhost:7680", "abc", None, Some(128)).unwrap();
+        let url =
+            build_session_ws_url("http://localhost:7680", "abc", None, Some(128), None).unwrap();
         assert_eq!(
             url.as_str(),
             "ws://localhost:7680/ws/session/abc?offset=128"
+        );
+    }
+
+    #[test]
+    fn ws_url_includes_tail_bytes_when_present() {
+        let url =
+            build_session_ws_url("http://localhost:7680", "abc", None, None, Some(512 * 1024))
+                .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "ws://localhost:7680/ws/session/abc?tail_bytes=524288"
+        );
+    }
+
+    #[test]
+    fn ws_url_includes_offset_and_tail_bytes_when_present() {
+        let url = build_session_ws_url(
+            "http://localhost:7680",
+            "abc",
+            Some("hello world"),
+            Some(128),
+            Some(512 * 1024),
+        )
+        .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "ws://localhost:7680/ws/session/abc?token=hello+world&offset=128&tail_bytes=524288"
         );
     }
 

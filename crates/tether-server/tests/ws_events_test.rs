@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use axum::routing::get;
 use axum::Router;
+use base64::Engine;
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use tokio::sync::oneshot;
@@ -170,6 +171,69 @@ async fn events_mode_sends_foreground_and_pong_but_not_output() {
         assert_ne!(kind, "scrollback");
     }
 
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn attach_mode_tail_bytes_replays_only_recent_history() {
+    let state = test_state();
+    let group = state
+        .inner
+        .db
+        .create_group("local", "~", None, None)
+        .unwrap();
+    let group_id = Uuid::parse_str(&group.id).unwrap();
+    let session = state
+        .create_session(
+            group_id,
+            Some("tail-replay-test".to_string()),
+            Some("/bin/cat".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+    session.scrollback.lock().unwrap().append(b"0123456789");
+    session.scrollback.lock().unwrap().flush();
+
+    let port = start_ws_server(state.clone()).await;
+    let url = format!(
+        "ws://127.0.0.1:{}/ws/session/{}?tail_bytes=4",
+        port, session.id
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+
+    let payload: Vec<u8> = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let next = ws
+                .next()
+                .await
+                .expect("WS stream ended before replay payload")
+                .expect("WS error while waiting for replay payload");
+            let Message::Text(text) = next else {
+                continue;
+            };
+            let json: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
+            let Some(kind) = json["type"].as_str() else {
+                continue;
+            };
+            if kind != "scrollback" && kind != "output" {
+                continue;
+            }
+            let encoded = json["data"]
+                .as_str()
+                .expect("terminal replay frame missing data");
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .expect("invalid base64 terminal replay payload");
+            break decoded;
+        }
+    })
+    .await
+    .expect("timed out waiting for tail replay payload");
+
+    assert_eq!(payload, b"6789");
+    drop(ws);
+    state.kill_session(session.id).ok();
     cleanup(&state);
 }
 

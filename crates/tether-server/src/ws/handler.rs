@@ -21,6 +21,8 @@ pub struct WsQuery {
     pub mode: Option<String>,
     #[serde(default)]
     pub offset: u64,
+    #[serde(default)]
+    pub tail_bytes: u64,
 }
 
 fn status_message(foreground: SessionForeground) -> ServerMessage {
@@ -28,6 +30,42 @@ fn status_message(foreground: SessionForeground) -> ServerMessage {
         process: foreground.process,
         osc_title: foreground.osc_title,
     }
+}
+
+fn replay_start_offset(offset: u64, tail_bytes: u64, replay_end: u64) -> u64 {
+    if offset > 0 {
+        offset.min(replay_end)
+    } else if tail_bytes > 0 {
+        replay_end.saturating_sub(tail_bytes)
+    } else {
+        0
+    }
+}
+
+fn build_proxy_ws_url(
+    tunnel_port: u16,
+    session_id: Uuid,
+    mode: &str,
+    offset: u64,
+    tail_bytes: u64,
+) -> String {
+    let mut url = format!("ws://127.0.0.1:{}/ws/session/{}", tunnel_port, session_id);
+    let mut query = Vec::new();
+    if mode == "events" {
+        query.push("mode=events".to_string());
+    } else {
+        if offset > 0 {
+            query.push(format!("offset={offset}"));
+        }
+        if tail_bytes > 0 {
+            query.push(format!("tail_bytes={tail_bytes}"));
+        }
+    }
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(&query.join("&"));
+    }
+    url
 }
 
 pub async fn ws_handler(
@@ -79,7 +117,8 @@ pub async fn ws_handler(
 
     let mode = query.mode.unwrap_or_default();
     let offset = query.offset;
-    ws.on_upgrade(move |socket| handle_socket(socket, session_id, mode, offset, state))
+    let tail_bytes = query.tail_bytes;
+    ws.on_upgrade(move |socket| handle_socket(socket, session_id, mode, offset, tail_bytes, state))
         .into_response()
 }
 
@@ -88,12 +127,13 @@ async fn handle_socket(
     session_id: Uuid,
     mode: String,
     offset: u64,
+    tail_bytes: u64,
     state: AppState,
 ) {
     // Route to remote tether-server if this session belongs to an SSH group
     if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&session_id.to_string()) {
         if let Some(port) = state.inner.remote_manager.get_tunnel_port(&ssh_host) {
-            proxy_ws_to_remote(socket, session_id, port, &mode, offset, state).await;
+            proxy_ws_to_remote(socket, session_id, port, &mode, offset, tail_bytes, state).await;
             return;
         }
         tracing::warn!(
@@ -129,9 +169,14 @@ async fn handle_socket(
         output_rx = session.output_tx.subscribe();
     }
 
-    if send_scrollback_replay(&mut ws_sink, &session, offset, replay_end)
-        .await
-        .is_err()
+    if send_scrollback_replay(
+        &mut ws_sink,
+        &session,
+        replay_start_offset(offset, tail_bytes, replay_end),
+        replay_end,
+    )
+    .await
+    .is_err()
     {
         return;
     }
@@ -401,19 +446,10 @@ async fn proxy_ws_to_remote(
     tunnel_port: u16,
     mode: &str,
     offset: u64,
+    tail_bytes: u64,
     state: AppState,
 ) {
-    let mut url = format!("ws://127.0.0.1:{}/ws/session/{}", tunnel_port, session_id);
-    let mut query = Vec::new();
-    if mode == "events" {
-        query.push("mode=events".to_string());
-    } else if offset > 0 {
-        query.push(format!("offset={offset}"));
-    }
-    if !query.is_empty() {
-        url.push('?');
-        url.push_str(&query.join("&"));
-    }
+    let url = build_proxy_ws_url(tunnel_port, session_id, mode, offset, tail_bytes);
     let remote_ws = match tokio_tungstenite::connect_async(&url).await {
         Ok((ws, _)) => ws,
         Err(tungstenite::Error::Http(response))
@@ -635,5 +671,63 @@ impl Drop for ActiveSshProxyGuard {
                 self.state.inner.ssh_live_sessions.remove(&self.session_id);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_proxy_ws_url, replay_start_offset};
+    use uuid::Uuid;
+
+    #[test]
+    fn replay_start_offset_uses_full_history_by_default() {
+        assert_eq!(replay_start_offset(0, 0, 1024), 0);
+    }
+
+    #[test]
+    fn replay_start_offset_uses_tail_bytes_when_no_offset() {
+        assert_eq!(replay_start_offset(0, 256, 1024), 768);
+    }
+
+    #[test]
+    fn replay_start_offset_caps_tail_bytes_at_history_start() {
+        assert_eq!(replay_start_offset(0, 2048, 1024), 0);
+    }
+
+    #[test]
+    fn replay_start_offset_prioritizes_explicit_offset() {
+        assert_eq!(replay_start_offset(512, 256, 1024), 512);
+    }
+
+    #[test]
+    fn replay_start_offset_caps_explicit_offset_at_replay_end() {
+        assert_eq!(replay_start_offset(2048, 256, 1024), 1024);
+    }
+
+    #[test]
+    fn build_proxy_ws_url_forwards_tail_bytes_when_no_offset() {
+        let session_id = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        assert_eq!(
+            build_proxy_ws_url(7680, session_id, "", 0, 524288),
+            "ws://127.0.0.1:7680/ws/session/11111111-1111-1111-1111-111111111111?tail_bytes=524288"
+        );
+    }
+
+    #[test]
+    fn build_proxy_ws_url_forwards_offset_and_tail_bytes_for_attach_mode() {
+        let session_id = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        assert_eq!(
+            build_proxy_ws_url(7680, session_id, "", 128, 524288),
+            "ws://127.0.0.1:7680/ws/session/11111111-1111-1111-1111-111111111111?offset=128&tail_bytes=524288"
+        );
+    }
+
+    #[test]
+    fn build_proxy_ws_url_ignores_tail_bytes_for_events_mode() {
+        let session_id = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        assert_eq!(
+            build_proxy_ws_url(7680, session_id, "events", 128, 524288),
+            "ws://127.0.0.1:7680/ws/session/11111111-1111-1111-1111-111111111111?mode=events"
+        );
     }
 }

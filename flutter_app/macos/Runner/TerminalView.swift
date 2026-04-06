@@ -1,10 +1,52 @@
 import AppKit
 import FlutterMacOS
 
-struct TerminalScrollbarState {
+struct TerminalScrollbarState: Equatable {
     let total: UInt64
     let offset: UInt64
     let len: UInt64
+}
+
+enum ScrollbarUpdateDisposition: Equatable {
+    case apply(TerminalScrollbarState?)
+    case defer
+}
+
+struct ScrollbarActivationCoordinator {
+    private(set) var latestState: TerminalScrollbarState?
+    private(set) var isActive = true
+    private(set) var isCoalescingAfterActivation = false
+
+    mutating func receive(_ state: TerminalScrollbarState?) -> ScrollbarUpdateDisposition {
+        latestState = state
+        if !isActive || isCoalescingAfterActivation {
+            return .defer
+        }
+        return .apply(state)
+    }
+
+    mutating func setActive(_ active: Bool) -> ScrollbarUpdateDisposition {
+        guard active != isActive else { return .defer }
+        isActive = active
+        if active {
+            isCoalescingAfterActivation = true
+            return .apply(latestState)
+        }
+        isCoalescingAfterActivation = false
+        return .defer
+    }
+
+    mutating func flushDeferredActivationState() -> ScrollbarUpdateDisposition {
+        guard isCoalescingAfterActivation else { return .defer }
+        isCoalescingAfterActivation = false
+        return .apply(latestState)
+    }
+}
+
+struct ScrollSynchronizationResult: Equatable {
+    let documentHeight: CGFloat
+    let targetOffsetY: CGFloat?
+    let lastSentRow: Int?
 }
 
 /// Platform view wrapper around a Ghostty surface view plus a native NSScrollView.
@@ -12,14 +54,17 @@ final class TerminalView: NSView {
     static let copySelector = #selector(NSText.copy(_:))
     static let pasteSelector = #selector(MainFlutterWindow.paste(_:))
     static let pasteAsPlainTextSelector = #selector(NSTextView.pasteAsPlainText(_:))
+    static let defaultReplayTailBytes: UInt64 = 512 * 1024
+    static let reactivationScrollbarCoalesceDelay: TimeInterval = 0.05
 
     private let scrollView: NSScrollView
     private let documentView: NSView
     private let surfaceView: TerminalSurfaceView
 
-    private var scrollbarState: TerminalScrollbarState?
+    private var scrollbarCoordinator = ScrollbarActivationCoordinator()
     private var isLiveScrolling = false
     private var lastSentRow: Int?
+    private var reactivationScrollFlushWorkItem: DispatchWorkItem?
 
     init(
         sessionId: String,
@@ -77,14 +122,20 @@ final class TerminalView: NSView {
         )
 
         surfaceView.scrollbarHandler = { [weak self] state in
-            self?.scrollbarState = state
-            self?.synchronizeScrollView()
+            guard let self else { return }
+            switch self.scrollbarCoordinator.receive(state) {
+            case .apply:
+                self.synchronizeScrollView()
+            case .defer:
+                self.scheduleDeferredScrollbarFlushIfNeeded()
+            }
         }
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     deinit {
+        reactivationScrollFlushWorkItem?.cancel()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -118,25 +169,21 @@ final class TerminalView: NSView {
         surfaceView.frame.origin = visibleRect.origin
     }
 
-    private func synchronizeScrollView() {
-        documentView.frame.size.height = Self.documentHeight(
+    private func synchronizeScrollView(forceScrollOffset: Bool = false) {
+        let result = Self.scrollSynchronizationResult(
             contentHeight: scrollView.contentSize.height,
             cellHeight: surfaceView.cellHeight,
-            scrollbarState: scrollbarState
+            scrollbarState: scrollbarCoordinator.latestState,
+            isLiveScrolling: isLiveScrolling,
+            shouldApplyScrollOffset: scrollbarCoordinator.isActive &&
+                (forceScrollOffset || !scrollbarCoordinator.isCoalescingAfterActivation)
         )
-
-        guard !isLiveScrolling,
-              let scrollbarState,
-              surfaceView.cellHeight > 0 else {
-            scrollView.reflectScrolledClipView(scrollView.contentView)
-            return
+        documentView.frame.size.height = result.documentHeight
+        if let offsetY = result.targetOffsetY {
+            scrollView.contentView.scroll(to: CGPoint(x: 0, y: offsetY))
+            lastSentRow = result.lastSentRow
         }
-
-        let offsetY = CGFloat(scrollbarState.total - scrollbarState.offset - scrollbarState.len)
-            * surfaceView.cellHeight
-        scrollView.contentView.scroll(to: CGPoint(x: 0, y: offsetY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
-        lastSentRow = Int(scrollbarState.offset)
     }
 
     private func handleLiveScroll() {
@@ -155,6 +202,27 @@ final class TerminalView: NSView {
         surfaceView.performAction(action)
     }
 
+    private func scheduleDeferredScrollbarFlushIfNeeded() {
+        guard scrollbarCoordinator.isCoalescingAfterActivation else { return }
+        reactivationScrollFlushWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.reactivationScrollFlushWorkItem = nil
+            switch self.scrollbarCoordinator.flushDeferredActivationState() {
+            case .apply:
+                self.synchronizeScrollView(forceScrollOffset: true)
+                self.synchronizeSurfaceView()
+            case .defer:
+                break
+            }
+        }
+        reactivationScrollFlushWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.reactivationScrollbarCoalesceDelay,
+            execute: workItem
+        )
+    }
+
     func sendText(_ text: String) {
         surfaceView.sendText(text)
     }
@@ -164,6 +232,18 @@ final class TerminalView: NSView {
     }
 
     func setActive(_ active: Bool) {
+        reactivationScrollFlushWorkItem?.cancel()
+        reactivationScrollFlushWorkItem = nil
+        switch scrollbarCoordinator.setActive(active) {
+        case .apply:
+            synchronizeScrollView(forceScrollOffset: true)
+            synchronizeSurfaceView()
+            scheduleDeferredScrollbarFlushIfNeeded()
+            surfaceView.setActive(true)
+            return
+        case .defer:
+            break
+        }
         surfaceView.setActive(active)
     }
 
@@ -185,7 +265,8 @@ final class TerminalView: NSView {
             sessionId: sessionId,
             serverBaseUrl: serverBaseUrl,
             authToken: authToken,
-            clientPath: clientPath
+            clientPath: clientPath,
+            tailBytes: defaultReplayTailBytes
         )
     }
 
@@ -198,6 +279,39 @@ final class TerminalView: NSView {
         let documentGridHeight = CGFloat(scrollbarState.total) * cellHeight
         let padding = contentHeight - (CGFloat(scrollbarState.len) * cellHeight)
         return max(contentHeight, documentGridHeight + padding)
+    }
+
+    static func scrollSynchronizationResult(
+        contentHeight: CGFloat,
+        cellHeight: CGFloat,
+        scrollbarState: TerminalScrollbarState?,
+        isLiveScrolling: Bool,
+        shouldApplyScrollOffset: Bool
+    ) -> ScrollSynchronizationResult {
+        let documentHeight = documentHeight(
+            contentHeight: contentHeight,
+            cellHeight: cellHeight,
+            scrollbarState: scrollbarState
+        )
+
+        guard shouldApplyScrollOffset,
+              !isLiveScrolling,
+              let scrollbarState,
+              cellHeight > 0 else {
+            return ScrollSynchronizationResult(
+                documentHeight: documentHeight,
+                targetOffsetY: nil,
+                lastSentRow: nil
+            )
+        }
+
+        let offsetY = CGFloat(scrollbarState.total - scrollbarState.offset - scrollbarState.len)
+            * cellHeight
+        return ScrollSynchronizationResult(
+            documentHeight: documentHeight,
+            targetOffsetY: offsetY,
+            lastSentRow: Int(scrollbarState.offset)
+        )
     }
 
     static func scrollActionForLiveScroll(
@@ -383,7 +497,8 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
             sessionId: sessionId,
             serverBaseUrl: serverBaseUrl,
             authToken: authToken,
-            clientPath: resolveTetherClientPath()
+            clientPath: resolveTetherClientPath(),
+            tailBytes: TerminalView.defaultReplayTailBytes
         )
     }
 
@@ -391,7 +506,8 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         sessionId: String,
         serverBaseUrl: String?,
         authToken: String?,
-        clientPath: String?
+        clientPath: String?,
+        tailBytes: UInt64
     ) -> String {
         guard let serverBaseUrl, !serverBaseUrl.isEmpty else {
             return "printf 'tether-server is not connected\\n'; exit 1"
@@ -412,6 +528,10 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         if let authToken, !authToken.isEmpty {
             parts.append("--token")
             parts.append(shellQuote(authToken))
+        }
+        if tailBytes > 0 {
+            parts.append("--tail-bytes")
+            parts.append(String(tailBytes))
         }
         return parts.joined(separator: " ")
     }
