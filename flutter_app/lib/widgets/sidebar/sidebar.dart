@@ -666,16 +666,7 @@ class Sidebar extends ConsumerWidget {
       context: context,
       position: rect,
       items: [
-        const PopupMenuItem(
-          value: 'rename',
-          child: Row(
-            children: [
-              Text('Rename'),
-              Spacer(),
-              Text('⌘R', style: TextStyle(fontSize: 12, color: Colors.white38)),
-            ],
-          ),
-        ),
+        const PopupMenuItem(value: 'rename', child: Text('Rename')),
         const PopupMenuItem(
           value: 'delete',
           child: Text('Delete', style: TextStyle(color: Colors.red)),

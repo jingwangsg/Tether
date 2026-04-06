@@ -230,8 +230,10 @@ final class TerminalView: NSView {
     }
 }
 
+protocol TerminalShortcutFocusable {}
+
 /// NSView embedding a Ghostty surface whose child process is `tether-client attach`.
-private final class TerminalSurfaceView: NSView {
+private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     private let sessionId: String
     private let serverBaseUrl: String?
     private let authToken: String?

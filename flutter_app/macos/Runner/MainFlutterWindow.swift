@@ -16,6 +16,22 @@ class MainFlutterWindow: NSWindow {
             charactersIgnoringModifiers == "v"
     }
 
+    static func isTerminalFocusedResponder(_ responder: NSResponder?) -> Bool {
+        responder is TerminalShortcutFocusable
+    }
+
+    static func shouldDispatchRenameShortcut(
+        eventType: NSEvent.EventType,
+        modifierFlags: NSEvent.ModifierFlags,
+        charactersIgnoringModifiers: String?,
+        superHandled: Bool,
+        firstResponderIsTerminal: Bool
+    ) -> Bool {
+        guard !superHandled, firstResponderIsTerminal, eventType == .keyDown else { return false }
+        return modifierFlags.intersection(.deviceIndependentFlagsMask) == .command &&
+            charactersIgnoringModifiers == "r"
+    }
+
     override func awakeFromNib() {
         let flutterViewController = FlutterViewController()
         let windowFrame = self.frame
@@ -60,6 +76,16 @@ class MainFlutterWindow: NSWindow {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let superHandled = super.performKeyEquivalent(with: event)
+        if Self.shouldDispatchRenameShortcut(
+            eventType: event.type,
+            modifierFlags: event.modifierFlags,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            superHandled: superHandled,
+            firstResponderIsTerminal: Self.isTerminalFocusedResponder(firstResponder)
+        ) {
+            windowChannel?.invokeMethod("renameActiveSession", arguments: nil)
+            return true
+        }
         if Self.shouldUsePasteChannelFallback(
             eventType: event.type,
             modifierFlags: event.modifierFlags,

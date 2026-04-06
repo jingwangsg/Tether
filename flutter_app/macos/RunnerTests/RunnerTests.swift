@@ -169,6 +169,99 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testRenameShortcutRequiresExactCmdROnTerminal() {
+    XCTAssertTrue(
+      MainFlutterWindow.shouldDispatchRenameShortcut(
+        eventType: .keyDown,
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "r",
+        superHandled: false,
+        firstResponderIsTerminal: true,
+      )
+    )
+  }
+
+  func testRenameShortcutSkipsWhenSuperHandledOrNotTerminal() {
+    XCTAssertFalse(
+      MainFlutterWindow.shouldDispatchRenameShortcut(
+        eventType: .keyDown,
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "r",
+        superHandled: true,
+        firstResponderIsTerminal: true,
+      )
+    )
+    XCTAssertFalse(
+      MainFlutterWindow.shouldDispatchRenameShortcut(
+        eventType: .keyDown,
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "r",
+        superHandled: false,
+        firstResponderIsTerminal: false,
+      )
+    )
+  }
+
+  func testRenameShortcutRejectsModifiedOrWrongKeys() {
+    XCTAssertFalse(
+      MainFlutterWindow.shouldDispatchRenameShortcut(
+        eventType: .keyDown,
+        modifierFlags: [.command, .shift],
+        charactersIgnoringModifiers: "r",
+        superHandled: false,
+        firstResponderIsTerminal: true,
+      )
+    )
+    XCTAssertFalse(
+      MainFlutterWindow.shouldDispatchRenameShortcut(
+        eventType: .keyDown,
+        modifierFlags: [.command, .option],
+        charactersIgnoringModifiers: "r",
+        superHandled: false,
+        firstResponderIsTerminal: true,
+      )
+    )
+    XCTAssertFalse(
+      MainFlutterWindow.shouldDispatchRenameShortcut(
+        eventType: .keyDown,
+        modifierFlags: .control,
+        charactersIgnoringModifiers: "r",
+        superHandled: false,
+        firstResponderIsTerminal: true,
+      )
+    )
+    XCTAssertFalse(
+      MainFlutterWindow.shouldDispatchRenameShortcut(
+        eventType: .keyDown,
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "f",
+        superHandled: false,
+        firstResponderIsTerminal: true,
+      )
+    )
+  }
+
+  func testRenameShortcutRejectsNonKeyDownEvents() {
+    XCTAssertFalse(
+      MainFlutterWindow.shouldDispatchRenameShortcut(
+        eventType: .flagsChanged,
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "r",
+        superHandled: false,
+        firstResponderIsTerminal: true,
+      )
+    )
+  }
+
+  func testTerminalFocusedResponderMarker() {
+    XCTAssertTrue(
+      MainFlutterWindow.isTerminalFocusedResponder(TerminalMarkerResponder())
+    )
+    XCTAssertFalse(
+      MainFlutterWindow.isTerminalFocusedResponder(NSResponder())
+    )
+  }
+
   func testClipboardMenuValidation() {
     XCTAssertTrue(
       TerminalView.isClipboardMenuActionEnabled(
@@ -240,3 +333,5 @@ class RunnerTests: XCTestCase {
   }
 
 }
+
+private final class TerminalMarkerResponder: NSResponder, TerminalShortcutFocusable {}

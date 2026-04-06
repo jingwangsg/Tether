@@ -20,28 +20,63 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
+  static const _windowChannel = MethodChannel('dev.tether/window');
   final _terminalAreaKey = GlobalKey<TerminalAreaState>();
   bool _edgeDragActive = false;
   double _dragDistance = 0;
+
+  bool get _usesNativeRenameShortcut => widget.backend.platformId == 'native';
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    if (_usesNativeRenameShortcut) {
+      _windowChannel.setMethodCallHandler(_handleWindowMethodCall);
+    }
     HardwareKeyboard.instance.addHandler(_handleGlobalKey);
     _checkMobile();
   }
 
   @override
+  void didUpdateWidget(covariant HomeScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final usedNativeRenameShortcut = oldWidget.backend.platformId == 'native';
+    if (usedNativeRenameShortcut == _usesNativeRenameShortcut) {
+      return;
+    }
+    if (usedNativeRenameShortcut) {
+      _windowChannel.setMethodCallHandler(null);
+    }
+    if (_usesNativeRenameShortcut) {
+      _windowChannel.setMethodCallHandler(_handleWindowMethodCall);
+    }
+  }
+
+  @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_handleGlobalKey);
+    if (_usesNativeRenameShortcut) {
+      _windowChannel.setMethodCallHandler(null);
+    }
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
+  Future<dynamic> _handleWindowMethodCall(MethodCall call) async {
+    switch (call.method) {
+      case 'renameActiveSession':
+        _renameActiveSession();
+        return null;
+      default:
+        return null;
+    }
+  }
+
   bool _handleGlobalKey(KeyEvent event) {
     if (event is KeyDownEvent && HardwareKeyboard.instance.isMetaPressed) {
-      if (event.logicalKey == LogicalKeyboardKey.keyR) {
+      if (event.logicalKey == LogicalKeyboardKey.keyR &&
+          !_usesNativeRenameShortcut) {
         _renameActiveSession();
         return true;
       }
@@ -208,5 +243,4 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       },
     );
   }
-
 }
