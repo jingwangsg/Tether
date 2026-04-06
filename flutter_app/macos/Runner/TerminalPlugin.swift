@@ -7,6 +7,7 @@ import Foundation
 ///   MethodChannel "dev.tether/terminal_input":
 ///     sendText({viewId, text})
 ///     setActive({viewId, active})
+///     setImagePasteBridgeEnabled({viewId, enabled})
 ///     performAction({viewId, action})
 ///   EventChannel "dev.tether/terminal_events/{viewId}":
 ///     {type: "title", value: "..."} | {type: "exited"} | search events
@@ -98,6 +99,12 @@ class TerminalPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFactory {
         case "setActive":
             if let active = args["active"] as? Bool {
                 view.setActive(active)
+            }
+            result(nil)
+
+        case "setImagePasteBridgeEnabled":
+            if let enabled = args["enabled"] as? Bool {
+                view.setImagePasteBridgeEnabled(enabled)
             }
             result(nil)
 

@@ -1,4 +1,5 @@
-platform :osx, '10.15'
+platform :osx, '13.0'
+require 'shellwords'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -35,8 +36,41 @@ target 'Runner' do
   end
 end
 
+def strip_toolchain_swift_paths_from_xcconfig!(xcconfig_path)
+  return unless File.exist?(xcconfig_path)
+
+  original = File.read(xcconfig_path)
+  sanitized = original
+    .gsub(' "${TOOLCHAIN_DIR}/usr/lib/swift/${PLATFORM_NAME}"', '')
+    .gsub('"${TOOLCHAIN_DIR}/usr/lib/swift/${PLATFORM_NAME}" ', '')
+    .gsub(' $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME)/', '')
+    .gsub(/[ ]{2,}/, ' ')
+
+  return if sanitized == original
+
+  File.write(xcconfig_path, sanitized)
+end
+
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_macos_build_settings(target)
+    target.build_configurations.each do |config|
+      config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = '13.0'
+
+      {
+        'LIBRARY_SEARCH_PATHS' => ['$(inherited)', '/usr/lib/swift', '$(SDKROOT)/usr/lib/swift'],
+        'LD_RUNPATH_SEARCH_PATHS' => ['$(inherited)', '/usr/lib/swift'],
+      }.each do |key, fallback|
+        entries = Shellwords.split(config.build_settings[key].to_s)
+          .reject { |entry| entry.include?('TOOLCHAIN_DIR') || entry.include?('DT_TOOLCHAIN_DIR') }
+        config.build_settings[key] = (entries.empty? ? fallback : entries).uniq
+      end
+    end
+  end
+end
+
+post_integrate do |_installer|
+  Dir.glob(File.join(__dir__, 'Pods', 'Target Support Files', '**', '*.xcconfig')).each do |xcconfig|
+    strip_toolchain_swift_paths_from_xcconfig!(xcconfig)
   end
 end

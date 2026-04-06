@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -19,9 +20,12 @@ class TerminalView extends StatefulWidget {
   final TerminalController controller;
   final ServerConfig? serverConfig;
   final bool isActive;
+  final bool imagePasteBridgeEnabled;
   final VoidCallback? onSessionExited;
   final void Function(String? title)? onTitleChanged;
   final ForegroundChangedCallback? onForegroundChanged;
+  final Future<void> Function(Uint8List data, String mimeType)?
+  onClipboardImage;
   final WebSocketService Function(String url)? metadataWsFactory;
 
   const TerminalView({
@@ -30,9 +34,11 @@ class TerminalView extends StatefulWidget {
     required this.controller,
     required this.serverConfig,
     required this.isActive,
+    this.imagePasteBridgeEnabled = false,
     this.onSessionExited,
     this.onTitleChanged,
     this.onForegroundChanged,
+    this.onClipboardImage,
     this.metadataWsFactory,
   });
 
@@ -86,6 +92,13 @@ class TerminalViewState extends State<TerminalView> {
         'active': widget.isActive,
       });
     }
+    if (oldWidget.imagePasteBridgeEnabled != widget.imagePasteBridgeEnabled &&
+        _viewId != null) {
+      _inputChannel.invokeMethod('setImagePasteBridgeEnabled', {
+        'viewId': _viewId,
+        'enabled': widget.imagePasteBridgeEnabled,
+      });
+    }
     if (oldWidget.sessionId != widget.sessionId ||
         oldWidget.serverConfig?.baseUrl != widget.serverConfig?.baseUrl ||
         oldWidget.serverConfig?.token != widget.serverConfig?.token) {
@@ -132,10 +145,7 @@ class TerminalViewState extends State<TerminalView> {
     _metadataSubscription = ws.messages.listen((message) {
       switch (message) {
         case ForegroundChangedMessage():
-          widget.onForegroundChanged?.call(
-            message.process,
-            message.oscTitle,
-          );
+          widget.onForegroundChanged?.call(message.process, message.oscTitle);
         case SessionEventMessage():
           if (message.event == 'exited') {
             _emitExit();
@@ -173,6 +183,10 @@ class TerminalViewState extends State<TerminalView> {
         'active': false,
       });
     }
+    _inputChannel.invokeMethod('setImagePasteBridgeEnabled', {
+      'viewId': viewId,
+      'enabled': widget.imagePasteBridgeEnabled,
+    });
   }
 
   void _onEvent(dynamic event) {
@@ -195,6 +209,12 @@ class TerminalViewState extends State<TerminalView> {
         setState(() {
           _searchSelected = event['value'] as int?;
         });
+      case 'clipboard_image':
+        final data = event['data'];
+        final mimeType = event['mimeType'] as String?;
+        if (data is Uint8List && mimeType != null) {
+          unawaited(widget.onClipboardImage?.call(data, mimeType));
+        }
     }
   }
 

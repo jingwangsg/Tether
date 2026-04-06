@@ -9,8 +9,8 @@ struct TerminalScrollbarState {
 
 /// Platform view wrapper around a Ghostty surface view plus a native NSScrollView.
 final class TerminalView: NSView {
-    static let copySelector = Selector(("copy:"))
-    static let pasteSelector = Selector(("paste:"))
+    static let copySelector = #selector(NSText.copy(_:))
+    static let pasteSelector = #selector(MainFlutterWindow.paste(_:))
     static let pasteAsPlainTextSelector = #selector(NSTextView.pasteAsPlainText(_:))
 
     private let scrollView: NSScrollView
@@ -167,6 +167,10 @@ final class TerminalView: NSView {
         surfaceView.setActive(active)
     }
 
+    func setImagePasteBridgeEnabled(_ enabled: Bool) {
+        surfaceView.setImagePasteBridgeEnabled(enabled)
+    }
+
     func setEventSink(_ sink: FlutterEventSink?) {
         surfaceView.setEventSink(sink)
     }
@@ -214,16 +218,78 @@ final class TerminalView: NSView {
         pasteboard.string(forType: .string) != nil
     }
 
+    static func pasteboardHasImage(_ pasteboard: NSPasteboard = .general) -> Bool {
+        pasteboard.canReadObject(forClasses: [NSImage.self], options: nil)
+    }
+
+    static func pasteboardHasPasteableContent(
+        _ pasteboard: NSPasteboard = .general,
+        allowImages: Bool
+    ) -> Bool {
+        pasteboardHasText(pasteboard) || (allowImages && pasteboardHasImage(pasteboard))
+    }
+
+    enum PasteRoutingAction: Equatable {
+        case emitImageEvent
+        case forwardClipboardText
+        case ignore
+    }
+
+    static func shouldHandleImagePasteKeyboardShortcut(
+        eventType: NSEvent.EventType,
+        modifierFlags: NSEvent.ModifierFlags,
+        charactersIgnoringModifiers: String?,
+        imagePasteBridgeEnabled: Bool,
+        pasteboardHasImage: Bool
+    ) -> Bool {
+        guard imagePasteBridgeEnabled, pasteboardHasImage, eventType == .keyDown else {
+            return false
+        }
+
+        return modifierFlags.intersection(.deviceIndependentFlagsMask) == .control &&
+            charactersIgnoringModifiers?.lowercased() == "v"
+    }
+
+    static func keyboardPasteRoutingAction(
+        eventType: NSEvent.EventType,
+        modifierFlags: NSEvent.ModifierFlags,
+        charactersIgnoringModifiers: String?,
+        imagePasteBridgeEnabled: Bool,
+        pasteboardHasImage: Bool
+    ) -> PasteRoutingAction {
+        shouldHandleImagePasteKeyboardShortcut(
+            eventType: eventType,
+            modifierFlags: modifierFlags,
+            charactersIgnoringModifiers: charactersIgnoringModifiers,
+            imagePasteBridgeEnabled: imagePasteBridgeEnabled,
+            pasteboardHasImage: pasteboardHasImage
+        ) ? .emitImageEvent : .ignore
+    }
+
+    static func pasteCommandRoutingAction(
+        imagePasteBridgeEnabled: Bool,
+        pasteboardHasImage: Bool,
+        pasteboardHasText: Bool
+    ) -> PasteRoutingAction {
+        if imagePasteBridgeEnabled && pasteboardHasImage {
+            return .emitImageEvent
+        }
+        if pasteboardHasText {
+            return .forwardClipboardText
+        }
+        return .ignore
+    }
+
     static func isClipboardMenuActionEnabled(
         action: Selector?,
         hasSelection: Bool,
-        pasteboardHasText: Bool
+        canPaste: Bool
     ) -> Bool {
         switch action {
         case Self.copySelector:
             return hasSelection
         case Self.pasteSelector, Self.pasteAsPlainTextSelector:
-            return pasteboardHasText
+            return canPaste
         default:
             return true
         }
@@ -248,6 +314,7 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     private var isComposing = false
     private var focused = false
     private var suppressNextLeftMouseUp = false
+    private var imagePasteBridgeEnabled = false
 
     init(
         sessionId: String,
@@ -734,6 +801,16 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         guard event.type == .keyDown, focused else { return false }
         guard let s = surface else { return false }
 
+        if TerminalView.keyboardPasteRoutingAction(
+            eventType: event.type,
+            modifierFlags: event.modifierFlags,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            imagePasteBridgeEnabled: imagePasteBridgeEnabled,
+            pasteboardHasImage: TerminalView.pasteboardHasImage()
+        ) == .emitImageEvent {
+            return emitClipboardImageEventIfAvailable()
+        }
+
         if !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.control) {
             return false
         }
@@ -755,6 +832,18 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
 
     override func keyDown(with event: NSEvent) {
         guard let s = surface else { return }
+
+        if TerminalView.keyboardPasteRoutingAction(
+            eventType: event.type,
+            modifierFlags: event.modifierFlags,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            imagePasteBridgeEnabled: imagePasteBridgeEnabled,
+            pasteboardHasImage: TerminalView.pasteboardHasImage()
+        ) == .emitImageEvent {
+            _ = emitClipboardImageEventIfAvailable()
+            return
+        }
+
         let action: ghostty_input_action_e =
             event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         keyTextAccumulator = []
@@ -786,12 +875,29 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     }
 
     @objc func paste(_ sender: Any?) {
-        guard TerminalView.pasteboardHasText() else { return }
-        performAction("paste_from_clipboard")
+        switch TerminalView.pasteCommandRoutingAction(
+            imagePasteBridgeEnabled: imagePasteBridgeEnabled,
+            pasteboardHasImage: TerminalView.pasteboardHasImage(),
+            pasteboardHasText: TerminalView.pasteboardHasText()
+        ) {
+        case .emitImageEvent:
+            _ = emitClipboardImageEventIfAvailable()
+        case .forwardClipboardText:
+            performAction("paste_from_clipboard")
+        case .ignore:
+            return
+        }
     }
 
     @objc func pasteAsPlainText(_ sender: Any?) {
         paste(sender)
+    }
+
+    private func emitClipboardImageEventIfAvailable() -> Bool {
+        guard imagePasteBridgeEnabled,
+              let payload = Self.clipboardImageEventPayload() else { return false }
+        eventSink?(payload)
+        return true
     }
 
     private func sendKeyEvent(
@@ -809,11 +915,9 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         if flags.contains(.shift) { consumedRaw |= GHOSTTY_MODS_SHIFT.rawValue }
         if flags.contains(.option) { consumedRaw |= GHOSTTY_MODS_ALT.rawValue }
         ev.consumed_mods = ghostty_input_mods_e(rawValue: consumedRaw)
-        if #available(macOS 10.15, *) {
-            if let chars = event.characters(byApplyingModifiers: []),
-               let cp = chars.unicodeScalars.first {
-                ev.unshifted_codepoint = cp.value
-            }
+        if let chars = event.characters(byApplyingModifiers: []),
+           let cp = chars.unicodeScalars.first {
+            ev.unshifted_codepoint = cp.value
         }
         ev.composing = false
 
@@ -832,12 +936,9 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         guard let characters = event.characters else { return nil }
         if characters.count == 1, let scalar = characters.unicodeScalars.first {
             if scalar.value < 0x20 {
-                if #available(macOS 10.15, *) {
-                    return event.characters(
-                        byApplyingModifiers: event.modifierFlags.subtracting(.control)
-                    )
-                }
-                return nil
+                return event.characters(
+                    byApplyingModifiers: event.modifierFlags.subtracting(.control)
+                )
             }
             if scalar.value >= 0xF700 && scalar.value <= 0xF8FF {
                 return nil
@@ -930,6 +1031,10 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         }
     }
 
+    func setImagePasteBridgeEnabled(_ enabled: Bool) {
+        imagePasteBridgeEnabled = enabled
+    }
+
     func setEventSink(_ sink: FlutterEventSink?) {
         eventSink = sink
     }
@@ -946,6 +1051,30 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
             )
             ghostty_surface_free(surface)
         }
+    }
+
+    private static func clipboardImageEventPayload(
+        _ pasteboard: NSPasteboard = .general
+    ) -> [String: Any]? {
+        guard let image = pasteboardImage(pasteboard),
+              let pngData = pngData(from: image) else { return nil }
+        return [
+            "type": "clipboard_image",
+            "mimeType": "image/png",
+            "data": FlutterStandardTypedData(bytes: pngData),
+        ]
+    }
+
+    private static func pasteboardImage(_ pasteboard: NSPasteboard) -> NSImage? {
+        let classes: [AnyClass] = [NSImage.self]
+        let images = pasteboard.readObjects(forClasses: classes, options: nil) as? [NSImage]
+        return images?.first
+    }
+
+    private static func pngData(from image: NSImage) -> Data? {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
     }
 }
 
@@ -1006,7 +1135,9 @@ extension TerminalSurfaceView: NSUserInterfaceValidations {
         TerminalView.isClipboardMenuActionEnabled(
             action: item.action,
             hasSelection: hasSelection(),
-            pasteboardHasText: TerminalView.pasteboardHasText()
+            canPaste: TerminalView.pasteboardHasPasteableContent(
+                allowImages: imagePasteBridgeEnabled
+            )
         )
     }
 }

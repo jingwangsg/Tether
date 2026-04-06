@@ -22,7 +22,9 @@ use axum::Router;
 use base64::Engine as _;
 use dashmap::DashMap;
 use http_body_util::BodyExt;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 use tower::ServiceExt;
 
 use tether_server::api;
@@ -87,6 +89,10 @@ fn test_router(state: AppState) -> Router {
         .route("/api/sessions/{id}", patch(api::sessions::update_session))
         .route("/api/sessions/{id}", delete(api::sessions::delete_session))
         .route(
+            "/api/sessions/{id}/clipboard-image",
+            post(api::sessions::upload_clipboard_image),
+        )
+        .route(
             "/api/sessions/{id}/scrollback",
             get(api::sessions::get_scrollback),
         )
@@ -108,6 +114,98 @@ fn test_router(state: AppState) -> Router {
 
 fn cleanup(state: &AppState) {
     let _ = std::fs::remove_dir_all(&state.inner.config.persistence.data_dir);
+}
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct FakeSshEnv {
+    _tempdir: tempfile::TempDir,
+    remote_home: PathBuf,
+    ssh_log: PathBuf,
+    original_path: String,
+}
+
+impl Drop for FakeSshEnv {
+    fn drop(&mut self) {
+        std::env::set_var("PATH", &self.original_path);
+        std::env::remove_var("FAKE_REMOTE_HOME");
+        std::env::remove_var("FAKE_SSH_LOG");
+    }
+}
+
+fn install_fake_ssh() -> FakeSshEnv {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("remote home");
+    let bin = dir.path().join("bin");
+    let log = dir.path().join("ssh.log");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&bin).unwrap();
+
+    let script_path = bin.join("ssh");
+    std::fs::write(
+        &script_path,
+        r#"#!/bin/sh
+set -eu
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o)
+      shift 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+host="${1:-}"
+shift || true
+cmd="$*"
+echo "$host|$cmd" >> "${FAKE_SSH_LOG:?}"
+
+if [ "$cmd" = 'printf %s "$HOME"' ]; then
+  printf '%s' "${FAKE_REMOTE_HOME:?}"
+  exit 0
+fi
+
+unquote_path() {
+  local value="$1"
+  value="${value#\'}"
+  value="${value%\'}"
+  printf "%s" "${value//\'\\\'\'/\'}"
+}
+
+case "$cmd" in
+  "mkdir -p "*) mkdir -p "$(unquote_path "${cmd#mkdir -p }")" ;;
+  "cat > "*) cat > "$(unquote_path "${cmd#cat > }")" ;;
+  "true") ;;
+  *) echo "unsupported command: $cmd" >&2; exit 1 ;;
+esac
+"#,
+    )
+    .unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script_path, perms).unwrap();
+    }
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    std::env::set_var("PATH", format!("{}:{}", bin.display(), original_path));
+    std::env::set_var("FAKE_REMOTE_HOME", root.display().to_string());
+    std::env::set_var("FAKE_SSH_LOG", log.display().to_string());
+
+    FakeSshEnv {
+        _tempdir: dir,
+        remote_home: root,
+        ssh_log: log,
+        original_path,
+    }
 }
 
 /// Helper: create a group and return the group id.
@@ -368,6 +466,200 @@ async fn get_scrollback_for_ssh_session_returns_503_when_no_tunnel() {
         StatusCode::SERVICE_UNAVAILABLE,
         "scrollback for remote session should be 503 when tunnel is absent"
     );
+
+    cleanup(&state);
+}
+
+// ─── POST /api/sessions/{id}/clipboard-image ─────────────────────────────────
+
+#[tokio::test]
+async fn upload_clipboard_image_rejects_local_sessions() {
+    let state = test_state();
+    let app = test_router(state.clone());
+
+    let gid = create_group(&app, &state, "local-group", None).await;
+    let session_id = uuid::Uuid::new_v4().to_string();
+    state
+        .inner
+        .db
+        .create_session(&session_id, &gid, "local-sess", "/bin/zsh", "~", None)
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{session_id}/clipboard-image"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "mime_type": "image/png",
+                        "data_base64": base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3]),
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn upload_clipboard_image_returns_503_when_remote_host_is_not_ready() {
+    let state = test_state();
+    let app = test_router(state.clone());
+
+    let gid = create_group(&app, &state, "remote-group", Some("myhost")).await;
+    let session_id = uuid::Uuid::new_v4().to_string();
+    state
+        .inner
+        .db
+        .create_session(&session_id, &gid, "remote-sess", "ssh myhost", "~", None)
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{session_id}/clipboard-image"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "mime_type": "image/png",
+                        "data_base64": base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3]),
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        std::str::from_utf8(&body).unwrap(),
+        "remote_host_connecting"
+    );
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn upload_clipboard_image_rejects_unsupported_mime() {
+    let state = test_state();
+    state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("myhost", 7777);
+    let app = test_router(state.clone());
+
+    let gid = create_group(&app, &state, "remote-group", Some("myhost")).await;
+    let session_id = uuid::Uuid::new_v4().to_string();
+    state
+        .inner
+        .db
+        .create_session(&session_id, &gid, "remote-sess", "ssh myhost", "~", None)
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{session_id}/clipboard-image"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "mime_type": "text/plain",
+                        "data_base64": base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3]),
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        std::str::from_utf8(&body).unwrap(),
+        "unsupported_image_mime"
+    );
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn upload_clipboard_image_stages_file_on_remote_host() {
+    let _guard = env_lock().lock().unwrap();
+    let fake_env = install_fake_ssh();
+
+    let state = test_state();
+    state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("myhost", 7777);
+    let app = test_router(state.clone());
+
+    let gid = create_group(&app, &state, "remote-group", Some("myhost")).await;
+    let session_id = uuid::Uuid::new_v4().to_string();
+    state
+        .inner
+        .db
+        .create_session(&session_id, &gid, "remote-sess", "ssh myhost", "~", None)
+        .unwrap();
+
+    let image_bytes = vec![0u8, 1, 2, 3, 4, 5];
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{session_id}/clipboard-image"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "mime_type": "image/png",
+                        "data_base64": base64::engine::general_purpose::STANDARD.encode(&image_bytes),
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = resp.status();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected clipboard-image response body: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let remote_path = payload["remote_path"].as_str().unwrap();
+    assert_eq!(payload["mime_type"], "image/png");
+    assert!(
+        remote_path.starts_with(fake_env.remote_home.to_string_lossy().as_ref()),
+        "remote path should be rooted in the fake home directory"
+    );
+
+    let uploaded = std::fs::read(remote_path).unwrap();
+    assert_eq!(uploaded, image_bytes);
+
+    let ssh_log_contents = std::fs::read_to_string(&fake_env.ssh_log).unwrap();
+    assert!(ssh_log_contents.contains(r#"printf %s "$HOME""#));
+    assert!(ssh_log_contents.contains("mkdir -p"));
+    assert!(ssh_log_contents.contains("cat >"));
 
     cleanup(&state);
 }

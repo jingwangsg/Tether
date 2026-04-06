@@ -267,36 +267,144 @@ class RunnerTests: XCTestCase {
       TerminalView.isClipboardMenuActionEnabled(
         action: TerminalView.copySelector,
         hasSelection: true,
-        pasteboardHasText: false,
+        canPaste: false,
       )
     )
     XCTAssertFalse(
       TerminalView.isClipboardMenuActionEnabled(
         action: TerminalView.copySelector,
         hasSelection: false,
-        pasteboardHasText: true,
+        canPaste: true,
       )
     )
     XCTAssertTrue(
       TerminalView.isClipboardMenuActionEnabled(
         action: TerminalView.pasteSelector,
         hasSelection: false,
-        pasteboardHasText: true,
+        canPaste: true,
       )
     )
     XCTAssertTrue(
       TerminalView.isClipboardMenuActionEnabled(
         action: TerminalView.pasteAsPlainTextSelector,
         hasSelection: false,
-        pasteboardHasText: true,
+        canPaste: true,
       )
     )
     XCTAssertFalse(
       TerminalView.isClipboardMenuActionEnabled(
         action: TerminalView.pasteSelector,
         hasSelection: true,
-        pasteboardHasText: false,
+        canPaste: false,
       )
+    )
+  }
+
+  func testKeyboardPasteRoutingRequiresExactCtrlVWithBridgeAndImage() {
+    XCTAssertEqual(
+      TerminalView.keyboardPasteRoutingAction(
+        eventType: .keyDown,
+        modifierFlags: .control,
+        charactersIgnoringModifiers: "v",
+        imagePasteBridgeEnabled: true,
+        pasteboardHasImage: true,
+      ),
+      .emitImageEvent,
+    )
+    XCTAssertEqual(
+      TerminalView.keyboardPasteRoutingAction(
+        eventType: .keyDown,
+        modifierFlags: [.control, .shift],
+        charactersIgnoringModifiers: "v",
+        imagePasteBridgeEnabled: true,
+        pasteboardHasImage: true,
+      ),
+      .ignore,
+    )
+    XCTAssertEqual(
+      TerminalView.keyboardPasteRoutingAction(
+        eventType: .keyDown,
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "v",
+        imagePasteBridgeEnabled: true,
+        pasteboardHasImage: true,
+      ),
+      .ignore,
+    )
+    XCTAssertEqual(
+      TerminalView.keyboardPasteRoutingAction(
+        eventType: .keyDown,
+        modifierFlags: .control,
+        charactersIgnoringModifiers: "c",
+        imagePasteBridgeEnabled: true,
+        pasteboardHasImage: true,
+      ),
+      .ignore,
+    )
+    XCTAssertEqual(
+      TerminalView.keyboardPasteRoutingAction(
+        eventType: .flagsChanged,
+        modifierFlags: .control,
+        charactersIgnoringModifiers: "v",
+        imagePasteBridgeEnabled: true,
+        pasteboardHasImage: true,
+      ),
+      .ignore,
+    )
+    XCTAssertEqual(
+      TerminalView.keyboardPasteRoutingAction(
+        eventType: .keyDown,
+        modifierFlags: .control,
+        charactersIgnoringModifiers: "v",
+        imagePasteBridgeEnabled: false,
+        pasteboardHasImage: true,
+      ),
+      .ignore,
+    )
+    XCTAssertEqual(
+      TerminalView.keyboardPasteRoutingAction(
+        eventType: .keyDown,
+        modifierFlags: .control,
+        charactersIgnoringModifiers: "v",
+        imagePasteBridgeEnabled: true,
+        pasteboardHasImage: false,
+      ),
+      .ignore,
+    )
+  }
+
+  func testPasteCommandRoutingPrefersImageBridgeBeforeTextFallback() {
+    XCTAssertEqual(
+      TerminalView.pasteCommandRoutingAction(
+        imagePasteBridgeEnabled: true,
+        pasteboardHasImage: true,
+        pasteboardHasText: true,
+      ),
+      .emitImageEvent,
+    )
+    XCTAssertEqual(
+      TerminalView.pasteCommandRoutingAction(
+        imagePasteBridgeEnabled: false,
+        pasteboardHasImage: true,
+        pasteboardHasText: true,
+      ),
+      .forwardClipboardText,
+    )
+    XCTAssertEqual(
+      TerminalView.pasteCommandRoutingAction(
+        imagePasteBridgeEnabled: true,
+        pasteboardHasImage: false,
+        pasteboardHasText: true,
+      ),
+      .forwardClipboardText,
+    )
+    XCTAssertEqual(
+      TerminalView.pasteCommandRoutingAction(
+        imagePasteBridgeEnabled: true,
+        pasteboardHasImage: false,
+        pasteboardHasText: false,
+      ),
+      .ignore,
     )
   }
 

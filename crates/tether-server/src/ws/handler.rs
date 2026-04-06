@@ -6,8 +6,8 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use base64::Engine;
-use futures::Sink;
 use futures::stream::StreamExt;
+use futures::Sink;
 use futures::SinkExt;
 use serde::Deserialize;
 use tokio_tungstenite::tungstenite;
@@ -420,7 +420,8 @@ async fn proxy_ws_to_remote(
             if response.status() == axum::http::StatusCode::NOT_FOUND
                 || response.status() == axum::http::StatusCode::GONE =>
         {
-            if let Ok(Some(host_alias)) = state.inner.db.get_session_ssh_host(&session_id.to_string())
+            if let Ok(Some(host_alias)) =
+                state.inner.db.get_session_ssh_host(&session_id.to_string())
             {
                 if let Err(error) = crate::remote::sync::sync_remote_host(
                     &state.inner.db,

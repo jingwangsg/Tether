@@ -471,13 +471,8 @@ mod tests {
 
     #[test]
     fn https_server_becomes_wss_with_token() {
-        let url = build_session_ws_url(
-            "https://example.com",
-            "abc",
-            Some("hello world"),
-            None,
-        )
-        .unwrap();
+        let url =
+            build_session_ws_url("https://example.com", "abc", Some("hello world"), None).unwrap();
         assert_eq!(
             url.as_str(),
             "wss://example.com/ws/session/abc?token=hello+world"
@@ -487,7 +482,10 @@ mod tests {
     #[test]
     fn ws_url_includes_offset_when_present() {
         let url = build_session_ws_url("http://localhost:7680", "abc", None, Some(128)).unwrap();
-        assert_eq!(url.as_str(), "ws://localhost:7680/ws/session/abc?offset=128");
+        assert_eq!(
+            url.as_str(),
+            "ws://localhost:7680/ws/session/abc?offset=128"
+        );
     }
 
     #[tokio::test]

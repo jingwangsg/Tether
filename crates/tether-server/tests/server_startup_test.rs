@@ -134,7 +134,11 @@ async fn server_startup_deletes_local_sessions_and_preserves_remote_mirrors() {
         state.inner.config.persistence.data_dir
     );
     std::fs::create_dir_all(&local_scrollback_dir).unwrap();
-    std::fs::write(format!("{local_scrollback_dir}/scrollback.raw"), b"local-history").unwrap();
+    std::fs::write(
+        format!("{local_scrollback_dir}/scrollback.raw"),
+        b"local-history",
+    )
+    .unwrap();
     state
         .inner
         .db
@@ -164,7 +168,12 @@ async fn server_startup_deletes_local_sessions_and_preserves_remote_mirrors() {
     }
 
     assert!(
-        state.inner.db.get_session("local-session").unwrap().is_none(),
+        state
+            .inner
+            .db
+            .get_session("local-session")
+            .unwrap()
+            .is_none(),
         "local sessions should be deleted on server restart"
     );
     assert!(
@@ -269,7 +278,12 @@ async fn server_startup_clears_legacy_ssh_mirrors_and_sync_rebuilds_shared_state
         "legacy SSH-backed local sessions should be cleared on first shared-model startup"
     );
     assert!(
-        state.inner.db.get_session("local-session").unwrap().is_none(),
+        state
+            .inner
+            .db
+            .get_session("local-session")
+            .unwrap()
+            .is_none(),
         "local sessions should also be deleted during the upgrade startup"
     );
 

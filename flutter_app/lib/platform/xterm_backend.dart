@@ -1,4 +1,5 @@
 import 'package:flutter/widgets.dart';
+import 'dart:typed_data';
 import 'terminal_backend.dart';
 import '../providers/server_provider.dart';
 import '../widgets/terminal/terminal_controller.dart';
@@ -23,9 +24,11 @@ class XtermBackend implements TerminalBackend {
     String? command, // ignored: server already knows the shell from DB
     String? cwd, // ignored: server already knows the cwd from DB
     required bool isActive,
+    bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
     void Function(String? title)? onTitleChanged,
     ForegroundChangedCallback? onForegroundChanged,
+    Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   }) {
     return XtermTerminalView(
       key: key,

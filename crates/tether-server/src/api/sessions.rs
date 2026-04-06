@@ -57,6 +57,18 @@ pub struct ScrollbackQuery {
     pub limit: usize,
 }
 
+#[derive(Deserialize)]
+pub struct ClipboardImageUploadRequest {
+    pub mime_type: String,
+    pub data_base64: String,
+}
+
+#[derive(Serialize)]
+pub struct ClipboardImageUploadResponse {
+    pub remote_path: String,
+    pub mime_type: String,
+}
+
 fn default_limit() -> usize {
     65536
 }
@@ -516,6 +528,67 @@ pub async fn get_scrollback(
     })))
 }
 
+pub async fn upload_clipboard_image(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ClipboardImageUploadRequest>,
+) -> Result<Json<ClipboardImageUploadResponse>, (StatusCode, String)> {
+    let session = state
+        .inner
+        .db
+        .get_session(&id)
+        .map_err(internal_error)?
+        .ok_or_else(not_found_error)?;
+    let ssh_host = state
+        .inner
+        .db
+        .get_session_ssh_host(&id)
+        .map_err(internal_error)?;
+    let Some(ssh_host) = ssh_host else {
+        return Err(bad_request("clipboard_image_requires_remote_session"));
+    };
+
+    ready_tunnel_port(&state, &ssh_host).map_err(|status| match status {
+        StatusCode::SERVICE_UNAVAILABLE => service_unavailable("remote_host_connecting"),
+        other => (other, other.to_string()),
+    })?;
+
+    let extension =
+        image_extension(&req.mime_type).ok_or_else(|| bad_request("unsupported_image_mime"))?;
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(&req.data_base64)
+        .map_err(|_| bad_request("invalid_image_data"))?;
+
+    let ssh_client = crate::remote::client::SshClient {
+        host_alias: ssh_host.clone(),
+    };
+    let (home_dir, _) = ssh_client
+        .exec_checked(r#"printf %s "$HOME""#)
+        .await
+        .map_err(bad_gateway_error)?;
+    let home_dir = home_dir.trim();
+    if home_dir.is_empty() {
+        return Err(bad_gateway("remote_home_dir_unavailable"));
+    }
+
+    let filename = format!("{}.{}", Uuid::new_v4(), extension);
+    let remote_dir = format!("{home_dir}/.tether/clipboard/{}", session.id);
+    let remote_path = format!("{remote_dir}/{filename}");
+    ssh_client
+        .exec_checked(&format!("mkdir -p {}", shell_quote(&remote_dir)))
+        .await
+        .map_err(bad_gateway_error)?;
+    ssh_client
+        .upload(&data, &remote_path)
+        .await
+        .map_err(bad_gateway_error)?;
+
+    Ok(Json(ClipboardImageUploadResponse {
+        remote_path,
+        mime_type: req.mime_type,
+    }))
+}
+
 async fn create_remote_session(
     state: &AppState,
     group: &GroupRow,
@@ -623,6 +696,48 @@ fn ready_tunnel_port(state: &AppState, host_alias: &str) -> Result<u16, StatusCo
             Err(StatusCode::SERVICE_UNAVAILABLE)
         }
     }
+}
+
+fn image_extension(mime_type: &str) -> Option<&'static str> {
+    match mime_type.trim().to_ascii_lowercase().as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        _ => None,
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r#"'\''"#))
+}
+
+fn bad_request(message: &'static str) -> (StatusCode, String) {
+    (StatusCode::BAD_REQUEST, message.to_string())
+}
+
+fn not_found_error() -> (StatusCode, String) {
+    (StatusCode::NOT_FOUND, "session_not_found".to_string())
+}
+
+fn service_unavailable(message: &'static str) -> (StatusCode, String) {
+    (StatusCode::SERVICE_UNAVAILABLE, message.to_string())
+}
+
+fn bad_gateway(message: &'static str) -> (StatusCode, String) {
+    (StatusCode::BAD_GATEWAY, message.to_string())
+}
+
+fn internal_error(_: impl std::fmt::Display) -> (StatusCode, String) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "internal_server_error".to_string(),
+    )
+}
+
+fn bad_gateway_error(error: impl std::fmt::Display) -> (StatusCode, String) {
+    tracing::error!("Remote clipboard image upload failed: {}", error);
+    bad_gateway("remote_clipboard_image_upload_failed")
 }
 
 async fn sync_remote_host(state: &AppState, host_alias: &str, port: u16) -> Result<(), StatusCode> {

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import '../models/group.dart';
 import '../models/session.dart';
@@ -184,6 +185,25 @@ class ApiService {
     _checkResponse(response);
   }
 
+  Future<UploadedClipboardImage> uploadClipboardImage({
+    required String sessionId,
+    required String mimeType,
+    required Uint8List data,
+  }) async {
+    final response = await _client.post(
+      _uri('/api/sessions/$sessionId/clipboard-image'),
+      headers: _headers,
+      body: jsonEncode({
+        'mime_type': mimeType,
+        'data_base64': base64Encode(data),
+      }),
+    );
+    _checkResponse(response);
+    return UploadedClipboardImage.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
   Future<List<SshHost>> listSshHosts() async {
     final response = await _client.get(
       _uri('/api/ssh/hosts'),
@@ -215,4 +235,21 @@ class ApiException implements Exception {
 
   @override
   String toString() => 'ApiException($statusCode): $body';
+}
+
+class UploadedClipboardImage {
+  final String remotePath;
+  final String mimeType;
+
+  const UploadedClipboardImage({
+    required this.remotePath,
+    required this.mimeType,
+  });
+
+  factory UploadedClipboardImage.fromJson(Map<String, dynamic> json) {
+    return UploadedClipboardImage(
+      remotePath: json['remote_path'] as String,
+      mimeType: json['mime_type'] as String,
+    );
+  }
 }

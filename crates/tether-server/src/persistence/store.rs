@@ -665,6 +665,7 @@ impl Store {
     /// Called on startup: PTYs don't survive a restart, but we keep the records
     /// so the user can still see their session list and scrollback history.
     /// Does NOT touch `session_group_registry`.
+    #[cfg(test)]
     pub fn mark_local_sessions_dead(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(

@@ -72,12 +72,13 @@ impl SshClient {
     pub async fn upload(&self, data: &[u8], remote_path: &str) -> anyhow::Result<()> {
         use tokio::io::AsyncWriteExt;
 
+        let quoted_path = shell_path(remote_path);
         let mut child = tokio::process::Command::new("ssh")
             .args([
                 "-o",
                 "BatchMode=yes",
                 &self.host_alias,
-                &format!("cat > {}", remote_path),
+                &format!("cat > {}", quoted_path),
             ])
             .stdin(std::process::Stdio::piped())
             .spawn()?;
@@ -91,5 +92,41 @@ impl SshClient {
             anyhow::bail!("Upload to {} failed", self.host_alias);
         }
         Ok(())
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r#"'\''"#))
+}
+
+fn shell_path(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | '~'))
+    {
+        value.to_string()
+    } else {
+        shell_quote(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_path;
+
+    #[test]
+    fn shell_path_leaves_tilde_prefixed_paths_unquoted() {
+        assert_eq!(
+            shell_path("~/.tether/bin/tether-server"),
+            "~/.tether/bin/tether-server"
+        );
+    }
+
+    #[test]
+    fn shell_path_quotes_paths_with_spaces() {
+        assert_eq!(
+            shell_path("/tmp/tether bundle/server binary"),
+            "'/tmp/tether bundle/server binary'"
+        );
     }
 }

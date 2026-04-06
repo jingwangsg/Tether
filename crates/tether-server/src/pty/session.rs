@@ -258,13 +258,6 @@ impl PtySession {
         Ok(())
     }
 
-    pub fn get_scrollback_snapshot(&self) -> Vec<u8> {
-        self.scrollback
-            .lock()
-            .map(|sb| sb.get_ring_contents())
-            .unwrap_or_default()
-    }
-
     pub fn is_alive(&self) -> bool {
         self.is_alive.load(std::sync::atomic::Ordering::Relaxed)
     }

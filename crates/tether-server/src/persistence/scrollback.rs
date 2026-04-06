@@ -53,6 +53,7 @@ impl ScrollbackBuffer {
         }
     }
 
+    #[cfg(test)]
     pub fn get_ring_contents(&self) -> Vec<u8> {
         let (a, b) = self.ring.as_slices();
         let mut out = Vec::with_capacity(a.len() + b.len());

@@ -193,11 +193,7 @@ async fn start_tcp_forwarder(target_port: u16) -> (u16, oneshot::Sender<()>) {
     (port, shutdown_tx)
 }
 
-fn send_remote_command(
-    state: &AppState,
-    session_id: Uuid,
-    command: &str,
-) -> anyhow::Result<()> {
+fn send_remote_command(state: &AppState, session_id: Uuid, command: &str) -> anyhow::Result<()> {
     let session = state
         .get_session(session_id)
         .ok_or_else(|| anyhow::anyhow!("missing remote session {session_id}"))?;
@@ -622,7 +618,8 @@ async fn ws_proxy_reconnect_replays_missing_remote_history_from_disk() {
         )
         .unwrap();
 
-    let (remote_port, remote_handle) = start_test_server(full_test_router(remote_state.clone())).await;
+    let (remote_port, remote_handle) =
+        start_test_server(full_test_router(remote_state.clone())).await;
     let (forward_port, shutdown_forwarder) = start_tcp_forwarder(remote_port).await;
     let local_port = start_local_server(local_state.clone()).await;
 
@@ -662,14 +659,13 @@ async fn ws_proxy_reconnect_replays_missing_remote_history_from_disk() {
             Ok(None) | Ok(Some(Ok(TungMessage::Close(_)))) | Ok(Some(Err(_))) => break,
             Err(_) => panic!("first websocket did not close after forwarder shutdown"),
             Ok(Some(Ok(TungMessage::Text(_)))) | Ok(Some(Ok(TungMessage::Binary(_)))) => continue,
-            Ok(Some(Ok(other))) => panic!("unexpected websocket message after shutdown: {:?}", other),
+            Ok(Some(Ok(other))) => {
+                panic!("unexpected websocket message after shutdown: {:?}", other)
+            }
         }
     }
 
-    let gap_payload = format!(
-        "printf '__GAP_START__{}__GAP_END__\\n'\n",
-        "X".repeat(4096)
-    );
+    let gap_payload = format!("printf '__GAP_START__{}__GAP_END__\\n'\n", "X".repeat(4096));
     send_remote_command(&remote_state, session_id, &gap_payload).unwrap();
     tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -697,13 +693,21 @@ async fn ws_proxy_reconnect_replays_missing_remote_history_from_disk() {
 
     let combined = String::from_utf8_lossy(&[first_output, second_output].concat()).to_string();
     let pre = combined.find("__PRE__").expect("missing PRE marker");
-    let gap_start = combined.find("__GAP_START__").expect("missing GAP_START marker");
-    let gap_end = combined.find("__GAP_END__").expect("missing GAP_END marker");
+    let gap_start = combined
+        .find("__GAP_START__")
+        .expect("missing GAP_START marker");
+    let gap_end = combined
+        .find("__GAP_END__")
+        .expect("missing GAP_END marker");
     let post = combined.find("__POST__").expect("missing POST marker");
     assert!(pre < gap_start && gap_start < gap_end && gap_end < post);
 
     let remote_sessions = remote_state.inner.db.list_sessions().unwrap();
-    assert_eq!(remote_sessions.len(), 1, "expected exactly one remote session");
+    assert_eq!(
+        remote_sessions.len(),
+        1,
+        "expected exactly one remote session"
+    );
     assert_eq!(remote_sessions[0].id, session_id.to_string());
 
     drop(ws2);

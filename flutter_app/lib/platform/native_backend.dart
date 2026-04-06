@@ -1,4 +1,5 @@
 import 'package:flutter/widgets.dart';
+import 'dart:typed_data';
 import 'terminal_backend.dart';
 import '../providers/server_provider.dart';
 import '../widgets/terminal/terminal_controller.dart';
@@ -21,9 +22,11 @@ class NativeBackend implements TerminalBackend {
     String? command,
     String? cwd,
     required bool isActive,
+    bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
     void Function(String? title)? onTitleChanged,
     ForegroundChangedCallback? onForegroundChanged,
+    Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   }) {
     return TerminalView(
       key: key,
@@ -31,9 +34,11 @@ class NativeBackend implements TerminalBackend {
       controller: controller,
       serverConfig: serverConfig,
       isActive: isActive,
+      imagePasteBridgeEnabled: imagePasteBridgeEnabled,
       onSessionExited: onSessionExited,
       onTitleChanged: onTitleChanged,
       onForegroundChanged: onForegroundChanged,
+      onClipboardImage: onClipboardImage,
     );
   }
 }

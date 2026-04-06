@@ -47,6 +47,10 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
         .route("/api/sessions/{id}", patch(api::sessions::update_session))
         .route("/api/sessions/{id}", delete(api::sessions::delete_session))
         .route(
+            "/api/sessions/{id}/clipboard-image",
+            post(api::sessions::upload_clipboard_image),
+        )
+        .route(
             "/api/sessions/{id}/scrollback",
             get(api::sessions::get_scrollback),
         )

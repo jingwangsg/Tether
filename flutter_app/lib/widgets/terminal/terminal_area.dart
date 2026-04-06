@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,6 +15,7 @@ import '../../utils/session_interaction.dart';
 import '../../utils/session_status.dart';
 import 'session_status_dot.dart';
 import 'terminal_controller.dart';
+import 'terminal_image_paste.dart';
 import 'mobile_key_bar.dart';
 
 class TerminalArea extends ConsumerStatefulWidget {
@@ -95,6 +98,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     final uiState = ref.watch(uiProvider);
     final openTabs = sessState.openTabs;
     final activeId = sessState.activeSessionId;
+    final groups = ref.watch(serverProvider.select((s) => s.groups));
     final sessions = ref.watch(serverProvider.select((s) => s.sessions));
     final serverConfig = ref.watch(serverProvider.select((s) => s.config));
 
@@ -146,6 +150,10 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                             sessions
                                 .where((s) => s.id == tab.sessionId)
                                 .firstOrNull;
+                        final group =
+                            groups
+                                .where((g) => g.id == session?.groupId)
+                                .firstOrNull;
 
                         final terminalController = _terminalControllers
                             .putIfAbsent(tab.sessionId, TerminalController.new);
@@ -162,6 +170,11 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                             command: session?.shell,
                             cwd: session?.cwd,
                             isActive: isActive,
+                            imagePasteBridgeEnabled:
+                                shouldEnableImagePasteBridge(
+                                  session: session,
+                                  group: group,
+                                ),
                             onSessionExited: () {
                               ref
                                   .read(sessionProvider.notifier)
@@ -202,6 +215,13 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                                     process,
                                     oscTitle: oscTitle,
                                   );
+                            },
+                            onClipboardImage: (data, mimeType) {
+                              return _handleClipboardImage(
+                                sessionId: tab.sessionId,
+                                data: data,
+                                mimeType: mimeType,
+                              );
                             },
                           ),
                         );
@@ -264,6 +284,47 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     final activeId = ref.read(sessionProvider).activeSessionId;
     if (activeId == null) return;
     _terminalControllers[activeId]?.showSearch();
+  }
+
+  Future<void> _handleClipboardImage({
+    required String sessionId,
+    required Uint8List data,
+    required String mimeType,
+  }) async {
+    final serverState = ref.read(serverProvider);
+    final api = serverState.api;
+    if (api == null) return;
+
+    final session =
+        serverState.sessions.where((item) => item.id == sessionId).firstOrNull;
+    final group =
+        session == null
+            ? null
+            : serverState.groups
+                .where((item) => item.id == session.groupId)
+                .firstOrNull;
+
+    final coordinator = TerminalImagePasteCoordinator(
+      upload: api.uploadClipboardImage,
+    );
+    final outcome = await coordinator.handle(
+      sessionId: sessionId,
+      session: session,
+      group: group,
+      image: ClipboardImagePayload(data: data, mimeType: mimeType),
+    );
+
+    final injectedText = outcome.injectedText;
+    if (injectedText != null) {
+      _terminalControllers[sessionId]?.sendText(injectedText);
+    }
+
+    final errorMessage = outcome.errorMessage;
+    if (errorMessage != null && mounted) {
+      ScaffoldMessenger.maybeOf(context)
+        ?..removeCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(errorMessage)));
+    }
   }
 
   void _scheduleInteractiveTabSync(ServerState serverState) {

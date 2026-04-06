@@ -168,11 +168,7 @@ async fn start_tcp_forwarder(target_port: u16) -> (u16, oneshot::Sender<()>) {
     (port, shutdown_tx)
 }
 
-fn send_remote_command(
-    state: &AppState,
-    session_id: Uuid,
-    command: &str,
-) -> anyhow::Result<()> {
+fn send_remote_command(state: &AppState, session_id: Uuid, command: &str) -> anyhow::Result<()> {
     let session = state
         .get_session(session_id)
         .ok_or_else(|| anyhow::anyhow!("missing remote session {session_id}"))?;
@@ -222,7 +218,8 @@ async fn attach_reconnects_and_replays_missing_remote_history() {
         )
         .unwrap();
 
-    let (remote_port, remote_handle) = start_test_server(full_test_router(remote_state.clone())).await;
+    let (remote_port, remote_handle) =
+        start_test_server(full_test_router(remote_state.clone())).await;
     let (forward_port, shutdown_forwarder) = start_tcp_forwarder(remote_port).await;
     let local_port = start_local_server(local_state.clone()).await;
 
@@ -281,10 +278,7 @@ async fn attach_reconnects_and_replays_missing_remote_history() {
     shutdown_forwarder.send(()).ok();
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let gap_payload = format!(
-        "printf '__GAP_START__{}__GAP_END__\\n'\n",
-        "X".repeat(4096)
-    );
+    let gap_payload = format!("printf '__GAP_START__{}__GAP_END__\\n'\n", "X".repeat(4096));
     send_remote_command(&remote_state, session_id, &gap_payload).unwrap();
     tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -317,8 +311,12 @@ async fn attach_reconnects_and_replays_missing_remote_history() {
 
     let combined = String::from_utf8_lossy(&buffer.lock().await).to_string();
     let pre = combined.find("__PRE__").expect("missing PRE marker");
-    let gap_start = combined.find("__GAP_START__").expect("missing GAP_START marker");
-    let gap_end = combined.find("__GAP_END__").expect("missing GAP_END marker");
+    let gap_start = combined
+        .find("__GAP_START__")
+        .expect("missing GAP_START marker");
+    let gap_end = combined
+        .find("__GAP_END__")
+        .expect("missing GAP_END marker");
     let post = combined.find("__POST__").expect("missing POST marker");
     assert!(pre < gap_start && gap_start < gap_end && gap_end < post);
 

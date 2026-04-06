@@ -1,11 +1,10 @@
 import 'package:flutter/widgets.dart';
+import 'dart:typed_data';
 import '../providers/server_provider.dart';
 import '../widgets/terminal/terminal_controller.dart';
 
-typedef ForegroundChangedCallback = void Function(
-  String? process,
-  String? oscTitle,
-);
+typedef ForegroundChangedCallback =
+    void Function(String? process, String? oscTitle);
 
 /// Abstract interface for platform-specific terminal rendering.
 /// macOS uses NativeBackend (Metal).
@@ -19,9 +18,11 @@ abstract class TerminalBackend {
     String? command,
     String? cwd,
     required bool isActive,
+    bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
     void Function(String? title)? onTitleChanged,
     ForegroundChangedCallback? onForegroundChanged,
+    Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   });
 
   bool get isLocalPty;

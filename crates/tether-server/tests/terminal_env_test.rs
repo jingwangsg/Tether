@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use tether_server::config::{PersistenceSection, ServerConfig, ServerSection, TerminalSection};
 use tether_server::persistence::Store;
+use tether_server::pty::session::PtySession;
 use tether_server::remote::manager::RemoteManager;
 use tether_server::state::{AppState, AppStateInner};
 
@@ -68,6 +69,16 @@ fn cleanup(state: &AppState) {
     let _ = std::fs::remove_dir_all(&state.inner.config.persistence.data_dir);
 }
 
+fn scrollback_snapshot(session: &Arc<PtySession>) -> String {
+    let bytes = session
+        .scrollback
+        .lock()
+        .ok()
+        .and_then(|scrollback| scrollback.read_disk(0, 1_048_576).ok())
+        .unwrap_or_default();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 #[tokio::test]
 async fn local_session_reports_ghostty_terminal_identity() {
     let _guard = ENV_MUTEX.lock().unwrap();
@@ -98,7 +109,7 @@ async fn local_session_reports_ghostty_terminal_identity() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let output = loop {
-        let output = String::from_utf8_lossy(&session.get_scrollback_snapshot()).into_owned();
+        let output = scrollback_snapshot(&session);
         if output.contains("xterm-ghostty|") || tokio::time::Instant::now() >= deadline {
             break output;
         }
@@ -165,7 +176,7 @@ async fn local_session_clear_succeeds_after_terminfo_env_is_unset() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let output = loop {
-        let output = String::from_utf8_lossy(&session.get_scrollback_snapshot()).into_owned();
+        let output = scrollback_snapshot(&session);
         if output.contains("xterm-ghostty|unset|") || tokio::time::Instant::now() >= deadline {
             break output;
         }
@@ -219,7 +230,7 @@ async fn default_bash_shell_wrapper_emits_lifecycle_markers_with_prompt_command_
         if session.has_shell_integration() {
             break;
         }
-        let snapshot = String::from_utf8_lossy(&session.get_scrollback_snapshot()).into_owned();
+        let snapshot = scrollback_snapshot(&session);
         assert!(
             tokio::time::Instant::now() < prompt_deadline,
             "bash wrapper never detected shell integration; output so far: {snapshot:?}"
