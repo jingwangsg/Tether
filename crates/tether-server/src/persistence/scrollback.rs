@@ -73,6 +73,10 @@ impl ScrollbackBuffer {
         Ok(buf)
     }
 
+    pub fn disk_len(&self) -> u64 {
+        self.disk_bytes
+    }
+
     pub fn flush(&mut self) {
         if let Some(ref mut file) = self.disk_file {
             file.flush().ok();

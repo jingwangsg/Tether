@@ -18,6 +18,7 @@
 use axum::middleware;
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
+use base64::Engine;
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
@@ -33,12 +34,17 @@ use tether_server::auth;
 use tether_server::config::{PersistenceSection, ServerConfig, ServerSection, TerminalSection};
 use tether_server::persistence::Store;
 use tether_server::remote::manager::RemoteManager;
+use tether_server::remote::sync::sync_remote_host;
 use tether_server::state::{AppState, AppStateInner};
 use tether_server::ws;
 
 // ─── Test infrastructure ──────────────────────────────────────────────────────
 
 fn test_state() -> AppState {
+    test_state_with_terminal(TerminalSection::default())
+}
+
+fn test_state_with_terminal(terminal: TerminalSection) -> AppState {
     let data_dir = std::env::temp_dir()
         .join(format!("tether-reconnect-test-{}", Uuid::new_v4()))
         .to_string_lossy()
@@ -54,7 +60,7 @@ fn test_state() -> AppState {
         persistence: PersistenceSection {
             data_dir: data_dir.clone(),
         },
-        terminal: TerminalSection::default(),
+        terminal,
     };
 
     let db_path = format!("{}/tether.db", data_dir);
@@ -82,6 +88,16 @@ fn test_state() -> AppState {
 
 fn cleanup(state: &AppState) {
     let _ = std::fs::remove_dir_all(&state.inner.config.persistence.data_dir);
+}
+
+async fn start_test_server(app: Router) -> (u16, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    (port, handle)
 }
 
 /// Full router with API + WS routes, mirroring production setup.
@@ -134,6 +150,97 @@ async fn start_local_server(state: AppState) -> u16 {
     // Give the server a moment to start accepting
     tokio::time::sleep(Duration::from_millis(10)).await;
     port
+}
+
+async fn start_tcp_forwarder(target_port: u16) -> (u16, oneshot::Sender<()>) {
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let conn_handles: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+        Arc::new(tokio::sync::Mutex::new(vec![]));
+    let conn_handles_for_accept = conn_handles.clone();
+
+    let accept_handle = tokio::spawn(async move {
+        let mut shutdown_rx = shutdown_rx;
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_rx => break,
+                accept_result = listener.accept() => {
+                    let Ok((mut inbound, _)) = accept_result else {
+                        break;
+                    };
+                    let handle = tokio::spawn(async move {
+                        let Ok(mut outbound) = tokio::net::TcpStream::connect(("127.0.0.1", target_port)).await else {
+                            return;
+                        };
+                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                    });
+                    conn_handles_for_accept.lock().await.push(handle);
+                }
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        let _ = accept_handle.await;
+        for handle in conn_handles.lock().await.drain(..) {
+            handle.abort();
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    (port, shutdown_tx)
+}
+
+fn send_remote_command(
+    state: &AppState,
+    session_id: Uuid,
+    command: &str,
+) -> anyhow::Result<()> {
+    let session = state
+        .get_session(session_id)
+        .ok_or_else(|| anyhow::anyhow!("missing remote session {session_id}"))?;
+    session.write_input(command.as_bytes())
+}
+
+async fn collect_terminal_output_until(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    output: &mut Vec<u8>,
+    needle: &[u8],
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !output.windows(needle.len()).any(|window| window == needle) {
+        let remaining = deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .expect("timed out waiting for terminal output");
+        let message = tokio::time::timeout(remaining, ws.next())
+            .await
+            .expect("timed out waiting for websocket message")
+            .expect("websocket closed before expected output")
+            .expect("websocket error while collecting output");
+        if let TungMessage::Text(text) = message {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(text.as_str()) else {
+                continue;
+            };
+            let Some(kind) = value.get("type").and_then(|kind| kind.as_str()) else {
+                continue;
+            };
+            if kind != "output" && kind != "scrollback" {
+                continue;
+            }
+            let encoded = value
+                .get("data")
+                .and_then(|data| data.as_str())
+                .expect("terminal frame missing data");
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .expect("invalid base64 terminal payload");
+            output.extend_from_slice(&decoded);
+        }
+    }
 }
 
 /// Start a minimal mock "remote tether-server" that accepts WebSocket connections
@@ -269,6 +376,29 @@ async fn start_mock_remote_session_mutation_server() -> u16 {
         .route("/api/groups", get(fail_sync_groups))
         .route("/api/sessions/{id}", patch(patch_session))
         .route("/api/sessions/reorder", post(reorder_sessions));
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    port
+}
+
+async fn start_mock_remote_without_session() -> u16 {
+    async fn list_groups() -> axum::Json<Vec<serde_json::Value>> {
+        axum::Json(vec![])
+    }
+
+    async fn list_sessions() -> axum::Json<Vec<serde_json::Value>> {
+        axum::Json(vec![])
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let app = Router::new()
+        .route("/api/groups", get(list_groups))
+        .route("/api/sessions", get(list_sessions));
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.ok();
@@ -462,6 +592,194 @@ async fn ws_proxy_recovers_after_ssh_reconnect() {
         matches!(recovered, TungMessage::Text(_)),
         "expected data from new remote after reconnect, got: {:?}",
         recovered
+    );
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn ws_proxy_reconnect_replays_missing_remote_history_from_disk() {
+    let local_state = test_state();
+    let remote_state = test_state_with_terminal(TerminalSection {
+        default_shell: String::new(),
+        scrollback_memory_kb: 1,
+        scrollback_disk_max_mb: 50,
+    });
+    let session_id = Uuid::new_v4();
+
+    let remote_group = remote_state
+        .inner
+        .db
+        .create_group("remote-root", "~", None, None)
+        .unwrap();
+    remote_state
+        .create_session(
+            Uuid::parse_str(&remote_group.id).unwrap(),
+            Some("remote-shell".to_string()),
+            Some("/bin/sh".to_string()),
+            Some("~".to_string()),
+            Some(session_id),
+        )
+        .unwrap();
+
+    let (remote_port, remote_handle) = start_test_server(full_test_router(remote_state.clone())).await;
+    let (forward_port, shutdown_forwarder) = start_tcp_forwarder(remote_port).await;
+    let local_port = start_local_server(local_state.clone()).await;
+
+    local_state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("testhost", forward_port);
+    sync_remote_host(
+        &local_state.inner.db,
+        "testhost",
+        forward_port,
+        &local_state.inner.ssh_fg,
+        &local_state.inner.ssh_live_sessions,
+        Some(&local_state),
+    )
+    .await
+    .unwrap();
+
+    let url = format!("ws://127.0.0.1:{}/ws/session/{}", local_port, session_id);
+    let (mut ws1, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    send_remote_command(&remote_state, session_id, "stty -echo\n").unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    send_remote_command(&remote_state, session_id, "printf '__PRE__\\n'\n").unwrap();
+
+    let mut first_output = Vec::new();
+    collect_terminal_output_until(&mut ws1, &mut first_output, b"__PRE__").await;
+
+    shutdown_forwarder.send(()).ok();
+    let close_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = close_deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .expect("first websocket did not close after forwarder shutdown");
+        let close_outcome = tokio::time::timeout(remaining, ws1.next()).await;
+        match close_outcome {
+            Ok(None) | Ok(Some(Ok(TungMessage::Close(_)))) | Ok(Some(Err(_))) => break,
+            Err(_) => panic!("first websocket did not close after forwarder shutdown"),
+            Ok(Some(Ok(TungMessage::Text(_)))) | Ok(Some(Ok(TungMessage::Binary(_)))) => continue,
+            Ok(Some(Ok(other))) => panic!("unexpected websocket message after shutdown: {:?}", other),
+        }
+    }
+
+    let gap_payload = format!(
+        "printf '__GAP_START__{}__GAP_END__\\n'\n",
+        "X".repeat(4096)
+    );
+    send_remote_command(&remote_state, session_id, &gap_payload).unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let (forward_port_2, shutdown_forwarder_2) = start_tcp_forwarder(remote_port).await;
+    local_state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("testhost", forward_port_2);
+    sync_remote_host(
+        &local_state.inner.db,
+        "testhost",
+        forward_port_2,
+        &local_state.inner.ssh_fg,
+        &local_state.inner.ssh_live_sessions,
+        Some(&local_state),
+    )
+    .await
+    .unwrap();
+
+    let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    send_remote_command(&remote_state, session_id, "printf '__POST__\\n'\n").unwrap();
+
+    let mut second_output = Vec::new();
+    collect_terminal_output_until(&mut ws2, &mut second_output, b"__POST__").await;
+
+    let combined = String::from_utf8_lossy(&[first_output, second_output].concat()).to_string();
+    let pre = combined.find("__PRE__").expect("missing PRE marker");
+    let gap_start = combined.find("__GAP_START__").expect("missing GAP_START marker");
+    let gap_end = combined.find("__GAP_END__").expect("missing GAP_END marker");
+    let post = combined.find("__POST__").expect("missing POST marker");
+    assert!(pre < gap_start && gap_start < gap_end && gap_end < post);
+
+    let remote_sessions = remote_state.inner.db.list_sessions().unwrap();
+    assert_eq!(remote_sessions.len(), 1, "expected exactly one remote session");
+    assert_eq!(remote_sessions[0].id, session_id.to_string());
+
+    drop(ws2);
+    shutdown_forwarder_2.send(()).ok();
+    remote_handle.abort();
+    remote_state.kill_session(session_id).ok();
+    cleanup(&local_state);
+    cleanup(&remote_state);
+}
+
+#[tokio::test]
+async fn ws_proxy_emits_exited_and_prunes_stale_mirror_when_remote_session_is_missing() {
+    let state = test_state();
+    let session_id = Uuid::new_v4();
+    let local_port = start_local_server(state.clone()).await;
+
+    let group = state
+        .inner
+        .db
+        .create_group("remote-group", "~", None, Some("testhost"))
+        .unwrap();
+    state
+        .inner
+        .db
+        .create_session(
+            &session_id.to_string(),
+            &group.id,
+            "stale-remote",
+            "/bin/sh",
+            "~",
+            None,
+        )
+        .unwrap();
+
+    let remote_port = start_mock_remote_without_session().await;
+    state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("testhost", remote_port);
+
+    let url = format!("ws://127.0.0.1:{}/ws/session/{}", local_port, session_id);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    let first = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("timed out waiting for exited event")
+        .expect("local websocket closed before exited event")
+        .expect("websocket error while waiting for exited event");
+    let TungMessage::Text(text) = first else {
+        panic!("expected text event, got {first:?}");
+    };
+    let event: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
+    assert_eq!(event["type"], "session_event");
+    assert_eq!(event["event"], "exited");
+
+    for _ in 0..20 {
+        if state
+            .inner
+            .db
+            .get_session(&session_id.to_string())
+            .unwrap()
+            .is_none()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    assert!(
+        state
+            .inner
+            .db
+            .get_session(&session_id.to_string())
+            .unwrap()
+            .is_none(),
+        "stale remote mirror should be pruned after remote 404"
     );
 
     cleanup(&state);

@@ -42,6 +42,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   StreamSubscription? _msgSub;
   bool _isPaused = false;
   bool _sessionExited = false;
+  int _ackedOffset = 0;
   final List<Uint8List> _pauseBuffer = [];
 
   // Write batching — flush next microtask
@@ -298,26 +299,22 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       return;
     }
 
-    final config = serverState.config!;
-    final wsScheme = config.useTls ? 'wss' : 'ws';
-    var url =
-        '$wsScheme://${config.host}:${config.port}/ws/session/${widget.sessionId}';
-    if (config.token != null && config.token!.isNotEmpty) {
-      url += '?token=${Uri.encodeComponent(config.token!)}';
-    }
-
-    _ws = WebSocketService(url);
+    _ws = WebSocketService.withUrlBuilder(_buildWsUrl);
     _ws!.connect();
 
     _msgSub = _ws!.messages.listen((msg) {
       switch (msg) {
         case OutputMessage():
+          _ackedOffset += msg.data.length;
           _writeToTerminal(msg.data);
         case ScrollbackMessage():
+          _ackedOffset += msg.data.length;
           _writeToTerminal(msg.data);
         case SessionEventMessage():
           if (msg.event == 'exited') {
             _sessionExited = true;
+            _ws?.dispose();
+            _ws = null;
             widget.onSessionExited?.call();
           }
         case ForegroundChangedMessage():
@@ -349,6 +346,20 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
           break;
       }
     });
+  }
+
+  String _buildWsUrl() {
+    final config = ref.read(serverProvider).config!;
+    final wsScheme = config.useTls ? 'wss' : 'ws';
+    final queryParts = <String>[];
+    if (config.token != null && config.token!.isNotEmpty) {
+      queryParts.add('token=${Uri.encodeComponent(config.token!)}');
+    }
+    if (_ackedOffset > 0) {
+      queryParts.add('offset=$_ackedOffset');
+    }
+    final query = queryParts.isEmpty ? '' : '?${queryParts.join('&')}';
+    return '$wsScheme://${config.host}:${config.port}/ws/session/${widget.sessionId}$query';
   }
 
   void _writeToTerminal(Uint8List data) {

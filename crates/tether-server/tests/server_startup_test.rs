@@ -39,6 +39,7 @@ fn test_state() -> AppState {
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let (status_tx, _) = tokio::sync::broadcast::channel(64);
+    let (semantic_event_tx, semantic_event_rx) = tokio::sync::mpsc::unbounded_channel();
 
     AppState {
         inner: Arc::new(AppStateInner {
@@ -50,8 +51,8 @@ fn test_state() -> AppState {
             remote_manager: RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
-            semantic_event_tx: tokio::sync::mpsc::unbounded_channel().0,
-            semantic_event_rx: std::sync::Mutex::new(None),
+            semantic_event_tx,
+            semantic_event_rx: std::sync::Mutex::new(Some(semantic_event_rx)),
         }),
     }
 }
@@ -97,7 +98,7 @@ async fn start_mock_remote(groups: Vec<GroupRow>, sessions: Vec<SessionRow>) -> 
 }
 
 #[tokio::test]
-async fn server_startup_marks_only_local_sessions_dead() {
+async fn server_startup_deletes_local_sessions_and_preserves_remote_mirrors() {
     let state = test_state();
     state
         .inner
@@ -128,6 +129,12 @@ async fn server_startup_marks_only_local_sessions_dead() {
             None,
         )
         .unwrap();
+    let local_scrollback_dir = format!(
+        "{}/sessions/local-session",
+        state.inner.config.persistence.data_dir
+    );
+    std::fs::create_dir_all(&local_scrollback_dir).unwrap();
+    std::fs::write(format!("{local_scrollback_dir}/scrollback.raw"), b"local-history").unwrap();
     state
         .inner
         .db
@@ -144,32 +151,33 @@ async fn server_startup_marks_only_local_sessions_dead() {
     let server_task = tokio::spawn(server::run(state.clone(), true));
 
     for _ in 0..20 {
-        let sessions = state.inner.db.list_sessions().unwrap();
-        let local = sessions
-            .iter()
-            .find(|session| session.id == "local-session");
-        if matches!(local, Some(session) if !session.is_alive) {
+        if state
+            .inner
+            .db
+            .get_session("local-session")
+            .unwrap()
+            .is_none()
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    let sessions = state.inner.db.list_sessions().unwrap();
-    let local = sessions
-        .iter()
-        .find(|session| session.id == "local-session")
-        .unwrap();
-    let remote = sessions
-        .iter()
-        .find(|session| session.id == "remote-session")
-        .unwrap();
-
     assert!(
-        !local.is_alive,
-        "local sessions should be marked dead on server restart"
+        state.inner.db.get_session("local-session").unwrap().is_none(),
+        "local sessions should be deleted on server restart"
     );
     assert!(
-        remote.is_alive,
+        !std::path::Path::new(&local_scrollback_dir).exists(),
+        "local session scrollback should be deleted on server restart"
+    );
+    assert!(
+        state
+            .inner
+            .db
+            .get_session("remote-session")
+            .unwrap()
+            .is_some_and(|session| session.is_alive),
         "remote mirrored sessions should survive local server restart"
     );
     assert!(
@@ -260,15 +268,9 @@ async fn server_startup_clears_legacy_ssh_mirrors_and_sync_rebuilds_shared_state
             .is_none(),
         "legacy SSH-backed local sessions should be cleared on first shared-model startup"
     );
-    let local = state
-        .inner
-        .db
-        .get_session("local-session")
-        .unwrap()
-        .unwrap();
     assert!(
-        !local.is_alive,
-        "local sessions should still be marked dead during the upgrade startup"
+        state.inner.db.get_session("local-session").unwrap().is_none(),
+        "local sessions should also be deleted during the upgrade startup"
     );
 
     let authoritative_group = GroupRow {

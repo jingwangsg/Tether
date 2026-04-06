@@ -675,6 +675,44 @@ impl Store {
         Ok(())
     }
 
+    /// Delete all sessions belonging to local (non-SSH) groups and remove their
+    /// session-group registry assignments. Used on startup because local PTYs do
+    /// not survive a local server restart and should not be revived.
+    pub fn delete_local_sessions(&self) -> anyhow::Result<Vec<String>> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        let local_session_ids = {
+            let mut stmt = tx.prepare(
+                "SELECT s.id FROM sessions s \
+                 JOIN groups g ON s.group_id = g.id \
+                 WHERE g.ssh_host IS NULL",
+            )?;
+            let ids = stmt
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<Vec<String>, _>>()?;
+            ids
+        };
+
+        tx.execute(
+            "DELETE FROM session_group_registry \
+             WHERE session_id IN (
+                 SELECT s.id FROM sessions s
+                 JOIN groups g ON s.group_id = g.id
+                 WHERE g.ssh_host IS NULL
+             )",
+            [],
+        )?;
+        tx.execute(
+            "DELETE FROM sessions \
+             WHERE group_id IN (SELECT id FROM groups WHERE ssh_host IS NULL)",
+            [],
+        )?;
+        tx.commit()?;
+
+        Ok(local_session_ids)
+    }
+
     /// Return the IDs of all sessions belonging to SSH-backed groups.
     #[allow(dead_code)]
     pub fn get_remote_session_ids(&self) -> anyhow::Result<Vec<String>> {

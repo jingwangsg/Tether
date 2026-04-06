@@ -19,9 +19,13 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
         );
     }
 
-    // Mark local sessions dead (PTYs don't survive restart; keep records and scrollback
-    // so the user can see their session list and history after restarting the server).
-    state.inner.db.mark_local_sessions_dead()?;
+    // Local PTYs do not survive a local server restart. Remove their DB rows and
+    // persisted scrollback so the client never tries to revive them.
+    let deleted_local_session_ids = state.inner.db.delete_local_sessions()?;
+    for session_id in deleted_local_session_ids {
+        let session_dir = format!("{}/sessions/{}", state.inner.config.data_dir(), session_id);
+        let _ = std::fs::remove_dir_all(&session_dir);
+    }
 
     let addr = format!(
         "{}:{}",

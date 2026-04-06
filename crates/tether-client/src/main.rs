@@ -13,6 +13,8 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
+const MAX_RECONNECT_DELAY_SECS: u64 = 30;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "tether-client",
@@ -78,23 +80,13 @@ async fn main() -> Result<()> {
 }
 
 async fn run_attach(args: AttachArgs) -> Result<i32> {
-    let ws_url = build_session_ws_url(&args.server, &args.session, args.token.as_deref())?;
     let stdin_fd = io::stdin().as_raw_fd();
     let stdout_fd = io::stdout().as_raw_fd();
     let _raw_mode = RawModeGuard::new(stdin_fd).context("failed to enable raw mode")?;
 
-    let (stream, _) = connect_async(ws_url.as_str())
-        .await
-        .with_context(|| format!("failed to connect to {ws_url}"))?;
-    let (mut ws_write, mut ws_read) = stream.split();
-
     let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<ClientMessage>();
     let input_tx_reader = input_tx.clone();
     std::thread::spawn(move || stdin_reader_loop(input_tx_reader));
-
-    if let Some((cols, rows)) = current_winsize(stdout_fd).or_else(|| current_winsize(stdin_fd)) {
-        let _ = input_tx.send(ClientMessage::Resize { cols, rows });
-    }
 
     #[cfg(unix)]
     let signal_task = {
@@ -137,55 +129,133 @@ async fn run_attach(args: AttachArgs) -> Result<i32> {
     let mut stdout = BufWriter::new(tokio::io::stdout());
     let mut exit_code = 1;
     let mut saw_exit = false;
+    let mut acked_offset = 0u64;
+    let mut reconnect_attempts = 0u32;
 
     loop {
-        tokio::select! {
-            Some(message) = input_rx.recv() => {
-                ws_write
-                    .send(Message::Text(message.into_text().into()))
-                    .await
-                    .context("failed to send websocket message")?;
+        let ws_url = build_session_ws_url(
+            &args.server,
+            &args.session,
+            args.token.as_deref(),
+            Some(acked_offset),
+        )?;
+        let (stream, _) = match connect_async(ws_url.as_str()).await {
+            Ok(result) => {
+                reconnect_attempts = 0;
+                result
             }
-            message = ws_read.next() => {
-                let Some(message) = message else { break };
-                match message.context("websocket receive failed")? {
-                    Message::Text(text) => {
-                        if handle_server_message(&text, &mut stdout, &mut exit_code, &mut saw_exit).await?
-                        {
+            Err(error) if is_permanent_connect_error(&error) => {
+                return Err(error).with_context(|| format!("failed to connect to {ws_url}"));
+            }
+            Err(_) => {
+                tokio::time::sleep(reconnect_delay(reconnect_attempts)).await;
+                reconnect_attempts += 1;
+                continue;
+            }
+        };
+
+        let (mut ws_write, mut ws_read) = stream.split();
+        if let Some((cols, rows)) = current_winsize(stdout_fd).or_else(|| current_winsize(stdin_fd))
+        {
+            let _ = input_tx.send(ClientMessage::Resize { cols, rows });
+        }
+
+        let mut should_reconnect = false;
+        loop {
+            tokio::select! {
+                Some(message) = input_rx.recv() => {
+                    if ws_write
+                        .send(Message::Text(message.into_text().into()))
+                        .await
+                        .is_err()
+                    {
+                        should_reconnect = true;
+                        break;
+                    }
+                }
+                message = ws_read.next() => {
+                    let Some(message) = message else {
+                        should_reconnect = true;
+                        break;
+                    };
+                    match message {
+                        Ok(Message::Text(text)) => {
+                            if handle_server_message(
+                                &text,
+                                &mut stdout,
+                                &mut exit_code,
+                                &mut saw_exit,
+                                &mut acked_offset,
+                            ).await? {
+                                break;
+                            }
+                        }
+                        Ok(Message::Binary(bytes)) => {
+                            stdout
+                                .write_all(&bytes)
+                                .await
+                                .context("failed to write websocket bytes to stdout")?;
+                            stdout.flush().await.context("failed to flush stdout")?;
+                            acked_offset += bytes.len() as u64;
+                        }
+                        Ok(Message::Ping(payload)) => {
+                            if ws_write
+                                .send(Message::Pong(payload))
+                                .await
+                                .is_err()
+                            {
+                                should_reconnect = true;
+                                break;
+                            }
+                        }
+                        Ok(Message::Pong(_)) => {}
+                        Ok(Message::Close(_)) => {
+                            should_reconnect = true;
+                            break;
+                        }
+                        Ok(Message::Frame(_)) => {}
+                        Err(error) => {
+                            if is_permanent_stream_error(&error) {
+                                return Err(error).context("websocket receive failed");
+                            }
+                            should_reconnect = true;
                             break;
                         }
                     }
-                    Message::Binary(bytes) => {
-                        stdout
-                            .write_all(&bytes)
-                            .await
-                            .context("failed to write websocket bytes to stdout")?;
-                        stdout.flush().await.context("failed to flush stdout")?;
-                    }
-                    Message::Ping(payload) => {
-                        ws_write
-                            .send(Message::Pong(payload))
-                            .await
-                            .context("failed to reply to ping")?;
-                    }
-                    Message::Pong(_) => {}
-                    Message::Close(_) => break,
-                    Message::Frame(_) => {}
                 }
             }
         }
+
+        if saw_exit {
+            stdout.flush().await.context("failed to flush stdout")?;
+            drop(input_tx);
+            ping_task.abort();
+            #[cfg(unix)]
+            signal_task.abort();
+            return Ok(exit_code);
+        }
+
+        if !should_reconnect {
+            tokio::time::sleep(reconnect_delay(reconnect_attempts)).await;
+        } else {
+            tokio::time::sleep(reconnect_delay(reconnect_attempts)).await;
+        }
+        reconnect_attempts += 1;
     }
 
-    stdout.flush().await.context("failed to flush stdout")?;
-    drop(input_tx);
-    ping_task.abort();
-    #[cfg(unix)]
-    signal_task.abort();
+    #[allow(unreachable_code)]
+    {
+        stdout.flush().await.context("failed to flush stdout")?;
+        drop(input_tx);
+        ping_task.abort();
+        #[cfg(unix)]
+        signal_task.abort();
 
-    if saw_exit {
-        Ok(exit_code)
-    } else {
-        bail!("session stream ended unexpectedly")
+        if saw_exit {
+            Ok(exit_code)
+        } else {
+            bail!("session stream ended unexpectedly")
+        }
     }
 }
 
@@ -194,6 +264,7 @@ async fn handle_server_message<W: AsyncWrite + Unpin>(
     stdout: &mut W,
     exit_code: &mut i32,
     saw_exit: &mut bool,
+    acked_offset: &mut u64,
 ) -> Result<bool> {
     let json: serde_json::Value =
         serde_json::from_str(raw).context("failed to parse server json")?;
@@ -216,6 +287,7 @@ async fn handle_server_message<W: AsyncWrite + Unpin>(
                 .await
                 .context("failed to write server output")?;
             stdout.flush().await.context("failed to flush stdout")?;
+            *acked_offset += data.len() as u64;
             Ok(false)
         }
         "session_event" => {
@@ -255,7 +327,12 @@ fn stdin_reader_loop(sender: tokio::sync::mpsc::UnboundedSender<ClientMessage>) 
     }
 }
 
-fn build_session_ws_url(server: &str, session: &str, token: Option<&str>) -> Result<Url> {
+fn build_session_ws_url(
+    server: &str,
+    session: &str,
+    token: Option<&str>,
+    offset: Option<u64>,
+) -> Result<Url> {
     let mut url = Url::parse(server).with_context(|| format!("invalid server URL: {server}"))?;
     match url.scheme() {
         "http" => {
@@ -271,11 +348,50 @@ fn build_session_ws_url(server: &str, session: &str, token: Option<&str>) -> Res
     url.set_path(&format!("/ws/session/{session}"));
     url.set_query(None);
 
-    if let Some(token) = token {
-        url.query_pairs_mut().append_pair("token", token);
+    if token.is_some() || offset.unwrap_or_default() > 0 {
+        let mut query_pairs = url.query_pairs_mut();
+        if let Some(token) = token {
+            query_pairs.append_pair("token", token);
+        }
+        if let Some(offset) = offset.filter(|offset| *offset > 0) {
+            query_pairs.append_pair("offset", &offset.to_string());
+        }
     }
 
     Ok(url)
+}
+
+fn reconnect_delay(attempt: u32) -> Duration {
+    let seconds = std::cmp::min(2u64.saturating_pow(attempt), MAX_RECONNECT_DELAY_SECS);
+    Duration::from_secs(seconds.max(1))
+}
+
+fn is_permanent_connect_error(error: &tokio_tungstenite::tungstenite::Error) -> bool {
+    matches!(
+        error,
+        tokio_tungstenite::tungstenite::Error::Http(response)
+            if matches!(
+                response.status(),
+                tokio_tungstenite::tungstenite::http::StatusCode::NOT_FOUND
+                    | tokio_tungstenite::tungstenite::http::StatusCode::GONE
+                    | tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED
+                    | tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN
+            )
+    )
+}
+
+fn is_permanent_stream_error(error: &tokio_tungstenite::tungstenite::Error) -> bool {
+    matches!(
+        error,
+        tokio_tungstenite::tungstenite::Error::Http(response)
+            if matches!(
+                response.status(),
+                tokio_tungstenite::tungstenite::http::StatusCode::NOT_FOUND
+                    | tokio_tungstenite::tungstenite::http::StatusCode::GONE
+                    | tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED
+                    | tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN
+            )
+    )
 }
 
 struct RawModeGuard {
@@ -349,17 +465,29 @@ mod tests {
 
     #[test]
     fn http_server_becomes_ws() {
-        let url = build_session_ws_url("http://localhost:7680", "abc", None).unwrap();
+        let url = build_session_ws_url("http://localhost:7680", "abc", None, None).unwrap();
         assert_eq!(url.as_str(), "ws://localhost:7680/ws/session/abc");
     }
 
     #[test]
     fn https_server_becomes_wss_with_token() {
-        let url = build_session_ws_url("https://example.com", "abc", Some("hello world")).unwrap();
+        let url = build_session_ws_url(
+            "https://example.com",
+            "abc",
+            Some("hello world"),
+            None,
+        )
+        .unwrap();
         assert_eq!(
             url.as_str(),
             "wss://example.com/ws/session/abc?token=hello+world"
         );
+    }
+
+    #[test]
+    fn ws_url_includes_offset_when_present() {
+        let url = build_session_ws_url("http://localhost:7680", "abc", None, Some(128)).unwrap();
+        assert_eq!(url.as_str(), "ws://localhost:7680/ws/session/abc?offset=128");
     }
 
     #[tokio::test]
@@ -367,12 +495,14 @@ mod tests {
         let mut stdout = BufWriter::new(tokio::io::sink());
         let mut exit_code = 1;
         let mut saw_exit = false;
+        let mut acked_offset = 0u64;
 
         let should_exit = handle_server_message(
             r#"{"type":"session_event","event":"exited","exit_code":42}"#,
             &mut stdout,
             &mut exit_code,
             &mut saw_exit,
+            &mut acked_offset,
         )
         .await
         .unwrap();
@@ -387,12 +517,14 @@ mod tests {
         let mut stdout = BufWriter::new(tokio::io::sink());
         let mut exit_code = 1;
         let mut saw_exit = false;
+        let mut acked_offset = 0u64;
 
         let should_exit = handle_server_message(
             r#"{"type":"foreground_changed","session_id":"test-123","process":"codex","osc_title":"· Codex CLI"}"#,
             &mut stdout,
             &mut exit_code,
             &mut saw_exit,
+            &mut acked_offset,
         )
         .await
         .unwrap();

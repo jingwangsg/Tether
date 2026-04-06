@@ -6,16 +6,21 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use base64::Engine;
+use futures::Sink;
 use futures::stream::StreamExt;
 use futures::SinkExt;
 use serde::Deserialize;
 use tokio_tungstenite::tungstenite;
 use uuid::Uuid;
 
+const WS_SCROLLBACK_CHUNK_SIZE: usize = 64 * 1024;
+
 #[derive(Deserialize)]
 pub struct WsQuery {
     pub token: Option<String>,
     pub mode: Option<String>,
+    #[serde(default)]
+    pub offset: u64,
 }
 
 fn status_message(foreground: SessionForeground) -> ServerMessage {
@@ -44,6 +49,11 @@ pub async fn ws_handler(
         Err(_) => return axum::http::StatusCode::BAD_REQUEST.into_response(),
     };
 
+    let session_row = match state.inner.db.get_session(&session_id.to_string()) {
+        Ok(row) => row,
+        Err(_) => return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
     // For SSH-group sessions, verify the tunnel port is reachable BEFORE upgrading.
     if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&session_id.to_string()) {
         match state.inner.remote_manager.get_tunnel_port(&ssh_host) {
@@ -58,18 +68,32 @@ pub async fn ws_handler(
                 }
             }
         }
+    } else if !matches!(
+        session_row,
+        Some(_) if state
+            .get_session(session_id)
+            .is_some_and(|session| session.is_alive())
+    ) {
+        return axum::http::StatusCode::GONE.into_response();
     }
 
     let mode = query.mode.unwrap_or_default();
-    ws.on_upgrade(move |socket| handle_socket(socket, session_id, mode, state))
+    let offset = query.offset;
+    ws.on_upgrade(move |socket| handle_socket(socket, session_id, mode, offset, state))
         .into_response()
 }
 
-async fn handle_socket(socket: WebSocket, session_id: Uuid, mode: String, state: AppState) {
+async fn handle_socket(
+    socket: WebSocket,
+    session_id: Uuid,
+    mode: String,
+    offset: u64,
+    state: AppState,
+) {
     // Route to remote tether-server if this session belongs to an SSH group
     if let Ok(Some(ssh_host)) = state.inner.db.get_session_ssh_host(&session_id.to_string()) {
         if let Some(port) = state.inner.remote_manager.get_tunnel_port(&ssh_host) {
-            proxy_ws_to_remote(socket, session_id, port, &mode, state).await;
+            proxy_ws_to_remote(socket, session_id, port, &mode, offset, state).await;
             return;
         }
         tracing::warn!(
@@ -94,31 +118,36 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, mode: String, state:
     }
 
     let (mut ws_sink, mut ws_stream) = socket.split();
-    let b64 = base64::engine::general_purpose::STANDARD;
-
-    // Send scrollback replay
-    let scrollback = session.get_scrollback_snapshot();
-    if !scrollback.is_empty() {
-        let msg = ServerMessage::Scrollback {
-            data: b64.encode(&scrollback),
+    let replay_end;
+    let mut output_rx;
+    {
+        let scrollback = match session.scrollback.lock() {
+            Ok(scrollback) => scrollback,
+            Err(_) => return,
         };
-        if let Ok(json) = serde_json::to_string(&msg) {
-            let _ = ws_sink.send(Message::Text(json.into())).await;
-        }
+        replay_end = scrollback.disk_len();
+        output_rx = session.output_tx.subscribe();
+    }
+
+    if send_scrollback_replay(&mut ws_sink, &session, offset, replay_end)
+        .await
+        .is_err()
+    {
+        return;
     }
 
     // Send current foreground state immediately
     let current_fg = session.get_foreground();
     if current_fg.process.is_some() || current_fg.osc_title.is_some() {
-        let msg = status_message(current_fg);
-        if let Ok(json) = serde_json::to_string(&msg) {
-            let _ = ws_sink.send(Message::Text(json.into())).await;
+        if send_json_message(&mut ws_sink, &status_message(current_fg))
+            .await
+            .is_err()
+        {
+            return;
         }
     }
 
     // Subscribe to session output
-    let mut output_rx = session.output_tx.subscribe();
-
     let session_for_input = session.clone();
     let session_for_events = session.clone();
 
@@ -158,13 +187,7 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, mode: String, state:
                             tracing::warn!("WS client lagged by {} messages", n);
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            let msg = ServerMessage::SessionEvent {
-                                event: "exited".to_string(),
-                                exit_code: None,
-                            };
-                            if let Ok(json) = serde_json::to_string(&msg) {
-                                let _ = ws_sink.send(Message::Text(json.into())).await;
-                            }
+                            let _ = send_json_message(&mut ws_sink, &exited_message()).await;
                             break;
                         }
                     }
@@ -181,11 +204,11 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, mode: String, state:
                 result = status_rx.recv() => {
                     match result {
                         Ok((sid, foreground)) if sid == session_id => {
-                            let msg = status_message(foreground);
-                            if let Ok(json) = serde_json::to_string(&msg) {
-                                if ws_sink.send(Message::Text(json.into())).await.is_err() {
-                                    break;
-                                }
+                            if send_json_message(&mut ws_sink, &status_message(foreground))
+                                .await
+                                .is_err()
+                            {
+                                break;
                             }
                         }
                         Ok(_) => {}
@@ -195,13 +218,7 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, mode: String, state:
                 }
                 _ = exit_check.tick() => {
                     if !session_for_events.is_alive() {
-                        let msg = ServerMessage::SessionEvent {
-                            event: "exited".to_string(),
-                            exit_code: None,
-                        };
-                        if let Ok(json) = serde_json::to_string(&msg) {
-                            let _ = ws_sink.send(Message::Text(json.into())).await;
-                        }
+                        let _ = send_json_message(&mut ws_sink, &exited_message()).await;
                         break;
                     }
                 }
@@ -220,7 +237,9 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, mode: String, state:
                 if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) {
                     match client_msg {
                         ClientMessage::Input { data } => {
-                            if let Ok(decoded) = b64.decode(&data) {
+                            if let Ok(decoded) =
+                                base64::engine::general_purpose::STANDARD.decode(&data)
+                            {
                                 let _ = input_tx.send(decoded);
                             }
                         }
@@ -377,18 +396,53 @@ async fn handle_events_socket(
 /// session via the SSH tunnel. Also maintains `state.inner.ssh_fg` by intercepting
 /// `foreground_changed` messages from the remote.
 async fn proxy_ws_to_remote(
-    client_ws: WebSocket,
+    mut client_ws: WebSocket,
     session_id: Uuid,
     tunnel_port: u16,
     mode: &str,
+    offset: u64,
     state: AppState,
 ) {
     let mut url = format!("ws://127.0.0.1:{}/ws/session/{}", tunnel_port, session_id);
+    let mut query = Vec::new();
     if mode == "events" {
-        url.push_str("?mode=events");
+        query.push("mode=events".to_string());
+    } else if offset > 0 {
+        query.push(format!("offset={offset}"));
+    }
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(&query.join("&"));
     }
     let remote_ws = match tokio_tungstenite::connect_async(&url).await {
         Ok((ws, _)) => ws,
+        Err(tungstenite::Error::Http(response))
+            if response.status() == axum::http::StatusCode::NOT_FOUND
+                || response.status() == axum::http::StatusCode::GONE =>
+        {
+            if let Ok(Some(host_alias)) = state.inner.db.get_session_ssh_host(&session_id.to_string())
+            {
+                if let Err(error) = crate::remote::sync::sync_remote_host(
+                    &state.inner.db,
+                    &host_alias,
+                    tunnel_port,
+                    &state.inner.ssh_fg,
+                    &state.inner.ssh_live_sessions,
+                    Some(&state),
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "WS proxy: failed to refresh remote host {} after missing session {}: {}",
+                        host_alias,
+                        session_id,
+                        error
+                    );
+                }
+            }
+            let _ = send_json_message(&mut client_ws, &exited_message()).await;
+            return;
+        }
         Err(e) => {
             tracing::warn!("WS proxy: failed to connect to remote {}: {}", url, e);
             return;
@@ -407,10 +461,11 @@ async fn proxy_ws_to_remote(
         .map(|fg| fg.clone())
         .unwrap_or_default();
     if initial_fg.process.is_some() || initial_fg.osc_title.is_some() {
-        if let Ok(json) = serde_json::to_string(&status_message(initial_fg)) {
-            if client_sink.send(Message::Text(json.into())).await.is_err() {
-                return;
-            }
+        if send_json_message(&mut client_sink, &status_message(initial_fg))
+            .await
+            .is_err()
+        {
+            return;
         }
     }
 
@@ -470,15 +525,16 @@ async fn proxy_ws_to_remote(
                 }
             }
             result = status_rx.recv() => {
-                match result {
-                    Ok((sid, foreground)) if sid == session_id => {
-                        if let Ok(json) = serde_json::to_string(&status_message(foreground)) {
-                            if client_sink.send(Message::Text(json.into())).await.is_err() {
+                    match result {
+                        Ok((sid, foreground)) if sid == session_id => {
+                            if send_json_message(&mut client_sink, &status_message(foreground))
+                                .await
+                                .is_err()
+                            {
                                 break;
                             }
                         }
-                    }
-                    Ok(_) => {}
+                        Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -488,6 +544,67 @@ async fn proxy_ws_to_remote(
 
     client_to_remote.abort();
     tracing::debug!("WS proxy disconnected for remote session {}", session_id);
+}
+
+fn exited_message() -> ServerMessage {
+    ServerMessage::SessionEvent {
+        event: "exited".to_string(),
+        exit_code: None,
+    }
+}
+
+async fn send_json_message<S>(sink: &mut S, message: &ServerMessage) -> Result<(), S::Error>
+where
+    S: Sink<Message> + Unpin,
+{
+    if let Ok(json) = serde_json::to_string(message) {
+        sink.send(Message::Text(json.into())).await?;
+    }
+    Ok(())
+}
+
+async fn send_scrollback_chunk<S>(sink: &mut S, data: &[u8]) -> Result<(), S::Error>
+where
+    S: Sink<Message> + Unpin,
+{
+    let message = ServerMessage::Scrollback {
+        data: base64::engine::general_purpose::STANDARD.encode(data),
+    };
+    send_json_message(sink, &message).await
+}
+
+async fn send_scrollback_replay(
+    ws_sink: &mut futures::stream::SplitSink<WebSocket, Message>,
+    session: &std::sync::Arc<crate::pty::session::PtySession>,
+    offset: u64,
+    replay_end: u64,
+) -> Result<(), axum::Error> {
+    let mut next_offset = offset.min(replay_end);
+    while next_offset < replay_end {
+        let remaining = replay_end - next_offset;
+        let chunk_len = remaining.min(WS_SCROLLBACK_CHUNK_SIZE as u64) as usize;
+        let chunk = match session.scrollback.lock() {
+            Ok(scrollback) => match scrollback.read_disk(next_offset, chunk_len) {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    tracing::warn!(
+                        "WS: failed reading scrollback replay for {} at offset {}: {}",
+                        session.id,
+                        next_offset,
+                        error
+                    );
+                    break;
+                }
+            },
+            Err(_) => break,
+        };
+        if chunk.is_empty() {
+            break;
+        }
+        send_scrollback_chunk(ws_sink, &chunk).await?;
+        next_offset += chunk.len() as u64;
+    }
+    Ok(())
 }
 
 struct ActiveSshProxyGuard {
