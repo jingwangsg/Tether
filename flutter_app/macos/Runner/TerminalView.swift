@@ -9,7 +9,7 @@ struct TerminalScrollbarState: Equatable {
 
 enum ScrollbarUpdateDisposition: Equatable {
     case apply(TerminalScrollbarState?)
-    case defer
+    case deferred
 }
 
 struct ScrollbarActivationCoordinator {
@@ -20,24 +20,24 @@ struct ScrollbarActivationCoordinator {
     mutating func receive(_ state: TerminalScrollbarState?) -> ScrollbarUpdateDisposition {
         latestState = state
         if !isActive || isCoalescingAfterActivation {
-            return .defer
+            return .deferred
         }
         return .apply(state)
     }
 
     mutating func setActive(_ active: Bool) -> ScrollbarUpdateDisposition {
-        guard active != isActive else { return .defer }
+        guard active != isActive else { return .deferred }
         isActive = active
         if active {
             isCoalescingAfterActivation = true
             return .apply(latestState)
         }
         isCoalescingAfterActivation = false
-        return .defer
+        return .deferred
     }
 
     mutating func flushDeferredActivationState() -> ScrollbarUpdateDisposition {
-        guard isCoalescingAfterActivation else { return .defer }
+        guard isCoalescingAfterActivation else { return .deferred }
         isCoalescingAfterActivation = false
         return .apply(latestState)
     }
@@ -126,7 +126,7 @@ final class TerminalView: NSView {
             switch self.scrollbarCoordinator.receive(state) {
             case .apply:
                 self.synchronizeScrollView()
-            case .defer:
+            case .deferred:
                 self.scheduleDeferredScrollbarFlushIfNeeded()
             }
         }
@@ -212,7 +212,7 @@ final class TerminalView: NSView {
             case .apply:
                 self.synchronizeScrollView(forceScrollOffset: true)
                 self.synchronizeSurfaceView()
-            case .defer:
+            case .deferred:
                 break
             }
         }
@@ -241,7 +241,7 @@ final class TerminalView: NSView {
             scheduleDeferredScrollbarFlushIfNeeded()
             surfaceView.setActive(true)
             return
-        case .defer:
+        case .deferred:
             break
         }
         surfaceView.setActive(active)
