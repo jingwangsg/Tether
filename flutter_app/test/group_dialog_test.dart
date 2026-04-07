@@ -29,6 +29,12 @@ void main() {
     (widget) => widget is TextField && widget.decoration?.labelText == 'Path',
   );
 
+  Finder hostField() => find.byWidgetPredicate(
+    (widget) =>
+        widget is DropdownButtonFormField<String?> &&
+        widget.decoration?.labelText == 'Host',
+  );
+
   Future<void> pumpDialog(
     WidgetTester tester, {
     required ServerState state,
@@ -58,6 +64,16 @@ void main() {
         .widgetList<EditableText>(find.byType(EditableText))
         .last
         .focusNode;
+  }
+
+  DropdownButtonFormField<String?> hostDropdown(WidgetTester tester) {
+    return tester.widget<DropdownButtonFormField<String?>>(hostField());
+  }
+
+  DropdownButton<String?> hostDropdownButton(WidgetTester tester) {
+    return tester.widget<DropdownButton<String?>>(
+      find.byWidgetPredicate((widget) => widget is DropdownButton<String?>),
+    );
   }
 
   testWidgets(
@@ -142,6 +158,54 @@ void main() {
         find.byKey(const ValueKey('group-dialog-completions')),
         findsNothing,
       );
+    },
+  );
+
+  testWidgets('new group only lists reachable ssh hosts', (tester) async {
+    await pumpDialog(
+      tester,
+      state: ServerState(
+        isConnected: true,
+        sshHosts: [
+          SshHost(host: 'up-host', reachable: true),
+          SshHost(host: 'down-host', reachable: false),
+          SshHost(host: 'unknown-host'),
+        ],
+      ),
+    );
+
+    final dropdown = hostDropdown(tester);
+    final dropdownButton = hostDropdownButton(tester);
+    expect(
+      dropdownButton.items!.map((item) => item.value).toList(),
+      equals([null, 'up-host']),
+    );
+    expect(dropdown.initialValue, isNull);
+  });
+
+  testWidgets(
+    'edit group keeps the current unreachable host in the disabled dropdown',
+    (tester) async {
+      await pumpDialog(
+        tester,
+        state: ServerState(
+          isConnected: true,
+          sshHosts: [
+            SshHost(host: 'up-host', reachable: true),
+            SshHost(host: 'down-host', reachable: false),
+          ],
+        ),
+        group: makeGroup(defaultCwd: '', sshHost: 'down-host'),
+      );
+
+      final dropdown = hostDropdown(tester);
+      final dropdownButton = hostDropdownButton(tester);
+      expect(
+        dropdownButton.items!.map((item) => item.value).toList(),
+        equals([null, 'down-host', 'up-host']),
+      );
+      expect(dropdown.initialValue, 'down-host');
+      expect(dropdown.onChanged, isNull);
     },
   );
 

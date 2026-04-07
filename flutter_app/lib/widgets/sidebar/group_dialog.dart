@@ -73,6 +73,28 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
     return null;
   }
 
+  List<SshHost> _hostOptions(ServerState serverState) {
+    final reachableHosts =
+        serverState.sshHosts.where((host) => host.reachable == true).toList();
+    if (!_isEdit) return reachableHosts;
+
+    final selectedHost = _selectedHostState(serverState);
+    if (selectedHost != null) {
+      return [
+        selectedHost,
+        ...reachableHosts.where((host) => host.host != selectedHost.host),
+      ];
+    }
+
+    final selectedHostAlias = _selectedSshHost;
+    if (selectedHostAlias == null) return reachableHosts;
+
+    return [
+      SshHost(host: selectedHostAlias),
+      ...reachableHosts.where((host) => host.host != selectedHostAlias),
+    ];
+  }
+
   void _setCompletionState({
     required List<String> completions,
     required bool showCompletions,
@@ -302,7 +324,7 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
   @override
   Widget build(BuildContext context) {
     final serverState = ref.watch(groupDialogServerStateProvider);
-    final sshHosts = serverState.sshHosts;
+    final sshHosts = _hostOptions(serverState);
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
 
     return AlertDialog(
