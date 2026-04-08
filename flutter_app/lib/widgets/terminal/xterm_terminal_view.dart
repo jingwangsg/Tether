@@ -267,6 +267,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       sendText: sendText,
       paste: paste,
       showSearch: showSearch,
+      copy: copySelection,
     );
   }
 
@@ -279,6 +280,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
         sendText: sendText,
         paste: paste,
         showSearch: showSearch,
+        copy: copySelection,
       );
     }
     if (oldWidget.isActive != widget.isActive) {
@@ -450,6 +452,13 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     _terminal.paste(text);
   }
 
+  void copySelection() {
+    final selection = _terminalController.selection;
+    if (selection == null) return;
+    final text = _terminal.buffer.getText(selection);
+    Clipboard.setData(ClipboardData(text: text));
+  }
+
   Future<void> pasteFromClipboard() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data?.text != null) {
@@ -480,12 +489,8 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       if (value == null) return;
       switch (value) {
         case 'copy':
-          final selection = _terminalController.selection;
-          if (selection != null) {
-            final text = _terminal.buffer.getText(selection);
-            Clipboard.setData(ClipboardData(text: text));
-            _terminalController.clearSelection();
-          }
+          copySelection();
+          _terminalController.clearSelection();
         case 'paste':
           pasteFromClipboard();
       }

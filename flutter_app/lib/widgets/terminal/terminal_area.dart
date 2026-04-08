@@ -248,7 +248,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
         child: Column(
           children: [
             content,
-            if (uiState.isMobile)
+            if (uiState.showKeyBar)
               Container(
                 color: const Color(0xFF1E1E1E),
                 padding: EdgeInsets.only(
@@ -261,7 +261,10 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                       _terminalControllers[id]?.sendText(data);
                     }
                   },
-                  onCopy: () {},
+                  onCopy: () {
+                    final id = ref.read(sessionProvider).activeSessionId;
+                    if (id != null) _terminalControllers[id]?.copy();
+                  },
                   onPaste: () => _pasteToActiveTerminal(),
                 ),
               ),

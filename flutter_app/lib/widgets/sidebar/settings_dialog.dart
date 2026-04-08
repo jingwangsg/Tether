@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -59,9 +60,11 @@ class _SettingsDialog extends ConsumerWidget {
                     .setScrollToBottomOnOutput(value);
               },
             ),
-            const Divider(color: Colors.white12),
-            const SizedBox(height: 8),
-            const _HotkeyRow(),
+            if (Platform.isMacOS) ...[
+              const Divider(color: Colors.white12),
+              const SizedBox(height: 8),
+              const _HotkeyRow(),
+            ],
             const Divider(color: Colors.white12),
             const SizedBox(height: 8),
             const Text(

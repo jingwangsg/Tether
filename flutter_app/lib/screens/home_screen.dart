@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'dart:math' show min;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -35,7 +36,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       _windowChannel.setMethodCallHandler(_handleWindowMethodCall);
     }
     HardwareKeyboard.instance.addHandler(_handleGlobalKey);
-    _checkMobile();
   }
 
   @override
@@ -89,8 +89,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _updateLayout();
+    });
+  }
+
+  @override
   void didChangeMetrics() {
-    _checkMobile();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _updateLayout();
+    });
   }
 
   @override
@@ -98,12 +110,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     // Lifecycle tracking available for future use.
   }
 
-  void _checkMobile() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final width = MediaQuery.of(context).size.width;
-      ref.read(uiProvider.notifier).setMobile(width < 768);
-    });
+  void _updateLayout() {
+    final size = MediaQuery.of(context).size;
+    final isMobile = Platform.isAndroid || size.width < 768;
+    final showKeyBar = Platform.isAndroid || size.width < 768;
+    ref.read(uiProvider.notifier).setMobile(isMobile);
+    ref.read(uiProvider.notifier).setShowKeyBar(showKeyBar);
   }
 
   double _sidebarWidth(BuildContext context) {
@@ -155,43 +167,49 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   }
                 }
                 : null,
-        child: Stack(
-          children: [
-            Row(
-              children: [
-                if (!uiState.isMobile && uiState.sidebarOpen) const Sidebar(),
-                Expanded(
-                  child: TerminalArea(
-                    key: _terminalAreaKey,
-                    backend: widget.backend,
+        child: Padding(
+          padding: EdgeInsets.only(
+            left: MediaQuery.of(context).padding.left,
+            right: MediaQuery.of(context).padding.right,
+          ),
+          child: Stack(
+            children: [
+              Row(
+                children: [
+                  if (!uiState.isMobile && uiState.sidebarOpen) const Sidebar(),
+                  Expanded(
+                    child: TerminalArea(
+                      key: _terminalAreaKey,
+                      backend: widget.backend,
+                    ),
                   ),
+                ],
+              ),
+              if (uiState.isMobile) ...[
+                IgnorePointer(
+                  ignoring: !uiState.sidebarOpen,
+                  child: GestureDetector(
+                    onTap:
+                        () => ref.read(uiProvider.notifier).setSidebarOpen(false),
+                    child: AnimatedOpacity(
+                      opacity: uiState.sidebarOpen ? 1.0 : 0.0,
+                      duration: const Duration(milliseconds: 250),
+                      curve: Curves.easeOutCubic,
+                      child: Container(color: Colors.black54),
+                    ),
+                  ),
+                ),
+                AnimatedPositioned(
+                  left: uiState.sidebarOpen ? 0 : -sidebarW,
+                  top: 0,
+                  bottom: 0,
+                  duration: const Duration(milliseconds: 250),
+                  curve: Curves.easeOutCubic,
+                  child: const Sidebar(),
                 ),
               ],
-            ),
-            if (uiState.isMobile) ...[
-              IgnorePointer(
-                ignoring: !uiState.sidebarOpen,
-                child: GestureDetector(
-                  onTap:
-                      () => ref.read(uiProvider.notifier).setSidebarOpen(false),
-                  child: AnimatedOpacity(
-                    opacity: uiState.sidebarOpen ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 250),
-                    curve: Curves.easeOutCubic,
-                    child: Container(color: Colors.black54),
-                  ),
-                ),
-              ),
-              AnimatedPositioned(
-                left: uiState.sidebarOpen ? 0 : -sidebarW,
-                top: 0,
-                bottom: 0,
-                duration: const Duration(milliseconds: 250),
-                curve: Curves.easeOutCubic,
-                child: const Sidebar(),
-              ),
             ],
-          ],
+          ),
         ),
       ),
     );

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -124,6 +125,7 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
   }
 
   void _applyHotkey(String? hotkey) {
+    if (!Platform.isMacOS) return;
     const channel = MethodChannel('dev.tether/window');
     if (hotkey != null) {
       channel.invokeMethod('setGlobalHotkey', {'hotkey': hotkey});
