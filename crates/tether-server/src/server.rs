@@ -27,6 +27,10 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
         let _ = std::fs::remove_dir_all(&session_dir);
     }
 
+    // Remote mirrors are rebuilt when SSH tunnels reconnect. Clear them on
+    // startup so stale data from a previous run is never shown.
+    state.inner.db.delete_all_remote_mirrors()?;
+
     let addr = format!(
         "{}:{}",
         state.inner.config.server.bind, state.inner.config.server.port
@@ -161,6 +165,60 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
                         tracing::warn!(
                             "remote sync: periodic sync failed for {}: {}",
                             host_alias,
+                            e
+                        );
+                    }
+                }
+
+                // Clean up mirrors for hosts that cannot currently be synced.
+                // Re-check each host's status right before deleting to minimise
+                // the TOCTOU window with the Ready-event listener that rebuilds
+                // mirrors concurrently. A small race still exists: if a host
+                // transitions to Ready between get_host_status and the delete,
+                // freshly rebuilt mirrors may be removed. They will be rebuilt
+                // on the next periodic tick (≤5 s). Fully eliminating this race
+                // would require cross-task synchronization, which is not worth
+                // the complexity for a transient UI flicker.
+                // Skip Connecting (avoids churn during reconnection attempts).
+                match inner_for_periodic_sync.db.list_mirrored_ssh_hosts() {
+                    Ok(mirrored_hosts) => {
+                        for host in mirrored_hosts {
+                            let should_clean = manager_for_sync
+                                .get_host_status(&host)
+                                .map(|status| {
+                                    matches!(
+                                        status,
+                                        crate::remote::manager::RemoteStatus::Unreachable
+                                            | crate::remote::manager::RemoteStatus::Failed(_)
+                                            | crate::remote::manager::RemoteStatus::UpgradeRequired
+                                    )
+                                })
+                                .unwrap_or(true); // unknown host (removed from SSH config) → clean up
+                            if !should_clean {
+                                continue;
+                            }
+                            match inner_for_periodic_sync.db.delete_mirrors_for_host(&host)
+                            {
+                                Ok(session_ids) => {
+                                    for sid in session_ids {
+                                        if let Ok(uuid) = uuid::Uuid::parse_str(&sid) {
+                                            inner_for_periodic_sync.ssh_fg.remove(&uuid);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "remote sync: failed to clear mirrors for {}: {}",
+                                        host,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "remote sync: failed to list mirrored hosts for cleanup: {}",
                             e
                         );
                     }

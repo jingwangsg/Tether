@@ -98,6 +98,10 @@ impl RemoteManager {
             .collect()
     }
 
+    pub fn get_host_status(&self, host_alias: &str) -> Option<RemoteStatus> {
+        self.hosts.get(host_alias).map(|entry| entry.status.clone())
+    }
+
     pub fn list_ready_hosts(&self) -> Vec<(String, u16)> {
         self.hosts
             .iter()

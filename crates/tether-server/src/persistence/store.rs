@@ -755,6 +755,64 @@ impl Store {
         Ok(())
     }
 
+    /// Delete all remote mirrors (sessions + groups with `ssh_host IS NOT NULL`).
+    /// Called on server startup so stale data from a previous run is never shown.
+    /// Mirrors are rebuilt when SSH tunnels reconnect via `sync_remote_host`.
+    /// Intentionally does NOT touch `session_group_registry`.
+    pub fn delete_all_remote_mirrors(&self) -> anyhow::Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM sessions \
+             WHERE group_id IN (SELECT id FROM groups WHERE ssh_host IS NOT NULL)",
+            [],
+        )?;
+        tx.execute("DELETE FROM groups WHERE ssh_host IS NOT NULL", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Delete all mirrors (sessions + groups) for a specific SSH host.
+    /// Called when a host becomes unreachable so stale sessions are not shown.
+    /// Returns the IDs of deleted sessions (for cache cleanup).
+    /// Intentionally does NOT touch `session_group_registry`.
+    pub fn delete_mirrors_for_host(&self, host_alias: &str) -> anyhow::Result<Vec<String>> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        // Query inside the transaction so the returned IDs are authoritative.
+        let mut stmt = tx.prepare(
+            "SELECT s.id FROM sessions s \
+             JOIN groups g ON s.group_id = g.id WHERE g.ssh_host = ?1",
+        )?;
+        let session_ids: Vec<String> = stmt
+            .query_map(params![host_alias], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        drop(stmt);
+        tx.execute(
+            "DELETE FROM sessions \
+             WHERE group_id IN (SELECT id FROM groups WHERE ssh_host = ?1)",
+            params![host_alias],
+        )?;
+        tx.execute(
+            "DELETE FROM groups WHERE ssh_host = ?1",
+            params![host_alias],
+        )?;
+        tx.commit()?;
+        Ok(session_ids)
+    }
+
+    /// Return the distinct set of SSH host aliases that currently have group mirrors.
+    pub fn list_mirrored_ssh_hosts(&self) -> anyhow::Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT ssh_host FROM groups WHERE ssh_host IS NOT NULL",
+        )?;
+        let hosts = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(hosts)
+    }
+
     /// Return all sessions belonging to any of the given group IDs.
     pub fn get_sessions_in_groups(&self, group_ids: &[String]) -> anyhow::Result<Vec<SessionRow>> {
         if group_ids.is_empty() {
@@ -811,6 +869,9 @@ impl Store {
         Ok(())
     }
 
+    /// Remove remote session mirrors that no longer exist on the remote host.
+    /// Intentionally does NOT touch `session_group_registry` — group assignments
+    /// must survive so sessions are restored to the correct group on reconnect.
     pub fn prune_remote_session_mirrors(
         &self,
         host_alias: &str,
@@ -822,9 +883,15 @@ impl Store {
             .into_iter()
             .filter(|id| !keep.contains(id.as_str()))
             .collect::<Vec<_>>();
-        for id in stale_ids {
-            self.delete_session(&id)?;
+        if stale_ids.is_empty() {
+            return Ok(());
         }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        for id in &stale_ids {
+            tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -877,6 +944,9 @@ impl Store {
         Ok(rows)
     }
 
+    /// Remove remote group mirrors that no longer exist on the remote host.
+    /// Intentionally does NOT touch `session_group_registry` — group assignments
+    /// must survive so sessions are restored to the correct group on reconnect.
     pub fn prune_remote_group_mirrors(
         &self,
         host_alias: &str,
@@ -904,7 +974,19 @@ impl Store {
             .collect::<Vec<_>>();
 
         for id in stale_roots {
-            self.delete_group(&id)?;
+            let descendant_ids = self.collect_descendant_ids(&id)?;
+            let mut conn = self.conn.lock().unwrap();
+            let tx = conn.transaction()?;
+            for gid in &descendant_ids {
+                tx.execute(
+                    "DELETE FROM sessions WHERE group_id = ?1",
+                    params![gid],
+                )?;
+            }
+            for gid in descendant_ids.iter().rev() {
+                tx.execute("DELETE FROM groups WHERE id = ?1", params![gid])?;
+            }
+            tx.commit()?;
         }
         Ok(())
     }
@@ -1517,6 +1599,328 @@ mod tests {
         assert_eq!(
             sessions[0].group_id, g_original.id,
             "delete_remote_sessions must not clear session_group_registry"
+        );
+    }
+
+    // --- Remote Mirror Cleanup ---
+
+    #[test]
+    fn delete_all_remote_mirrors_preserves_local_and_registry() {
+        let store = new_store();
+        let local_group = store.create_group("local", "~", None, None).unwrap();
+        let remote_group = store
+            .create_group("remote", "~", None, Some("myhost"))
+            .unwrap();
+        store
+            .create_session("s-local", &local_group.id, "local-sess", "/bin/sh", "~", None)
+            .unwrap();
+        store
+            .create_session("s-remote", &remote_group.id, "remote-sess", "/bin/sh", "~", None)
+            .unwrap();
+
+        store.delete_all_remote_mirrors().unwrap();
+
+        // Local group and session survive
+        assert!(store.get_group(&local_group.id).unwrap().is_some());
+        assert_eq!(store.list_sessions().unwrap().len(), 1);
+        assert_eq!(store.list_sessions().unwrap()[0].id, "s-local");
+        // Remote group and session are gone
+        assert!(store.get_group(&remote_group.id).unwrap().is_none());
+        // Registry survives: re-create the remote group (simulating sync rebuild),
+        // then re-insert session with wrong fallback — registry should win.
+        let wrong_group = store
+            .create_group("wrong", "~", None, Some("myhost"))
+            .unwrap();
+        store
+            .upsert_remote_group_mirror(
+                &GroupRow {
+                    id: remote_group.id.clone(),
+                    name: "remote".to_string(),
+                    default_cwd: "~".to_string(),
+                    sort_order: 0,
+                    parent_id: None,
+                    ssh_host: None,
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                    updated_at: "2024-01-01T00:00:00Z".to_string(),
+                },
+                "myhost",
+            )
+            .unwrap();
+        store
+            .try_insert_remote_session(
+                "s-remote",
+                &wrong_group.id,
+                None,
+                "remote-sess",
+                "/bin/sh",
+                "~",
+                true,
+            )
+            .unwrap();
+        let sessions = store.list_sessions().unwrap();
+        let restored = sessions.iter().find(|s| s.id == "s-remote").unwrap();
+        assert_eq!(
+            restored.group_id, remote_group.id,
+            "delete_all_remote_mirrors must not clear session_group_registry"
+        );
+    }
+
+    #[test]
+    fn delete_mirrors_for_host_targets_only_specified_host() {
+        let store = new_store();
+        let g_host_a = store
+            .create_group("host-a", "~", None, Some("host-a"))
+            .unwrap();
+        let g_host_b = store
+            .create_group("host-b", "~", None, Some("host-b"))
+            .unwrap();
+        store
+            .create_session("s-a", &g_host_a.id, "sess-a", "/bin/sh", "~", None)
+            .unwrap();
+        store
+            .create_session("s-b", &g_host_b.id, "sess-b", "/bin/sh", "~", None)
+            .unwrap();
+
+        let deleted = store.delete_mirrors_for_host("host-a").unwrap();
+        assert_eq!(deleted, vec!["s-a"]);
+
+        assert!(store.get_group(&g_host_a.id).unwrap().is_none());
+        assert!(store.get_group(&g_host_b.id).unwrap().is_some());
+        let sessions = store.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "s-b");
+    }
+
+    #[test]
+    fn delete_mirrors_for_host_handles_nested_groups() {
+        let store = new_store();
+        let parent = store
+            .create_group("parent", "~", None, Some("myhost"))
+            .unwrap();
+        let child = store
+            .create_group("child", "~", Some(&parent.id), Some("myhost"))
+            .unwrap();
+        store
+            .create_session("s-parent", &parent.id, "p-sess", "/bin/sh", "~", None)
+            .unwrap();
+        store
+            .create_session("s-child", &child.id, "c-sess", "/bin/sh", "~", None)
+            .unwrap();
+
+        store.delete_mirrors_for_host("myhost").unwrap();
+
+        assert!(store.get_group(&parent.id).unwrap().is_none());
+        assert!(store.get_group(&child.id).unwrap().is_none());
+        assert!(store.list_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_all_remote_mirrors_handles_nested_groups() {
+        let store = new_store();
+        let parent = store
+            .create_group("parent", "~", None, Some("myhost"))
+            .unwrap();
+        let child = store
+            .create_group("child", "~", Some(&parent.id), Some("myhost"))
+            .unwrap();
+        store
+            .create_session("s1", &child.id, "nested-sess", "/bin/sh", "~", None)
+            .unwrap();
+        let local = store.create_group("local", "~", None, None).unwrap();
+        store
+            .create_session("s2", &local.id, "local-sess", "/bin/sh", "~", None)
+            .unwrap();
+
+        store.delete_all_remote_mirrors().unwrap();
+
+        assert!(store.get_group(&parent.id).unwrap().is_none());
+        assert!(store.get_group(&child.id).unwrap().is_none());
+        assert!(store.get_group(&local.id).unwrap().is_some());
+        let sessions = store.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "s2");
+    }
+
+    #[test]
+    fn delete_mirrors_for_host_preserves_registry() {
+        let store = new_store();
+        let g_remote = store
+            .create_group("remote", "~", None, Some("myhost"))
+            .unwrap();
+        let g_fallback = store
+            .create_group("fallback", "~", None, Some("myhost"))
+            .unwrap();
+        store
+            .create_session("s1", &g_remote.id, "sess", "/bin/sh", "~", None)
+            .unwrap();
+
+        store.delete_mirrors_for_host("myhost").unwrap();
+        assert!(store.list_sessions().unwrap().is_empty());
+
+        // Re-create groups for the re-insert test
+        store
+            .upsert_remote_group_mirror(&GroupRow {
+                id: g_remote.id.clone(),
+                name: "remote".to_string(),
+                default_cwd: "~".to_string(),
+                sort_order: 0,
+                parent_id: None,
+                ssh_host: None,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            }, "myhost")
+            .unwrap();
+        store
+            .upsert_remote_group_mirror(&GroupRow {
+                id: g_fallback.id.clone(),
+                name: "fallback".to_string(),
+                default_cwd: "~".to_string(),
+                sort_order: 1,
+                parent_id: None,
+                ssh_host: None,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            }, "myhost")
+            .unwrap();
+
+        store
+            .try_insert_remote_session(
+                "s1",
+                &g_fallback.id,
+                None,
+                "sess",
+                "/bin/sh",
+                "~",
+                true,
+            )
+            .unwrap();
+        let sessions = store.list_sessions().unwrap();
+        assert_eq!(
+            sessions[0].group_id, g_remote.id,
+            "delete_mirrors_for_host must not clear session_group_registry"
+        );
+    }
+
+    #[test]
+    fn list_mirrored_ssh_hosts_returns_distinct_hosts() {
+        let store = new_store();
+        store.create_group("local", "~", None, None).unwrap();
+        store
+            .create_group("a1", "~", None, Some("host-a"))
+            .unwrap();
+        store
+            .create_group("a2", "~", None, Some("host-a"))
+            .unwrap();
+        store
+            .create_group("b1", "~", None, Some("host-b"))
+            .unwrap();
+
+        let mut hosts = store.list_mirrored_ssh_hosts().unwrap();
+        hosts.sort();
+        assert_eq!(hosts, vec!["host-a", "host-b"]);
+    }
+
+    #[test]
+    fn list_mirrored_ssh_hosts_empty_when_no_remote_groups() {
+        let store = new_store();
+        store.create_group("local", "~", None, None).unwrap();
+        assert!(store.list_mirrored_ssh_hosts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn prune_remote_session_mirrors_preserves_registry() {
+        let store = new_store();
+        let g = store
+            .create_group("remote", "~", None, Some("myhost"))
+            .unwrap();
+        let g_fallback = store
+            .create_group("fallback", "~", None, Some("myhost"))
+            .unwrap();
+        store
+            .create_session("s1", &g.id, "kept", "/bin/sh", "~", None)
+            .unwrap();
+        store
+            .create_session("s2", &g.id, "pruned", "/bin/sh", "~", None)
+            .unwrap();
+
+        // Prune s2, keep s1
+        store
+            .prune_remote_session_mirrors("myhost", &["s1".to_string()])
+            .unwrap();
+        let sessions = store.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "s1");
+
+        // Registry for s2 must survive: re-insert with wrong fallback
+        store
+            .try_insert_remote_session(
+                "s2",
+                &g_fallback.id,
+                None,
+                "pruned",
+                "/bin/sh",
+                "~",
+                true,
+            )
+            .unwrap();
+        let sessions = store.list_sessions().unwrap();
+        let restored = sessions.iter().find(|s| s.id == "s2").unwrap();
+        assert_eq!(
+            restored.group_id, g.id,
+            "prune_remote_session_mirrors must not clear session_group_registry"
+        );
+    }
+
+    #[test]
+    fn prune_remote_group_mirrors_preserves_registry() {
+        let store = new_store();
+        let g_kept = store
+            .create_group("kept", "~", None, Some("myhost"))
+            .unwrap();
+        let g_pruned = store
+            .create_group("pruned", "~", None, Some("myhost"))
+            .unwrap();
+        store
+            .create_session("s1", &g_pruned.id, "sess", "/bin/sh", "~", None)
+            .unwrap();
+
+        // Prune g_pruned, keep g_kept
+        store
+            .prune_remote_group_mirrors("myhost", &[g_kept.id.clone()])
+            .unwrap();
+        assert!(store.get_group(&g_pruned.id).unwrap().is_none());
+        assert!(store.get_group(&g_kept.id).unwrap().is_some());
+        assert!(store.list_sessions().unwrap().is_empty());
+
+        // Re-create the group and check registry survived
+        store
+            .upsert_remote_group_mirror(&GroupRow {
+                id: g_pruned.id.clone(),
+                name: "pruned".to_string(),
+                default_cwd: "~".to_string(),
+                sort_order: 0,
+                parent_id: None,
+                ssh_host: None,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            }, "myhost")
+            .unwrap();
+
+        store
+            .try_insert_remote_session(
+                "s1",
+                &g_kept.id,
+                None,
+                "sess",
+                "/bin/sh",
+                "~",
+                true,
+            )
+            .unwrap();
+        let sessions = store.list_sessions().unwrap();
+        assert_eq!(
+            sessions[0].group_id, g_pruned.id,
+            "prune_remote_group_mirrors must not clear session_group_registry"
         );
     }
 

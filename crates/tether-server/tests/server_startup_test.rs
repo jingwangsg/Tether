@@ -98,7 +98,7 @@ async fn start_mock_remote(groups: Vec<GroupRow>, sessions: Vec<SessionRow>) -> 
 }
 
 #[tokio::test]
-async fn server_startup_deletes_local_sessions_and_preserves_remote_mirrors() {
+async fn server_startup_deletes_local_sessions_and_remote_mirrors() {
     let state = test_state();
     state
         .inner
@@ -180,14 +180,16 @@ async fn server_startup_deletes_local_sessions_and_preserves_remote_mirrors() {
         !std::path::Path::new(&local_scrollback_dir).exists(),
         "local session scrollback should be deleted on server restart"
     );
+    // Remote mirrors are now deleted on startup (remote server is source of truth).
+    // They are rebuilt when SSH tunnels reconnect via sync_remote_host.
     assert!(
         state
             .inner
             .db
             .get_session("remote-session")
             .unwrap()
-            .is_some_and(|session| session.is_alive),
-        "remote mirrored sessions should survive local server restart"
+            .is_none(),
+        "remote mirrored sessions should be deleted on server restart"
     );
     assert!(
         state
@@ -195,8 +197,8 @@ async fn server_startup_deletes_local_sessions_and_preserves_remote_mirrors() {
             .db
             .get_group(&remote_group.id)
             .unwrap()
-            .is_some(),
-        "remote mirrored groups should remain present after startup"
+            .is_none(),
+        "remote mirrored groups should be deleted on server restart"
     );
 
     server_task.abort();
