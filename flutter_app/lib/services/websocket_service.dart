@@ -37,6 +37,12 @@ class ForegroundChangedMessage extends ServerMessage {
   ForegroundChangedMessage(this.process, this.oscTitle);
 }
 
+class ScrollbackInfoMessage extends ServerMessage {
+  final int totalBytes;
+  final int loadedFrom;
+  ScrollbackInfoMessage(this.totalBytes, this.loadedFrom);
+}
+
 class ConnectionStateMessage extends ServerMessage {
   final bool connected;
   ConnectionStateMessage(this.connected);
@@ -161,6 +167,13 @@ class WebSocketService {
             ForegroundChangedMessage(
               json['process'] as String?,
               json['osc_title'] as String?,
+            ),
+          );
+        case 'scrollback_info':
+          _messageController.add(
+            ScrollbackInfoMessage(
+              (json['total_bytes'] as num).toInt(),
+              (json['loaded_from'] as num).toInt(),
             ),
           );
         default:

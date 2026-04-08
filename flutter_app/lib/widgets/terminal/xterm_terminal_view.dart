@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 import 'package:xterm/xterm.dart' as xterm;
 import '../../platform/terminal_backend.dart';
 import '../../providers/server_provider.dart';
@@ -19,6 +22,7 @@ class XtermTerminalView extends ConsumerStatefulWidget {
   final VoidCallback? onSessionExited;
   final void Function(String? title)? onTitleChanged;
   final ForegroundChangedCallback? onForegroundChanged;
+  final WebSocketService Function(String Function() urlBuilder)? wsFactory;
 
   const XtermTerminalView({
     super.key,
@@ -28,6 +32,7 @@ class XtermTerminalView extends ConsumerStatefulWidget {
     this.onSessionExited,
     this.onTitleChanged,
     this.onForegroundChanged,
+    this.wsFactory,
   });
 
   @override
@@ -35,7 +40,7 @@ class XtermTerminalView extends ConsumerStatefulWidget {
 }
 
 class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
-  late final xterm.Terminal _terminal;
+  late xterm.Terminal _terminal;
   late final xterm.TerminalController _terminalController;
   late final ScrollController _scrollController;
   WebSocketService? _ws;
@@ -52,9 +57,32 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   // Stateful UTF-8 decoder — maintains state across flushes so multi-byte
   // sequences split across WebSocket message boundaries are reassembled
   // correctly instead of being replaced with U+FFFD.
-  final StreamController<List<int>> _bytesInput = StreamController<List<int>>(
+  StreamController<List<int>> _bytesInput = StreamController<List<int>>(
     sync: true,
   );
+  StreamSubscription? _decoderSub;
+
+  // Replay buffering — batch scrollback messages to avoid incremental scrolling
+  bool _isReplaying = true;
+  final List<Uint8List> _replayBuffer = [];
+  Timer? _replayFlushTimer;
+
+  // Scrollback lazy loading state
+  int _loadedStartOffset = 0;
+  @visibleForTesting
+  int get loadedStartOffset => _loadedStartOffset;
+  int totalScrollbackBytes = 0;
+  final List<Uint8List> _rawBytesCache = [];
+  int _rawBytesCacheSize = 0;
+  static const _maxCacheSize = 5 * 1024 * 1024; // 5MB
+  int _currentMaxLines = 10000;
+
+  // Prefetch state
+  bool _isPrefetching = false;
+  xterm.Terminal? _prefetchedTerminal;
+  int _prefetchStartOffset = 0;
+  Uint8List? _prefetchedData;
+  int _prefetchCacheSnapshot = 0; // cache length when prefetch was built
 
   // Foreground change debounce
   Timer? _foregroundDebounce;
@@ -75,8 +103,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   void initState() {
     super.initState();
     _scrollController = ScrollController();
+    _scrollController.addListener(_onScrollChanged);
     _terminalController = xterm.TerminalController();
-    _terminal = xterm.Terminal(maxLines: 5000);
+    _terminal = xterm.Terminal(maxLines: 10000);
     _terminal.onOutput = _onTerminalInput;
     _terminal.onTitleChange = (title) {
       widget.onTitleChanged?.call(title);
@@ -84,9 +113,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
       _ws?.sendResize(width, height);
     };
-    _bytesInput.stream
-        .transform(const Utf8Decoder(allowMalformed: true))
-        .listen((text) => _terminal.write(text));
+    _bindDecoderPipeline();
     HardwareKeyboard.instance.addHandler(_handleSearchKey);
     _connect();
   }
@@ -301,18 +328,41 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       return;
     }
 
-    _ws = WebSocketService.withUrlBuilder(_buildWsUrl);
+    _ws = widget.wsFactory != null
+        ? widget.wsFactory!(_buildWsUrl)
+        : WebSocketService.withUrlBuilder(_buildWsUrl);
     _ws!.connect();
 
     _msgSub = _ws!.messages.listen((msg) {
       switch (msg) {
         case OutputMessage():
+          if (_isReplaying) _flushReplayBuffer();
           _ackedOffset += msg.data.length;
+          _cacheRawBytes(msg.data);
           _writeToTerminal(msg.data);
         case ScrollbackMessage():
           _ackedOffset += msg.data.length;
-          _writeToTerminal(msg.data);
+          _cacheRawBytes(msg.data);
+          if (_isReplaying) {
+            _replayBuffer.add(msg.data);
+            _resetReplayFlushTimer();
+          } else {
+            _writeToTerminal(msg.data);
+          }
+        case ScrollbackInfoMessage():
+          // scrollback_info is the reliable "replay done" signal — the server
+          // sends it after ALL scrollback chunks, on both local and proxy paths.
+          // Flush the replay buffer here so the terminal renders immediately.
+          if (_isReplaying) _flushReplayBuffer();
+          totalScrollbackBytes = msg.totalBytes;
+          final newOffset = msg.loadedFrom;
+          if (newOffset != _loadedStartOffset) {
+            setState(() {
+              _loadedStartOffset = newOffset;
+            });
+          }
         case SessionEventMessage():
+          if (_isReplaying) _flushReplayBuffer();
           if (msg.event == 'exited') {
             _sessionExited = true;
             _ws?.dispose();
@@ -320,6 +370,8 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
             widget.onSessionExited?.call();
           }
         case ForegroundChangedMessage():
+          // Do NOT flush replay buffer here — the SSH proxy path may inject
+          // a cached foreground_changed before scrollback frames arrive.
           _foregroundDebounce?.cancel();
           _foregroundDebounce = Timer(const Duration(milliseconds: 100), () {
             widget.onForegroundChanged?.call(
@@ -338,6 +390,8 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
               _ws?.sendResize(w, h);
             }
           } else if (!_sessionExited) {
+            if (_isReplaying) _flushReplayBuffer();
+            _isReplaying = true; // Reset for next reconnect
             _writeToTerminal(
               utf8.encode('\r\n\x1b[33m[reconnecting...]\x1b[0m\r\n'),
             );
@@ -357,6 +411,8 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     if (config.token != null && config.token!.isNotEmpty) {
       queryParts.add('token=${Uri.encodeComponent(config.token!)}');
     }
+    // Always send tail_bytes — server prioritises offset when both present
+    queryParts.add('tail_bytes=1048576');
     if (_ackedOffset > 0) {
       queryParts.add('offset=$_ackedOffset');
     }
@@ -408,6 +464,277 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
           _scrollController.position.maxScrollExtent,
         );
       });
+    }
+  }
+
+  void _bindDecoderPipeline() {
+    _decoderSub?.cancel();
+    _decoderSub = _bytesInput.stream
+        .transform(const Utf8Decoder(allowMalformed: true))
+        .listen((text) => _terminal.write(text));
+  }
+
+  void _resetReplayFlushTimer() {
+    _replayFlushTimer?.cancel();
+    _replayFlushTimer = Timer(const Duration(milliseconds: 500), () {
+      if (_isReplaying) _flushReplayBuffer();
+    });
+  }
+
+  void _flushReplayBuffer() {
+    _replayFlushTimer?.cancel();
+    _replayFlushTimer = null;
+    _isReplaying = false;
+    if (_replayBuffer.isEmpty) return;
+    // Write in 64KB sub-chunks across microtasks to avoid blocking UI
+    final chunks = List<Uint8List>.from(_replayBuffer);
+    _replayBuffer.clear();
+    _flushChunked(chunks, 0);
+  }
+
+  void _flushChunked(List<Uint8List> chunks, int index) {
+    if (!mounted || index >= chunks.length) return;
+    const maxPerFrame = 65536; // 64KB per microtask
+    int written = 0;
+    while (index < chunks.length && written + chunks[index].length <= maxPerFrame) {
+      _writeToTerminal(chunks[index]);
+      written += chunks[index].length;
+      index++;
+    }
+    if (index < chunks.length) {
+      Timer.run(() => _flushChunked(chunks, index));
+    }
+  }
+
+  void _onScrollChanged() {
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    final maxExtent = pos.maxScrollExtent;
+    if (maxExtent <= 0) return;
+
+    final ratio = pos.pixels / maxExtent;
+
+    // Trigger prefetch when within 15% of the top and more history available
+    if (ratio < 0.15 &&
+        _loadedStartOffset > 0 &&
+        !_isPrefetching &&
+        _prefetchedTerminal == null) {
+      _startPrefetch();
+    }
+
+    // Trigger terminal swap when at the very top and prefetch is ready
+    if (pos.pixels <= 0 && _prefetchedTerminal != null) {
+      _performTerminalSwap();
+    }
+  }
+
+  Future<void> _startPrefetch() async {
+    if (_isPrefetching || _loadedStartOffset <= 0) return;
+    setState(() { _isPrefetching = true; });
+
+    final serverState = ref.read(serverProvider);
+    if (!serverState.isConnected || serverState.config == null) {
+      _isPrefetching = false;
+      return;
+    }
+    final config = serverState.config!;
+
+    final fetchEnd = _loadedStartOffset;
+    const fetchSize = 1048576; // 1MB
+    final fetchStart = max(0, fetchEnd - fetchSize);
+    final limit = fetchEnd - fetchStart;
+
+    try {
+      final uri = Uri.parse(
+        '${config.baseUrl}/api/sessions/${widget.sessionId}/scrollback'
+        '?offset=$fetchStart&limit=$limit',
+      );
+      final headers = <String, String>{};
+      if (config.token != null && config.token!.isNotEmpty) {
+        headers['Authorization'] = 'Bearer ${config.token}';
+      }
+      final resp = await http.get(uri, headers: headers);
+      if (resp.statusCode != 200) {
+        _isPrefetching = false;
+        return;
+      }
+
+      final json = jsonDecode(resp.body) as Map<String, dynamic>;
+      final b64Data = json['data'] as String;
+      final fetchedBytes = base64Decode(b64Data);
+
+      if (!mounted) {
+        _isPrefetching = false;
+        return;
+      }
+
+      // Build background terminal with all data (prefetched + cached)
+      _currentMaxLines += 5000;
+      final bgTerminal = xterm.Terminal(maxLines: _currentMaxLines);
+
+      // Process prefetched (older) bytes through a fresh decoder
+      final bgDecoder = StreamController<List<int>>(sync: true);
+      bgDecoder.stream
+          .transform(const Utf8Decoder(allowMalformed: true))
+          .listen((text) => bgTerminal.write(text));
+      bgDecoder.add(fetchedBytes);
+
+      // Process cached (current) bytes
+      for (final chunk in _rawBytesCache) {
+        bgDecoder.add(chunk);
+      }
+      bgDecoder.close();
+
+      _prefetchedTerminal = bgTerminal;
+      _prefetchStartOffset = fetchStart;
+      _prefetchedData = fetchedBytes;
+      _prefetchCacheSnapshot = _rawBytesCache.length;
+      if (mounted) setState(() { _isPrefetching = false; });
+
+      // If user is already at the top, swap immediately
+      if (_scrollController.hasClients &&
+          _scrollController.position.pixels <= 0) {
+        _performTerminalSwap();
+      }
+    } catch (e) {
+      if (mounted) setState(() { _isPrefetching = false; });
+    }
+  }
+
+  void _performTerminalSwap() {
+    final newTerminal = _prefetchedTerminal;
+    if (newTerminal == null) return;
+    _prefetchedTerminal = null;
+
+    // 1. Pause WebSocket writes and drain pending write queue
+    _isPaused = true;
+    _writeScheduled = false;
+    // Flush any pending writes to the OLD terminal so _rawBytesCache is consistent
+    if (_writeQueue.isNotEmpty) {
+      int totalLen = 0;
+      for (final chunk in _writeQueue) {
+        totalLen += chunk.length;
+      }
+      final merged = Uint8List(totalLen);
+      int off = 0;
+      for (final chunk in _writeQueue) {
+        merged.setRange(off, off + chunk.length, chunk);
+        off += chunk.length;
+      }
+      _writeQueue.clear();
+      _bytesInput.add(merged);
+    }
+
+    // 2. Capture the user's actual scroll position from the scroll controller
+    //    (not cursorY which is relative to the viewport, not the scrollback)
+    final oldScrollBack = _terminal.buffer.scrollBack;
+    double scrollRatio = 0.0;
+    if (_scrollController.hasClients && oldScrollBack > 0) {
+      final maxExtent = _scrollController.position.maxScrollExtent;
+      if (maxExtent > 0) {
+        scrollRatio = _scrollController.position.pixels / maxExtent;
+      }
+    }
+
+    // 3. Clean up search state that references old terminal buffer
+    _disposeAllSearchHighlights();
+    _searchMatches.clear();
+    if (_searchOpen) {
+      _searchController.clear();
+      _currentMatchIndex = -1;
+    }
+
+    // 4. Rebuild decoder pipeline for the new terminal
+    _decoderSub?.cancel();
+    _bytesInput.close();
+    _bytesInput = StreamController<List<int>>(sync: true);
+
+    // 5. Replay any live output that arrived between prefetch and swap
+    //    into the new terminal so it doesn't go missing.
+    if (_prefetchCacheSnapshot < _rawBytesCache.length) {
+      final bgDecoder = StreamController<List<int>>(sync: true);
+      bgDecoder.stream
+          .transform(const Utf8Decoder(allowMalformed: true))
+          .listen((text) => newTerminal.write(text));
+      for (int i = _prefetchCacheSnapshot; i < _rawBytesCache.length; i++) {
+        bgDecoder.add(_rawBytesCache[i]);
+      }
+      bgDecoder.close();
+    }
+
+    // 6. Swap terminal
+    _terminal = newTerminal;
+    _terminal.onOutput = _onTerminalInput;
+    _terminal.onTitleChange = (title) {
+      widget.onTitleChanged?.call(title);
+    };
+    _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      _ws?.sendResize(width, height);
+    };
+
+    // 7. Bind decoder to new terminal
+    _bindDecoderPipeline();
+
+    // 8. Update loaded range and prepend prefetched data to cache
+    if (_prefetchedData != null) {
+      _rawBytesCache.insert(0, _prefetchedData!);
+      _rawBytesCacheSize += _prefetchedData!.length;
+      _prefetchedData = null;
+      // Evict from the TAIL (newest) when over limit — we just prepended
+      // older data at index 0 and want to keep it for future rebuilds.
+      while (_rawBytesCacheSize > _maxCacheSize && _rawBytesCache.length > 1) {
+        final removed = _rawBytesCache.removeLast();
+        _rawBytesCacheSize -= removed.length;
+      }
+    }
+    _loadedStartOffset = _prefetchStartOffset;
+
+    // 9. Rebuild widget with new terminal
+    setState(() {});
+
+    // 10. Restore scroll position after rebuild
+    //    The new terminal has more lines (prepended history). We captured the
+    //    old scroll ratio (how far the user was from the top in the old buffer).
+    //    Map that to the new buffer by computing the absolute line the user was
+    //    viewing, then adding the number of new lines prepended.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      final maxExtent = _scrollController.position.maxScrollExtent;
+      if (maxExtent > 0) {
+        // The old scroll ratio maps to a position in the old terminal.
+        // New terminal = prefetched older lines + old lines.
+        // The old content starts at (newScrollBack - oldScrollBack) lines in.
+        final newScrollBack = _terminal.buffer.scrollBack;
+        if (newScrollBack > 0 && oldScrollBack > 0) {
+          final oldAbsoluteLine = (scrollRatio * oldScrollBack).round();
+          final prependedLines = newScrollBack - oldScrollBack;
+          final newLine = prependedLines + oldAbsoluteLine;
+          final lineHeight = maxExtent / newScrollBack;
+          final offset = (newLine * lineHeight).clamp(0.0, maxExtent);
+          _scrollController.jumpTo(offset);
+        }
+      }
+
+      // 10. Flush pause buffer and resume
+      _isPaused = false;
+      if (_pauseBuffer.isNotEmpty) {
+        for (final chunk in _pauseBuffer) {
+          _writeQueue.add(chunk);
+        }
+        _pauseBuffer.clear();
+        _scheduleFlush();
+      }
+      _ws?.sendResume();
+    });
+  }
+
+  void _cacheRawBytes(Uint8List data) {
+    _rawBytesCache.add(data);
+    _rawBytesCacheSize += data.length;
+    // Evict oldest chunks if cache exceeds limit
+    while (_rawBytesCacheSize > _maxCacheSize && _rawBytesCache.isNotEmpty) {
+      final removed = _rawBytesCache.removeAt(0);
+      _rawBytesCacheSize -= removed.length;
     }
   }
 
@@ -501,12 +828,15 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   void dispose() {
     widget.controller.detach();
     HardwareKeyboard.instance.removeHandler(_handleSearchKey);
+    _scrollController.removeListener(_onScrollChanged);
     _disposeAllSearchHighlights();
     _searchController.dispose();
     _searchFocusNode.dispose();
     _foregroundDebounce?.cancel();
+    _replayFlushTimer?.cancel();
     _msgSub?.cancel();
     _ws?.dispose();
+    _decoderSub?.cancel();
     _bytesInput.close();
     _terminalController.dispose();
     _scrollController.dispose();
@@ -530,12 +860,34 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       },
     );
 
-    if (!_searchOpen) return terminalView;
+    final showTopIndicator = _loadedStartOffset > 0 || _isPrefetching;
+
+    if (!_searchOpen && !showTopIndicator) return terminalView;
 
     return Stack(
       children: [
         terminalView,
-        Positioned(top: 8, right: 8, child: _buildSearchBar()),
+        if (_searchOpen)
+          Positioned(top: 8, right: 8, child: _buildSearchBar()),
+        if (showTopIndicator)
+          Positioned(
+            top: 4,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xCC1E1E1E),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  _isPrefetching ? 'Loading...' : 'Scroll up for more',
+                  style: const TextStyle(color: Colors.white54, fontSize: 11),
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }

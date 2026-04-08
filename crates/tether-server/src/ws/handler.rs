@@ -169,15 +169,20 @@ async fn handle_socket(
         output_rx = session.output_tx.subscribe();
     }
 
-    if send_scrollback_replay(
-        &mut ws_sink,
-        &session,
-        replay_start_offset(offset, tail_bytes, replay_end),
-        replay_end,
-    )
-    .await
-    .is_err()
+    let loaded_from = replay_start_offset(offset, tail_bytes, replay_end);
+    if send_scrollback_replay(&mut ws_sink, &session, loaded_from, replay_end)
+        .await
+        .is_err()
     {
+        return;
+    }
+
+    // Tell client how much total history is available
+    let info_msg = ServerMessage::ScrollbackInfo {
+        total_bytes: replay_end,
+        loaded_from,
+    };
+    if send_json_message(&mut ws_sink, &info_msg).await.is_err() {
         return;
     }
 

@@ -64,8 +64,8 @@ impl ScrollbackBuffer {
 
     pub fn read_disk(&self, offset: u64, limit: usize) -> anyhow::Result<Vec<u8>> {
         use std::io::{Read, Seek, SeekFrom};
-        // Clamp limit to 1MB to prevent OOM from malicious requests
-        let limit = limit.min(1_048_576);
+        // Clamp limit to 2MB to prevent OOM from malicious requests
+        let limit = limit.min(2_097_152);
         let mut file = File::open(&self.disk_path)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut buf = vec![0u8; limit];

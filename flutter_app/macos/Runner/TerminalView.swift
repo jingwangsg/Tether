@@ -54,7 +54,7 @@ final class TerminalView: NSView {
     static let copySelector = #selector(NSText.copy(_:))
     static let pasteSelector = #selector(MainFlutterWindow.paste(_:))
     static let pasteAsPlainTextSelector = #selector(NSTextView.pasteAsPlainText(_:))
-    static let defaultReplayTailBytes: UInt64 = 512 * 1024
+    static let defaultReplayTailBytes: UInt64 = 1024 * 1024
     static let reactivationScrollbarCoalesceDelay: TimeInterval = 0.05
 
     private let scrollView: NSScrollView

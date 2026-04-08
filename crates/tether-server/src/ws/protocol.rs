@@ -36,6 +36,8 @@ pub enum ServerMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         osc_title: Option<String>,
     },
+    #[serde(rename = "scrollback_info")]
+    ScrollbackInfo { total_bytes: u64, loaded_from: u64 },
 }
 
 #[cfg(test)]
@@ -185,5 +187,14 @@ mod tests {
 
         let pong = serde_json::to_value(ServerMessage::Pong).unwrap();
         assert_eq!(pong["type"], "pong");
+
+        let scrollback_info = serde_json::to_value(ServerMessage::ScrollbackInfo {
+            total_bytes: 1000,
+            loaded_from: 500,
+        })
+        .unwrap();
+        assert_eq!(scrollback_info["type"], "scrollback_info");
+        assert_eq!(scrollback_info["total_bytes"], 1000);
+        assert_eq!(scrollback_info["loaded_from"], 500);
     }
 }
