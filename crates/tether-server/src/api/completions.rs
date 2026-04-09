@@ -196,6 +196,7 @@ pub async fn complete_remote_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ENV_MUTEX;
     use axum::extract::Query;
     use std::fs;
 
@@ -210,6 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn completion_lists_matching_dirs() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         // Create a temp dir inside $HOME so it passes the security check
         let home = shellexpand::tilde("~").to_string();
         let base = tempfile::tempdir_in(&home).unwrap();
@@ -228,6 +230,7 @@ mod tests {
 
     #[tokio::test]
     async fn completion_empty_prefix_lists_all_non_hidden() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let home = shellexpand::tilde("~").to_string();
         let base = tempfile::tempdir_in(&home).unwrap();
         let base_path = base.path();
@@ -244,6 +247,7 @@ mod tests {
 
     #[tokio::test]
     async fn completion_rejects_paths_outside_home() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         // /etc is outside $HOME
         let results = complete("/etc/").await;
         assert!(results.is_empty(), "should reject paths outside $HOME");
@@ -251,6 +255,7 @@ mod tests {
 
     #[tokio::test]
     async fn completion_skips_hidden_directories() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let home = shellexpand::tilde("~").to_string();
         let base = tempfile::tempdir_in(&home).unwrap();
         let base_path = base.path();
@@ -266,6 +271,7 @@ mod tests {
 
     #[tokio::test]
     async fn completion_truncates_to_20_items() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let home = shellexpand::tilde("~").to_string();
         let base = tempfile::tempdir_in(&home).unwrap();
         let base_path = base.path();

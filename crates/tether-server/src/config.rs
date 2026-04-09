@@ -374,12 +374,9 @@ fn materialize_terminfo_dir(root: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ENV_MUTEX;
     use std::io::Write;
     use std::process::{Command, Stdio};
-    use std::sync::Mutex;
-
-    // Mutex to serialize tests that manipulate environment variables
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     fn assert_terminfo_resolves(root: &Path) {
         let status = Command::new("infocmp")

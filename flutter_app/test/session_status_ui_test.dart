@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -356,9 +358,11 @@ class _FakeTerminalBackend implements TerminalBackend {
     String? command,
     String? cwd,
     required bool isActive,
+    bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
     void Function(String? title)? onTitleChanged,
     ForegroundChangedCallback? onForegroundChanged,
+    Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   }) {
     return SizedBox(key: key);
   }

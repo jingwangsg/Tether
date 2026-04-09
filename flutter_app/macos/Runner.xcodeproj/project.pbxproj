@@ -33,6 +33,7 @@
 		TG001111AAA00002 /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = TG001110AAA00002 /* TerminalView.swift */; };
 		TG001111AAA00003 /* TerminalPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = TG001110AAA00003 /* TerminalPlugin.swift */; };
 		TG001111AAA00004 /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = TG001110AAA00004 /* HotkeyManager.swift */; };
+		TU001111AAA00001 /* RunnerUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TU001110AAA00001 /* RunnerUITests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -49,6 +50,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 33CC111A2044C6BA0003C045;
 			remoteInfo = FLX;
+		};
+		TU001115AAA00001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 33CC10E52044A3C60003C045 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 33CC10EC2044A3C60003C045;
+			remoteInfo = Runner;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -96,6 +104,8 @@
 		TG001110AAA00002 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		TG001110AAA00003 /* TerminalPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPlugin.swift; sourceTree = "<group>"; };
 		TG001110AAA00004 /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
+		TU001110AAA00001 /* RunnerUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerUITests.swift; sourceTree = "<group>"; };
+		TU001110AAA00002 /* RunnerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RunnerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -112,6 +122,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				824B99234CBA379B0DC88A4F /* Pods_Runner.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		TU001114AAA00002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -140,6 +157,14 @@
 			path = RunnerTests;
 			sourceTree = "<group>";
 		};
+		TU001112AAA00001 /* RunnerUITests */ = {
+			isa = PBXGroup;
+			children = (
+				TU001110AAA00001 /* RunnerUITests.swift */,
+			);
+			path = RunnerUITests;
+			sourceTree = "<group>";
+		};
 		33BA886A226E78AF003329D5 /* Configs */ = {
 			isa = PBXGroup;
 			children = (
@@ -157,6 +182,7 @@
 				33FAB671232836740065AC1E /* Runner */,
 				33CEB47122A05771004F2AC0 /* Flutter */,
 				331C80D6294CF71000263BE5 /* RunnerTests */,
+				TU001112AAA00001 /* RunnerUITests */,
 				33CC10EE2044A3C60003C045 /* Products */,
 				D73912EC22F37F3D000D13A0 /* Frameworks */,
 				2E2EB3CDBCDC7FDBEFE19480 /* Pods */,
@@ -168,6 +194,7 @@
 			children = (
 				33CC10ED2044A3C60003C045 /* Tether.app */,
 				331C80D5294CF71000263BE5 /* RunnerTests.xctest */,
+				TU001110AAA00002 /* RunnerUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -242,6 +269,24 @@
 			productReference = 331C80D5294CF71000263BE5 /* RunnerTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		TU001113AAA00001 /* RunnerUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = TU001118AAA00001 /* Build configuration list for PBXNativeTarget "RunnerUITests" */;
+			buildPhases = (
+				TU001114AAA00001 /* Sources */,
+				TU001114AAA00002 /* Frameworks */,
+				TU001114AAA00003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				TU001116AAA00001 /* PBXTargetDependency */,
+			);
+			name = RunnerUITests;
+			productName = RunnerUITests;
+			productReference = TU001110AAA00002 /* RunnerUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		33CC10EC2044A3C60003C045 /* Runner */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 33CC10FB2044A3C60003C045 /* Build configuration list for PBXNativeTarget "Runner" */;
@@ -277,8 +322,12 @@
 				LastUpgradeCheck = 1510;
 				ORGANIZATIONNAME = "";
 				TargetAttributes = {
-					331C80D4294CF70F00263BE5 = {
+				331C80D4294CF70F00263BE5 = {
 						CreatedOnToolsVersion = 14.0;
+						TestTargetID = 33CC10EC2044A3C60003C045;
+					};
+					TU001113AAA00001 = {
+						CreatedOnToolsVersion = 16.0;
 						TestTargetID = 33CC10EC2044A3C60003C045;
 					};
 					33CC10EC2044A3C60003C045 = {
@@ -312,6 +361,7 @@
 			targets = (
 				33CC10EC2044A3C60003C045 /* Runner */,
 				331C80D4294CF70F00263BE5 /* RunnerTests */,
+				TU001113AAA00001 /* RunnerUITests */,
 				33CC111A2044C6BA0003C045 /* Flutter Assemble */,
 			);
 		};
@@ -331,6 +381,13 @@
 			files = (
 				33CC10F32044A3C60003C045 /* Assets.xcassets in Resources */,
 				33CC10F62044A3C60003C045 /* MainMenu.xib in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		TU001114AAA00003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -453,7 +510,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "mkdir -p \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME/Contents/Frameworks\"\ncp \"$SRCROOT/Runner/ghostty/libghostty.dylib\" \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME/Contents/Frameworks/\"\n";
+			shellScript = "set -e\nmkdir -p \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME/Contents/Frameworks\"\ncp \"$SRCROOT/Runner/ghostty/libghostty.dylib\" \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME/Contents/Frameworks/\"\nif [ \"$CODE_SIGNING_ALLOWED\" = \"YES\" ]; then\n  codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" --timestamp=none --generate-entitlement-der \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME/Contents/Frameworks/libghostty.dylib\"\nfi\n";
 		};
 		TG003333AAA00001 /* Bundle tether-client */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -499,6 +556,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		TU001114AAA00001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				TU001111AAA00001 /* RunnerUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -511,6 +576,11 @@
 			isa = PBXTargetDependency;
 			target = 33CC111A2044C6BA0003C045 /* Flutter Assemble */;
 			targetProxy = 33CC111F2044C79F0003C045 /* PBXContainerItemProxy */;
+		};
+		TU001116AAA00001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 33CC10EC2044A3C60003C045 /* Runner */;
+			targetProxy = TU001115AAA00001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -569,6 +639,54 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Tether.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Tether";
+			};
+			name = Profile;
+		};
+		TU001117AAA00001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "UI automation drives the app under test.";
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = "";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.tether.Tether.RunnerUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				SWIFT_OBJC_BRIDGING_HEADER = "";
+				TEST_TARGET_NAME = Runner;
+			};
+			name = Debug;
+		};
+		TU001117AAA00002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "UI automation drives the app under test.";
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = "";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.tether.Tether.RunnerUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				SWIFT_OBJC_BRIDGING_HEADER = "";
+				TEST_TARGET_NAME = Runner;
+			};
+			name = Release;
+		};
+		TU001117AAA00003 /* Profile */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "UI automation drives the app under test.";
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = "";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.tether.Tether.RunnerUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				SWIFT_OBJC_BRIDGING_HEADER = "";
+				TEST_TARGET_NAME = Runner;
 			};
 			name = Profile;
 		};
@@ -817,6 +935,16 @@
 				331C80DB294CF71000263BE5 /* Debug */,
 				331C80DC294CF71000263BE5 /* Release */,
 				331C80DD294CF71000263BE5 /* Profile */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		TU001118AAA00001 /* Build configuration list for PBXNativeTarget "RunnerUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				TU001117AAA00001 /* Debug */,
+				TU001117AAA00002 /* Release */,
+				TU001117AAA00003 /* Profile */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

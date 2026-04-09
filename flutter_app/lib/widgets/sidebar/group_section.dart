@@ -362,79 +362,93 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
     final display = getDisplayInfo(session, widget.allSessions);
     final canOpen = isSessionInteractive(session, widget.allGroups);
     final status = deriveSessionToolStatus(session);
+    final semanticsLabel = display.displayName;
+    final semanticsValue = display.subtitle;
     final titleColor =
         canOpen ? (isActive ? Colors.white : Colors.white60) : Colors.white38;
     final subtitleColor = canOpen ? Colors.white38 : Colors.white24;
 
-    final tile = GestureDetector(
-      onSecondaryTapDown:
-          (details) => _showSessionContextMenu(session, details.globalPosition),
-      child: InkWell(
-        onTap:
-            canOpen
-                ? () {
-                  ref.read(sessionProvider.notifier).openTab(session.id);
-                  if (ref.read(uiProvider).isMobile) {
-                    ref.read(uiProvider.notifier).setSidebarOpen(false);
+    final tile = Semantics(
+      container: true,
+      button: canOpen,
+      enabled: canOpen,
+      selected: isActive,
+      identifier: 'session-tile-${session.id}',
+      label: semanticsLabel,
+      value: semanticsValue,
+      child: GestureDetector(
+        onSecondaryTapDown:
+            (details) =>
+                _showSessionContextMenu(session, details.globalPosition),
+        child: InkWell(
+          onTap:
+              canOpen
+                  ? () {
+                    ref.read(sessionProvider.notifier).openTab(session.id);
+                    if (ref.read(uiProvider).isMobile) {
+                      ref.read(uiProvider.notifier).setSidebarOpen(false);
+                    }
                   }
-                }
-                : null,
-        child: Container(
-          padding: EdgeInsets.only(
-            left: 28.0 + widget.depth * 16.0,
-            right: 8,
-            top: 6,
-            bottom: 6,
-          ),
-          color: isActive ? Colors.white.withValues(alpha: 0.08) : null,
-          child: Row(
-            children: [
-              display.iconAsset != null
-                  ? Image.asset(display.iconAsset!, width: 14, height: 14)
-                  : Icon(display.icon, size: 14, color: display.iconColor),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      display.displayName,
-                      style: TextStyle(color: titleColor, fontSize: 13),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    if (display.subtitle != null)
+                  : null,
+          child: Container(
+            padding: EdgeInsets.only(
+              left: 28.0 + widget.depth * 16.0,
+              right: 8,
+              top: 6,
+              bottom: 6,
+            ),
+            color: isActive ? Colors.white.withValues(alpha: 0.08) : null,
+            child: Row(
+              children: [
+                display.iconAsset != null
+                    ? Image.asset(display.iconAsset!, width: 14, height: 14)
+                    : Icon(display.icon, size: 14, color: display.iconColor),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
                       Text(
-                        display.subtitle!,
-                        style: TextStyle(color: subtitleColor, fontSize: 11),
+                        display.displayName,
+                        style: TextStyle(color: titleColor, fontSize: 13),
                         overflow: TextOverflow.ellipsis,
                       ),
-                  ],
+                      if (display.subtitle != null)
+                        Text(
+                          display.subtitle!,
+                          style: TextStyle(color: subtitleColor, fontSize: 11),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                    ],
+                  ),
                 ),
-              ),
-              if (status != null) ...[
-                const SizedBox(width: 8),
-                SessionStatusDot(
-                  key: ValueKey('session-sidebar-status-${session.id}'),
-                  status: status,
+                if (status != null) ...[
+                  const SizedBox(width: 8),
+                  SessionStatusDot(
+                    key: ValueKey('session-sidebar-status-${session.id}'),
+                    status: status,
+                  ),
+                ],
+                _buildSessionMenuButton(session),
+                SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: IconButton(
+                    icon: const Icon(Icons.close, size: 14),
+                    color: Colors.white38,
+                    padding: EdgeInsets.zero,
+                    tooltip: 'Delete Session',
+                    onPressed: () {
+                      ref
+                          .read(serverProvider.notifier)
+                          .deleteSession(session.id);
+                      ref.read(sessionProvider.notifier).closeTab(session.id);
+                    },
+                  ),
                 ),
               ],
-              _buildSessionMenuButton(session),
-              SizedBox(
-                width: 24,
-                height: 24,
-                child: IconButton(
-                  icon: const Icon(Icons.close, size: 14),
-                  color: Colors.white38,
-                  padding: EdgeInsets.zero,
-                  tooltip: 'Delete Session',
-                  onPressed: () {
-                    ref.read(serverProvider.notifier).deleteSession(session.id);
-                    ref.read(sessionProvider.notifier).closeTab(session.id);
-                  },
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),

@@ -7,6 +7,18 @@ struct TerminalScrollbarState: Equatable {
     let len: UInt64
 }
 
+struct ScrollbackInfoState: Equatable {
+    let totalBytes: UInt64
+    let loadedFrom: UInt64
+}
+
+struct TerminalAttachOptions: Equatable {
+    let offset: UInt64?
+    let tailBytes: UInt64?
+    let metadataPath: String?
+    let role: String
+}
+
 enum ScrollbarUpdateDisposition: Equatable {
     case apply(TerminalScrollbarState?)
     case deferred
@@ -41,6 +53,10 @@ struct ScrollbarActivationCoordinator {
         isCoalescingAfterActivation = false
         return .apply(latestState)
     }
+
+    mutating func replaceLatestState(_ state: TerminalScrollbarState?) {
+        latestState = state
+    }
 }
 
 struct ScrollSynchronizationResult: Equatable {
@@ -49,22 +65,100 @@ struct ScrollSynchronizationResult: Equatable {
     let lastSentRow: Int?
 }
 
+final class TerminalTestLogger {
+    private let sessionId: String
+    private let fileURL: URL?
+    private let queue = DispatchQueue(label: "dev.tether.terminal-test-log")
+
+    init(sessionId: String) {
+        self.sessionId = sessionId
+        if let rawPath = ProcessInfo.processInfo.environment["TETHER_TERMINAL_TEST_LOG_PATH"],
+           !rawPath.isEmpty {
+            self.fileURL = URL(fileURLWithPath: rawPath)
+            if let parent = self.fileURL?.deletingLastPathComponent() {
+                try? FileManager.default.createDirectory(
+                    at: parent,
+                    withIntermediateDirectories: true,
+                    attributes: nil
+                )
+            }
+            if let fileURL = self.fileURL, !FileManager.default.fileExists(atPath: fileURL.path) {
+                FileManager.default.createFile(atPath: fileURL.path, contents: nil)
+            }
+        } else {
+            self.fileURL = nil
+        }
+    }
+
+    func write(event: String, fields: [String: Any] = [:]) {
+        guard let fileURL else { return }
+        queue.async { [sessionId] in
+            var payload = fields
+            payload["event"] = event
+            payload["session_id"] = sessionId
+            payload["timestamp_ms"] = Int(Date().timeIntervalSince1970 * 1000)
+            guard JSONSerialization.isValidJSONObject(payload),
+                  let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
+                  let handle = try? FileHandle(forWritingTo: fileURL) else { return }
+            defer { try? handle.close() }
+            do {
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+                try handle.write(contentsOf: Data([0x0A]))
+            } catch {
+                return
+            }
+        }
+    }
+}
+
 /// Platform view wrapper around a Ghostty surface view plus a native NSScrollView.
 final class TerminalView: NSView {
     static let copySelector = #selector(NSText.copy(_:))
     static let pasteSelector = #selector(MainFlutterWindow.paste(_:))
     static let pasteAsPlainTextSelector = #selector(NSTextView.pasteAsPlainText(_:))
     static let defaultReplayTailBytes: UInt64 = 1024 * 1024
+    static let prefetchTriggerRatio: CGFloat = 0.15
+    static let topTriggerDistance: CGFloat = 1
     static let reactivationScrollbarCoalesceDelay: TimeInterval = 0.05
+    static let topIndicatorAccessibilityIdentifier = "terminal-top-indicator"
+    static let loadingOverlayAccessibilityIdentifier = "terminal-loading-overlay"
+    static let scrollViewAccessibilityIdentifier = "terminal-scroll-view"
 
+    private let sessionId: String
+    private let serverBaseUrl: String?
+    private let authToken: String?
     private let scrollView: NSScrollView
     private let documentView: NSView
-    private let surfaceView: TerminalSurfaceView
+    private let topIndicatorView: NSVisualEffectView
+    private let topIndicatorLabel: NSTextField
+    private let loadingOverlayView: NSVisualEffectView
+    private let loadingIndicator: NSProgressIndicator
+    private let loadingLabel: NSTextField
+    private let testLogger: TerminalTestLogger
+    private let exposesDebugAccessibilityState: Bool
+    private let prefetchReadyDelay: TimeInterval
+    private let testPrefetchTriggerRatioOverride: CGFloat?
+    private let testTopTriggerRatioOverride: CGFloat?
+
+    private var eventSink: FlutterEventSink?
+    private var surfaceView: TerminalSurfaceView
+    private var prefetchSurfaceView: TerminalSurfaceView?
 
     private var scrollbarCoordinator = ScrollbarActivationCoordinator()
     private var isLiveScrolling = false
+    private var isSwappingSurface = false
     private var lastSentRow: Int?
     private var reactivationScrollFlushWorkItem: DispatchWorkItem?
+    private var currentScrollbackInfo: ScrollbackInfoState?
+    private var prefetchScrollbackInfo: ScrollbackInfoState?
+    private var prefetchScrollbarState: TerminalScrollbarState?
+    private var loadedStartOffsetBytes: UInt64 = 0
+    private var totalScrollbackBytes: UInt64 = 0
+    private var isPrefetching = false
+    private var prefetchReady = false
+    private var prefetchTriggeredAtTop = false
+    private var prefetchReadyWorkItem: DispatchWorkItem?
 
     init(
         sessionId: String,
@@ -72,13 +166,39 @@ final class TerminalView: NSView {
         authToken: String?,
         eventSink: FlutterEventSink? = nil
     ) {
+        self.sessionId = sessionId
+        self.serverBaseUrl = serverBaseUrl
+        self.authToken = authToken
+        self.eventSink = eventSink
         self.scrollView = NSScrollView()
         self.documentView = NSView(frame: .zero)
+        self.topIndicatorView = NSVisualEffectView()
+        self.topIndicatorLabel = NSTextField(labelWithString: "")
+        self.loadingOverlayView = NSVisualEffectView()
+        self.loadingIndicator = NSProgressIndicator()
+        self.loadingLabel = NSTextField(labelWithString: "Loading more history…")
+        self.testLogger = TerminalTestLogger(sessionId: sessionId)
+        self.exposesDebugAccessibilityState =
+            ProcessInfo.processInfo.environment["TETHER_TERMINAL_TEST_MODE"] == "1"
+        self.prefetchReadyDelay =
+            (Double(ProcessInfo.processInfo.environment["TETHER_TERMINAL_TEST_PREFETCH_DELAY_MS"] ?? "") ?? 0) / 1000
+        self.testPrefetchTriggerRatioOverride =
+            Self.readCGFloatEnv("TETHER_TERMINAL_TEST_PREFETCH_TRIGGER_RATIO")
+        self.testTopTriggerRatioOverride =
+            Self.readCGFloatEnv("TETHER_TERMINAL_TEST_TOP_TRIGGER_RATIO")
         self.surfaceView = TerminalSurfaceView(
             sessionId: sessionId,
             serverBaseUrl: serverBaseUrl,
             authToken: authToken,
-            eventSink: eventSink
+            eventSink: eventSink,
+            attachOptions: TerminalAttachOptions(
+                offset: nil,
+                tailBytes: Self.defaultReplayTailBytes,
+                metadataPath: TerminalView.makeMetadataPath(role: "primary", sessionId: sessionId),
+                role: "primary"
+            ),
+            interactionEnabled: true,
+            testLogger: testLogger
         )
         super.init(frame: .zero)
 
@@ -93,8 +213,11 @@ final class TerminalView: NSView {
         scrollView.drawsBackground = false
         scrollView.contentView.postsBoundsChangedNotifications = true
         scrollView.documentView = documentView
+        scrollView.setAccessibilityElement(true)
+        scrollView.setAccessibilityIdentifier(Self.scrollViewAccessibilityIdentifier)
         documentView.addSubview(surfaceView)
         addSubview(scrollView)
+        setupOverlayViews()
 
         NotificationCenter.default.addObserver(
             self,
@@ -121,15 +244,7 @@ final class TerminalView: NSView {
             object: scrollView
         )
 
-        surfaceView.scrollbarHandler = { [weak self] state in
-            guard let self else { return }
-            switch self.scrollbarCoordinator.receive(state) {
-            case .apply:
-                self.synchronizeScrollView()
-            case .deferred:
-                self.scheduleDeferredScrollbarFlushIfNeeded()
-            }
-        }
+        configureCurrentSurface(surfaceView)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -143,13 +258,16 @@ final class TerminalView: NSView {
         super.layout()
         scrollView.frame = bounds
         surfaceView.frame.size = scrollView.contentSize
+        prefetchSurfaceView?.frame = bounds
         documentView.frame.size.width = scrollView.contentSize.width
+        layoutOverlayViews()
         synchronizeScrollView()
         synchronizeSurfaceView()
     }
 
     @objc private func handleScrollChange(_ notification: Notification) {
         synchronizeSurfaceView()
+        updatePrefetchStateFromVisibleRect()
     }
 
     @objc private func handleWillStartLiveScroll(_ notification: Notification) {
@@ -158,10 +276,12 @@ final class TerminalView: NSView {
 
     @objc private func handleDidEndLiveScroll(_ notification: Notification) {
         isLiveScrolling = false
+        updatePrefetchStateFromVisibleRect()
     }
 
     @objc private func handleDidLiveScroll(_ notification: Notification) {
         handleLiveScroll()
+        updatePrefetchStateFromVisibleRect()
     }
 
     private func synchronizeSurfaceView() {
@@ -184,6 +304,7 @@ final class TerminalView: NSView {
             lastSentRow = result.lastSentRow
         }
         scrollView.reflectScrolledClipView(scrollView.contentView)
+        updateIndicators()
     }
 
     private func handleLiveScroll() {
@@ -200,6 +321,329 @@ final class TerminalView: NSView {
             lastSentRow = row
         }
         surfaceView.performAction(action)
+    }
+
+    private func setupOverlayViews() {
+        topIndicatorView.material = .sidebar
+        topIndicatorView.blendingMode = .withinWindow
+        topIndicatorView.state = .active
+        topIndicatorView.wantsLayer = true
+        topIndicatorView.layer?.cornerRadius = 10
+        topIndicatorView.setAccessibilityElement(true)
+        topIndicatorView.setAccessibilityIdentifier(Self.topIndicatorAccessibilityIdentifier)
+        topIndicatorLabel.textColor = .secondaryLabelColor
+        topIndicatorLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        topIndicatorView.addSubview(topIndicatorLabel)
+        addSubview(topIndicatorView)
+
+        loadingOverlayView.material = .menu
+        loadingOverlayView.blendingMode = .withinWindow
+        loadingOverlayView.state = .active
+        loadingOverlayView.wantsLayer = true
+        loadingOverlayView.layer?.cornerRadius = 12
+        loadingOverlayView.setAccessibilityElement(true)
+        loadingOverlayView.setAccessibilityIdentifier(Self.loadingOverlayAccessibilityIdentifier)
+        loadingIndicator.style = .spinning
+        loadingIndicator.controlSize = .small
+        loadingIndicator.startAnimation(nil)
+        loadingLabel.textColor = .labelColor
+        loadingLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        loadingOverlayView.addSubview(loadingIndicator)
+        loadingOverlayView.addSubview(loadingLabel)
+        addSubview(loadingOverlayView)
+        updateIndicators()
+    }
+
+    private func layoutOverlayViews() {
+        let topSize = NSSize(width: 160, height: 24)
+        topIndicatorView.frame = NSRect(
+            x: (bounds.width - topSize.width) / 2,
+            y: bounds.height - topSize.height - 10,
+            width: topSize.width,
+            height: topSize.height
+        )
+        topIndicatorLabel.frame = NSRect(x: 10, y: 4, width: topSize.width - 20, height: 16)
+
+        let overlaySize = NSSize(width: 220, height: 36)
+        loadingOverlayView.frame = NSRect(
+            x: (bounds.width - overlaySize.width) / 2,
+            y: bounds.height - overlaySize.height - 10,
+            width: overlaySize.width,
+            height: overlaySize.height
+        )
+        loadingIndicator.frame = NSRect(x: 12, y: 9, width: 18, height: 18)
+        loadingLabel.frame = NSRect(x: 40, y: 8, width: overlaySize.width - 52, height: 20)
+    }
+
+    private func configureCurrentSurface(_ surface: TerminalSurfaceView) {
+        surface.setEventSink(eventSink)
+        surface.setInteractive(true)
+        surface.scrollbackInfoHandler = { [weak self] info in
+            guard let self else { return }
+            self.currentScrollbackInfo = info
+            self.loadedStartOffsetBytes = info.loadedFrom
+            self.totalScrollbackBytes = info.totalBytes
+            self.testLogger.write(
+                event: "scrollback_info",
+                fields: [
+                    "role": "primary",
+                    "total_bytes": info.totalBytes,
+                    "loaded_from": info.loadedFrom,
+                ]
+            )
+            self.updateIndicators()
+        }
+        surface.scrollbarHandler = { [weak self] state in
+            guard let self else { return }
+            switch self.scrollbarCoordinator.receive(state) {
+            case .apply:
+                self.synchronizeScrollView()
+            case .deferred:
+                self.scheduleDeferredScrollbarFlushIfNeeded()
+            }
+            self.updateIndicators()
+        }
+    }
+
+    private func configurePrefetchSurface(_ surface: TerminalSurfaceView) {
+        surface.setEventSink(nil)
+        surface.setInteractive(false)
+        surface.scrollbackInfoHandler = { [weak self] info in
+            guard let self else { return }
+            self.prefetchScrollbackInfo = info
+            self.totalScrollbackBytes = max(self.totalScrollbackBytes, info.totalBytes)
+            self.testLogger.write(
+                event: "prefetch_scrollback_info",
+                fields: [
+                    "role": "prefetch",
+                    "total_bytes": info.totalBytes,
+                    "loaded_from": info.loadedFrom,
+                ]
+            )
+            self.maybeMarkPrefetchReady()
+        }
+        surface.scrollbarHandler = { [weak self] state in
+            guard let self else { return }
+            self.prefetchScrollbarState = state
+            self.maybeMarkPrefetchReady()
+        }
+    }
+
+    private func updatePrefetchStateFromVisibleRect() {
+        guard !isSwappingSurface else { return }
+        let visibleRect = scrollView.contentView.documentVisibleRect
+        if !isAtTop(visibleRect: visibleRect) {
+            prefetchTriggeredAtTop = false
+        }
+        if isNearTop(visibleRect: visibleRect) {
+            maybeStartPrefetch()
+        }
+        if isAtTop(visibleRect: visibleRect) {
+            prefetchTriggeredAtTop = true
+            if prefetchReady {
+                performSurfaceSwap()
+                return
+            }
+        }
+        updateIndicators()
+    }
+
+    private func maybeStartPrefetch() {
+        guard loadedStartOffsetBytes > 0,
+              !isPrefetching,
+              prefetchSurfaceView == nil else { return }
+
+        let fetchStart = loadedStartOffsetBytes > Self.defaultReplayTailBytes
+            ? loadedStartOffsetBytes - Self.defaultReplayTailBytes
+            : 0
+        isPrefetching = true
+        prefetchReady = false
+        prefetchScrollbackInfo = nil
+        prefetchScrollbarState = nil
+        prefetchReadyWorkItem?.cancel()
+        prefetchReadyWorkItem = nil
+
+        let prefetchSurface = makeSurfaceView(
+            role: "prefetch",
+            offset: fetchStart,
+            tailBytes: nil,
+            interactive: false,
+            eventSink: nil
+        )
+        configurePrefetchSurface(prefetchSurface)
+        prefetchSurface.alphaValue = 0.01
+        prefetchSurface.frame = bounds
+        addSubview(prefetchSurface, positioned: .below, relativeTo: scrollView)
+        prefetchSurface.setActive(scrollbarCoordinator.isActive)
+        prefetchSurfaceView = prefetchSurface
+        testLogger.write(
+            event: "prefetch_started",
+            fields: ["offset": fetchStart, "loaded_start_offset": loadedStartOffsetBytes]
+        )
+        updateIndicators()
+    }
+
+    private func makeSurfaceView(
+        role: String,
+        offset: UInt64?,
+        tailBytes: UInt64?,
+        interactive: Bool,
+        eventSink: FlutterEventSink?
+    ) -> TerminalSurfaceView {
+        TerminalSurfaceView(
+            sessionId: sessionId,
+            serverBaseUrl: serverBaseUrl,
+            authToken: authToken,
+            eventSink: eventSink,
+            attachOptions: TerminalAttachOptions(
+                offset: offset,
+                tailBytes: tailBytes,
+                metadataPath: Self.makeMetadataPath(role: role, sessionId: sessionId),
+                role: role
+            ),
+            interactionEnabled: interactive,
+            testLogger: testLogger
+        )
+    }
+
+    private func maybeMarkPrefetchReady() {
+        guard isPrefetching,
+              !prefetchReady,
+              prefetchScrollbackInfo != nil,
+              prefetchScrollbarState != nil else { return }
+        if prefetchReadyDelay > 0, prefetchReadyWorkItem == nil {
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.prefetchReadyWorkItem = nil
+                self?.completePrefetchReadyIfPossible()
+            }
+            prefetchReadyWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + prefetchReadyDelay, execute: workItem)
+            return
+        }
+        completePrefetchReadyIfPossible()
+    }
+
+    private func completePrefetchReadyIfPossible() {
+        guard isPrefetching,
+              !prefetchReady,
+              prefetchScrollbackInfo != nil,
+              prefetchScrollbarState != nil else { return }
+        prefetchReady = true
+        if let info = prefetchScrollbackInfo {
+            testLogger.write(
+                event: "prefetch_ready",
+                fields: [
+                    "loaded_from": info.loadedFrom,
+                    "total_bytes": info.totalBytes,
+                ]
+            )
+        }
+        updateIndicators()
+        if prefetchTriggeredAtTop {
+            performSurfaceSwap()
+        }
+    }
+
+    private func performSurfaceSwap() {
+        guard !isSwappingSurface,
+              let newSurface = prefetchSurfaceView,
+              let currentState = scrollbarCoordinator.latestState,
+              let newState = prefetchScrollbarState else { return }
+
+        isSwappingSurface = true
+        let oldSurface = surfaceView
+        let prependedRows = Int(newState.total > currentState.total ? newState.total - currentState.total : 0)
+        let targetRow = Int(currentState.offset) + prependedRows
+
+        prefetchSurfaceView = nil
+        prefetchScrollbackInfo = nil
+        prefetchScrollbarState = nil
+        prefetchReady = false
+        isPrefetching = false
+        prefetchTriggeredAtTop = false
+        prefetchReadyWorkItem?.cancel()
+        prefetchReadyWorkItem = nil
+
+        oldSurface.setInteractive(false)
+        oldSurface.setEventSink(nil)
+        oldSurface.removeFromSuperview()
+
+        surfaceView = newSurface
+        surfaceView.alphaValue = 1.0
+        surfaceView.frame = NSRect(origin: scrollView.contentView.documentVisibleRect.origin, size: scrollView.contentSize)
+        documentView.addSubview(surfaceView)
+        configureCurrentSurface(surfaceView)
+
+        currentScrollbackInfo = surfaceView.latestScrollbackInfo
+        if let info = currentScrollbackInfo {
+            loadedStartOffsetBytes = info.loadedFrom
+            totalScrollbackBytes = info.totalBytes
+        }
+
+        scrollbarCoordinator.replaceLatestState(newState)
+        documentView.frame.size.height = Self.documentHeight(
+            contentHeight: scrollView.contentSize.height,
+            cellHeight: surfaceView.cellHeight,
+            scrollbarState: newState
+        )
+        lastSentRow = targetRow
+        surfaceView.performAction("scroll_to_row:\(targetRow)")
+        testLogger.write(
+            event: "swap_completed",
+            fields: [
+                "target_row": targetRow,
+                "prepended_rows": prependedRows,
+                "loaded_start_offset": loadedStartOffsetBytes,
+            ]
+        )
+        isSwappingSurface = false
+        updateIndicators()
+    }
+
+    private func updateIndicators() {
+        let hasMoreHistory = loadedStartOffsetBytes > 0
+        topIndicatorView.isHidden = !hasMoreHistory || isPrefetching
+        topIndicatorLabel.stringValue = hasMoreHistory ? "Scroll up for more" : ""
+
+        let showLoading = isPrefetching && prefetchTriggeredAtTop && !prefetchReady
+        loadingOverlayView.isHidden = !showLoading
+
+        if exposesDebugAccessibilityState,
+           let data = try? JSONSerialization.data(
+               withJSONObject: [
+                   "loaded_start_offset": loadedStartOffsetBytes,
+                    "total_scrollback_bytes": totalScrollbackBytes,
+                    "is_prefetching": isPrefetching,
+                    "prefetch_ready": prefetchReady,
+                    "prefetch_triggered_at_top": prefetchTriggeredAtTop,
+                    "test_prefetch_trigger_ratio": testPrefetchTriggerRatioOverride as Any,
+                    "test_top_trigger_ratio": testTopTriggerRatioOverride as Any,
+                ],
+                options: [.sortedKeys]
+           ),
+           let json = String(data: data, encoding: .utf8) {
+            scrollView.setAccessibilityValue(json)
+        }
+    }
+
+    private func isNearTop(visibleRect: NSRect) -> Bool {
+        let maxExtent = max(documentView.frame.height - visibleRect.height, 1)
+        let ratio = distanceFromTop(visibleRect: visibleRect) / maxExtent
+        let triggerRatio = testPrefetchTriggerRatioOverride ?? Self.prefetchTriggerRatio
+        return ratio < triggerRatio
+    }
+
+    private func isAtTop(visibleRect: NSRect) -> Bool {
+        let maxExtent = max(documentView.frame.height - visibleRect.height, 1)
+        let ratio = distanceFromTop(visibleRect: visibleRect) / maxExtent
+        if let triggerRatio = testTopTriggerRatioOverride {
+            return ratio < triggerRatio
+        }
+        return distanceFromTop(visibleRect: visibleRect) <= Self.topTriggerDistance
+    }
+
+    private func distanceFromTop(visibleRect: NSRect) -> CGFloat {
+        max(0, documentView.frame.height - visibleRect.origin.y - visibleRect.height)
     }
 
     private func scheduleDeferredScrollbarFlushIfNeeded() {
@@ -240,33 +684,55 @@ final class TerminalView: NSView {
             synchronizeSurfaceView()
             scheduleDeferredScrollbarFlushIfNeeded()
             surfaceView.setActive(true)
+            prefetchSurfaceView?.setActive(true)
             return
         case .deferred:
             break
         }
         surfaceView.setActive(active)
+        prefetchSurfaceView?.setActive(active)
     }
 
     func setImagePasteBridgeEnabled(_ enabled: Bool) {
         surfaceView.setImagePasteBridgeEnabled(enabled)
+        prefetchSurfaceView?.setImagePasteBridgeEnabled(enabled)
+    }
+
+    private static func readCGFloatEnv(_ key: String) -> CGFloat? {
+        guard let raw = ProcessInfo.processInfo.environment[key],
+              let value = Double(raw) else {
+            return nil
+        }
+        return CGFloat(value)
     }
 
     func setEventSink(_ sink: FlutterEventSink?) {
+        eventSink = sink
         surfaceView.setEventSink(sink)
+    }
+
+    private static func makeMetadataPath(role: String, sessionId: String) -> String {
+        let filename = "tether-\(sessionId)-\(role)-\(UUID().uuidString).jsonl"
+        return (NSTemporaryDirectory() as NSString).appendingPathComponent(filename)
     }
 
     static func buildAttachCommand(
         sessionId: String,
         serverBaseUrl: String?,
         authToken: String?,
-        clientPath: String?
+        clientPath: String?,
+        offset: UInt64? = nil,
+        tailBytes: UInt64? = defaultReplayTailBytes,
+        metadataPath: String? = nil
     ) -> String {
         TerminalSurfaceView.buildAttachCommand(
             sessionId: sessionId,
             serverBaseUrl: serverBaseUrl,
             authToken: authToken,
             clientPath: clientPath,
-            tailBytes: defaultReplayTailBytes
+            offset: offset,
+            tailBytes: tailBytes,
+            metadataPath: metadataPath
         )
     }
 
@@ -410,6 +876,14 @@ final class TerminalView: NSView {
     }
 }
 
+#if DEBUG
+extension TerminalView {
+    var debugScrollView: NSScrollView { scrollView }
+    var debugLoadedStartOffsetBytes: UInt64 { loadedStartOffsetBytes }
+    var debugTotalScrollbackBytes: UInt64 { totalScrollbackBytes }
+}
+#endif
+
 protocol TerminalShortcutFocusable {}
 
 /// NSView embedding a Ghostty surface whose child process is `tether-client attach`.
@@ -417,10 +891,15 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     private let sessionId: String
     private let serverBaseUrl: String?
     private let authToken: String?
+    private let attachOptions: TerminalAttachOptions
+    private let testLogger: TerminalTestLogger
+    private var interactionEnabled: Bool
 
     private(set) var surface: ghostty_surface_t?
+    private(set) var latestScrollbackInfo: ScrollbackInfoState?
     var eventSink: FlutterEventSink?
     var scrollbarHandler: ((TerminalScrollbarState?) -> Void)?
+    var scrollbackInfoHandler: ((ScrollbackInfoState) -> Void)?
 
     private var observers: [NSObjectProtocol] = []
     private var eventMonitor: Any?
@@ -429,17 +908,26 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     private var focused = false
     private var suppressNextLeftMouseUp = false
     private var imagePasteBridgeEnabled = false
+    private var metadataHandle: FileHandle?
+    private var metadataMonitor: DispatchSourceFileSystemObject?
+    private var metadataBuffer = Data()
 
     init(
         sessionId: String,
         serverBaseUrl: String?,
         authToken: String?,
-        eventSink: FlutterEventSink?
+        eventSink: FlutterEventSink?,
+        attachOptions: TerminalAttachOptions,
+        interactionEnabled: Bool,
+        testLogger: TerminalTestLogger
     ) {
         self.sessionId = sessionId
         self.serverBaseUrl = serverBaseUrl
         self.authToken = authToken
         self.eventSink = eventSink
+        self.attachOptions = attachOptions
+        self.interactionEnabled = interactionEnabled
+        self.testLogger = testLogger
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
@@ -482,14 +970,21 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
             return
         }
 
+        startMetadataMonitor()
         let scaledBounds = convertToBacking(bounds)
         ghostty_surface_set_size(s, UInt32(scaledBounds.width), UInt32(scaledBounds.height))
         TerminalApp.shared.registerSurface(s, userdata: surfaceUserdata)
         ghostty_surface_draw(s)
         observeNotifications()
-        eventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.keyUp, .leftMouseDown]
-        ) { [weak self] in self?.localEventHandler($0) }
+        updateEventMonitor()
+        testLogger.write(
+            event: "attach_started",
+            fields: [
+                "role": attachOptions.role,
+                "offset": attachOptions.offset as Any,
+                "tail_bytes": attachOptions.tailBytes as Any,
+            ]
+        )
     }
 
     private func attachCommand() -> String {
@@ -498,7 +993,9 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
             serverBaseUrl: serverBaseUrl,
             authToken: authToken,
             clientPath: resolveTetherClientPath(),
-            tailBytes: TerminalView.defaultReplayTailBytes
+            offset: attachOptions.offset,
+            tailBytes: attachOptions.tailBytes,
+            metadataPath: attachOptions.metadataPath
         )
     }
 
@@ -507,7 +1004,9 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         serverBaseUrl: String?,
         authToken: String?,
         clientPath: String?,
-        tailBytes: UInt64
+        offset: UInt64?,
+        tailBytes: UInt64?,
+        metadataPath: String?
     ) -> String {
         guard let serverBaseUrl, !serverBaseUrl.isEmpty else {
             return "printf 'tether-server is not connected\\n'; exit 1"
@@ -529,11 +1028,80 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
             parts.append("--token")
             parts.append(shellQuote(authToken))
         }
-        if tailBytes > 0 {
+        if let offset {
+            parts.append("--offset")
+            parts.append(String(offset))
+        } else if let tailBytes, tailBytes > 0 {
             parts.append("--tail-bytes")
             parts.append(String(tailBytes))
         }
+        if let metadataPath, !metadataPath.isEmpty {
+            parts.append("--metadata-path")
+            parts.append(shellQuote(metadataPath))
+        }
         return parts.joined(separator: " ")
+    }
+
+    private func startMetadataMonitor() {
+        guard let metadataPath = attachOptions.metadataPath, !metadataPath.isEmpty else { return }
+        let fileURL = URL(fileURLWithPath: metadataPath)
+        if !FileManager.default.fileExists(atPath: fileURL.path) {
+            FileManager.default.createFile(atPath: fileURL.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return }
+        metadataHandle = handle
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: handle.fileDescriptor,
+            eventMask: [.extend, .write],
+            queue: DispatchQueue.main
+        )
+        source.setEventHandler { [weak self] in
+            self?.consumeMetadata()
+        }
+        source.setCancelHandler { [weak self] in
+            try? self?.metadataHandle?.close()
+        }
+        metadataMonitor = source
+        source.resume()
+        consumeMetadata()
+    }
+
+    private func consumeMetadata() {
+        guard let handle = metadataHandle,
+              let data = try? handle.readToEnd(),
+              !data.isEmpty else { return }
+        metadataBuffer.append(data)
+        while let newlineIndex = metadataBuffer.firstIndex(of: 0x0A) {
+            let line = metadataBuffer.prefix(upTo: newlineIndex)
+            metadataBuffer.removeSubrange(...newlineIndex)
+            guard !line.isEmpty,
+                  let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  let type = json["type"] as? String else { continue }
+            switch type {
+            case "scrollback_info":
+                guard let total = (json["total_bytes"] as? NSNumber)?.uint64Value,
+                      let loaded = (json["loaded_from"] as? NSNumber)?.uint64Value else {
+                    continue
+                }
+                let info = ScrollbackInfoState(totalBytes: total, loadedFrom: loaded)
+                latestScrollbackInfo = info
+                scrollbackInfoHandler?(info)
+            default:
+                continue
+            }
+        }
+    }
+
+    private func updateEventMonitor() {
+        if interactionEnabled {
+            guard eventMonitor == nil else { return }
+            eventMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.keyUp, .leftMouseDown]
+            ) { [weak self] in self?.localEventHandler($0) }
+        } else if let eventMonitor {
+            NSEvent.removeMonitor(eventMonitor)
+            self.eventMonitor = nil
+        }
     }
 
     private func resolveTetherClientPath() -> String? {
@@ -1159,10 +1727,24 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         eventSink = sink
     }
 
+    func setInteractive(_ interactive: Bool) {
+        interactionEnabled = interactive
+        if !interactive {
+            suppressNextLeftMouseUp = false
+            focusDidChange(false)
+        }
+        updateEventMonitor()
+    }
+
     deinit {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         if let eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
+        }
+        metadataMonitor?.cancel()
+        metadataMonitor = nil
+        if let metadataPath = attachOptions.metadataPath {
+            try? FileManager.default.removeItem(atPath: metadataPath)
         }
         if let surface {
             TerminalApp.shared.unregisterSurface(

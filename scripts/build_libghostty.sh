@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build libghostty.a for macOS aarch64 from a pinned Ghostty release tag.
-# Output: flutter_app/macos/Runner/ghostty/libghostty.a
+# Build a universal libghostty.dylib for macOS from a pinned Ghostty release tag.
+# Output: flutter_app/macos/Runner/ghostty/libghostty.dylib
 #         flutter_app/macos/Runner/ghostty/ghostty.h
 #
 # Usage: ./scripts/build_libghostty.sh [--tag <tag>]
@@ -24,19 +24,30 @@ else
     https://github.com/ghostty-org/ghostty.git "$BUILD_DIR"
 fi
 
-# 2. Build with Zig
-echo "==> Running zig build libghostty..."
+# 2. Build both macOS slices with Zig
 cd "$BUILD_DIR"
+echo "==> Building arm64 dylib..."
 zig build \
   -Doptimize=ReleaseFast \
   -Dtarget=aarch64-macos \
-  libghostty
+  -Demit-xcframework=false
+cp zig-out/lib/libghostty.dylib zig-out/lib/libghostty-arm64.dylib
+
+echo "==> Building x86_64 dylib..."
+zig build \
+  -Doptimize=ReleaseFast \
+  -Dtarget=x86_64-macos \
+  -Demit-xcframework=false
+cp zig-out/lib/libghostty.dylib zig-out/lib/libghostty-x86_64.dylib
 
 # 3. Copy outputs
 mkdir -p "$OUT_DIR"
-cp zig-out/lib/libghostty.a "$OUT_DIR/libghostty.a"
+lipo -create \
+  zig-out/lib/libghostty-arm64.dylib \
+  zig-out/lib/libghostty-x86_64.dylib \
+  -output "$OUT_DIR/libghostty.dylib"
 cp include/ghostty.h "$OUT_DIR/ghostty.h"
 
 echo "==> Done. Outputs:"
-echo "    $OUT_DIR/libghostty.a"
+echo "    $OUT_DIR/libghostty.dylib"
 echo "    $OUT_DIR/ghostty.h"

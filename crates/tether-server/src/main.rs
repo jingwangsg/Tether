@@ -7,6 +7,8 @@ mod remote;
 mod server;
 mod ssh_config;
 mod state;
+#[cfg(test)]
+mod test_support;
 mod ws;
 
 use clap::Parser;

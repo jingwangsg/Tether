@@ -1,0 +1,2 @@
+flutter_app/macos/Runner/ghostty/libghostty.a filter=lfs diff=lfs merge=lfs -text
+flutter_app/macos/Runner/ghostty/libghostty.dylib filter=lfs diff=lfs merge=lfs -text

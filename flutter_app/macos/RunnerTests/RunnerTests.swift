@@ -11,6 +11,7 @@ class RunnerTests: XCTestCase {
       serverBaseUrl: "http://localhost:7680",
       authToken: "tok'en value",
       clientPath: "/tmp/tether-client",
+      tailBytes: 524288,
     )
 
     XCTAssertTrue(command.contains("'/tmp/tether-client'"))
@@ -26,9 +27,26 @@ class RunnerTests: XCTestCase {
       serverBaseUrl: nil,
       authToken: nil,
       clientPath: "/tmp/tether-client",
+      tailBytes: 524288,
     )
 
     XCTAssertEqual(command, "printf 'tether-server is not connected\\n'; exit 1")
+  }
+
+  func testBuildAttachCommandPrefersOffsetAndMetadataPathOverTailBytes() {
+    let command = TerminalView.buildAttachCommand(
+      sessionId: "session-123",
+      serverBaseUrl: "http://localhost:7680",
+      authToken: nil,
+      clientPath: "/tmp/tether-client",
+      offset: 4096,
+      tailBytes: nil,
+      metadataPath: "/tmp/terminal metadata.jsonl",
+    )
+
+    XCTAssertTrue(command.contains("--offset 4096"))
+    XCTAssertFalse(command.contains("--tail-bytes"))
+    XCTAssertTrue(command.contains("--metadata-path '/tmp/terminal metadata.jsonl'"))
   }
 
   func testHandleActionPostsSearchNotifications() {
@@ -167,12 +185,12 @@ class RunnerTests: XCTestCase {
     let final = TerminalScrollbarState(total: 100, offset: 2, len: 10)
 
     XCTAssertEqual(coordinator.receive(inactiveLatest), .apply(inactiveLatest))
-    XCTAssertEqual(coordinator.setActive(false), .defer)
-    XCTAssertEqual(coordinator.receive(inactiveLatest), .defer)
+    XCTAssertEqual(coordinator.setActive(false), .deferred)
+    XCTAssertEqual(coordinator.receive(inactiveLatest), .deferred)
 
     XCTAssertEqual(coordinator.setActive(true), .apply(inactiveLatest))
-    XCTAssertEqual(coordinator.receive(intermediate), .defer)
-    XCTAssertEqual(coordinator.receive(final), .defer)
+    XCTAssertEqual(coordinator.receive(intermediate), .deferred)
+    XCTAssertEqual(coordinator.receive(final), .deferred)
     XCTAssertEqual(
       coordinator.flushDeferredActivationState(),
       .apply(final)
@@ -491,6 +509,365 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(completed)
   }
 
+  func testNativeTerminalLazyLoadingIntegration() throws {
+    let harness = try TerminalLazyLoadingHarness()
+    defer { harness.cleanup() }
+
+    TerminalApp.shared.setup()
+    let sessionId = try harness.provisionSession(named: "lazy-session")
+    let terminalView: TerminalView = DispatchQueue.main.sync {
+      let terminalView = TerminalView(
+        sessionId: sessionId,
+        serverBaseUrl: "http://127.0.0.1:\(harness.port)",
+        authToken: nil,
+      )
+
+      let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+        styleMask: [.titled, .closable, .resizable],
+        backing: .buffered,
+        defer: false,
+      )
+      window.contentView = terminalView
+      window.makeKeyAndOrderFront(nil)
+      terminalView.window?.displayIfNeeded()
+      return terminalView
+    }
+    defer {
+      DispatchQueue.main.sync {
+        terminalView.window?.orderOut(nil)
+        terminalView.window?.close()
+      }
+    }
+
+    let primaryAttach = try harness.waitForEvent(named: "attach_started", timeout: 20) {
+      ($0["role"] as? String) == "primary"
+    }
+    XCTAssertEqual(TerminalLazyLoadingHarness.uint64(primaryAttach, key: "tail_bytes"), 1_048_576)
+    XCTAssertNil(primaryAttach["offset"])
+
+    let primaryScrollback = try harness.waitForEvent(named: "scrollback_info", timeout: 20) {
+      ($0["role"] as? String) == "primary"
+    }
+    let initialLoadedFrom = try XCTUnwrap(
+      TerminalLazyLoadingHarness.uint64(primaryScrollback, key: "loaded_from")
+    )
+    XCTAssertGreaterThan(initialLoadedFrom, 0)
+
+    try harness.scroll(
+      terminalView: terminalView,
+      untilEvent: "prefetch_started",
+      targetRatio: 0.92,
+      timeout: 15,
+    )
+    let prefetchAttach = try harness.waitForEvent(named: "attach_started", timeout: 10) {
+      ($0["role"] as? String) == "prefetch"
+    }
+    let prefetchOffset = try XCTUnwrap(
+      TerminalLazyLoadingHarness.uint64(prefetchAttach, key: "offset")
+    )
+    XCTAssertLessThan(prefetchOffset, initialLoadedFrom)
+
+    try harness.scroll(
+      terminalView: terminalView,
+      untilEvent: "swap_completed",
+      targetRatio: 1.0,
+      timeout: 20,
+    )
+
+    let readyEvent = try harness.waitForEvent(named: "prefetch_ready", timeout: 10)
+    let swapEvent = try harness.waitForEvent(named: "swap_completed", timeout: 10)
+    XCTAssertEqual(
+      try XCTUnwrap(TerminalLazyLoadingHarness.uint64(readyEvent, key: "loaded_from")),
+      prefetchOffset
+    )
+    XCTAssertLessThan(
+      try XCTUnwrap(TerminalLazyLoadingHarness.uint64(swapEvent, key: "loaded_start_offset")),
+      initialLoadedFrom
+    )
+    XCTAssertLessThan(terminalView.debugLoadedStartOffsetBytes, initialLoadedFrom)
+  }
+
+}
+
+private final class TerminalLazyLoadingHarness {
+  let port = 17680
+  private let repoRoot: URL
+  private let tempRoot: URL
+  private let eventLogURL: URL
+  private var serverProcess: Process?
+
+  init() throws {
+    repoRoot = try Self.repoRoot()
+    tempRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("tether-runner-tests-\(UUID().uuidString)", isDirectory: true)
+    eventLogURL = tempRoot.appendingPathComponent("terminal-events.jsonl")
+    try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+    try ensureCargoBinary(named: "tether-server")
+    try ensureCargoBinary(named: "tether-client")
+    setenv("TETHER_CLIENT_PATH", repoRoot.appendingPathComponent("target/debug/tether-client").path, 1)
+    setenv("TETHER_TERMINAL_TEST_LOG_PATH", eventLogURL.path, 1)
+    setenv("TETHER_TERMINAL_TEST_MODE", "1", 1)
+    setenv("TETHER_TERMINAL_TEST_PREFETCH_DELAY_MS", "300", 1)
+    try startServer()
+  }
+
+  func cleanup() {
+    serverProcess?.terminate()
+    serverProcess?.waitUntilExit()
+    serverProcess = nil
+    unsetenv("TETHER_CLIENT_PATH")
+    unsetenv("TETHER_TERMINAL_TEST_LOG_PATH")
+    unsetenv("TETHER_TERMINAL_TEST_MODE")
+    unsetenv("TETHER_TERMINAL_TEST_PREFETCH_DELAY_MS")
+    try? FileManager.default.removeItem(at: tempRoot)
+  }
+
+  func provisionSession(named sessionName: String) throws -> String {
+    let scriptURL = tempRoot.appendingPathComponent("emit-history.sh")
+    let script = """
+    #!/bin/sh
+    i=0
+    while [ "$i" -lt 70000 ]; do
+      printf 'lazy-%06d line for mac lazy loading verification................................\\n' "$i"
+      i=$((i + 1))
+    done
+    while :; do
+      sleep 1
+    done
+    """
+    try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+    let groupResponse = try jsonResponse(
+      url: URL(string: "http://127.0.0.1:\(port)/api/groups")!,
+      method: "POST",
+      body: [
+        "name": "Runner Lazy Group",
+        "default_cwd": tempRoot.path,
+      ]
+    )
+    XCTAssertEqual(groupResponse.statusCode, 201)
+    let groupId = try XCTUnwrap(groupResponse.json["id"] as? String)
+
+    let sessionResponse = try jsonResponse(
+      url: URL(string: "http://127.0.0.1:\(port)/api/sessions")!,
+      method: "POST",
+      body: [
+        "group_id": groupId,
+        "name": sessionName,
+        "command": scriptURL.path,
+        "cwd": tempRoot.path,
+      ]
+    )
+    XCTAssertEqual(sessionResponse.statusCode, 201)
+    let sessionId = try XCTUnwrap(sessionResponse.json["id"] as? String)
+
+    let deadline = Date().addingTimeInterval(10)
+    while Date() < deadline {
+      let list = try jsonArrayResponse(url: URL(string: "http://127.0.0.1:\(port)/api/sessions")!)
+      if let row = list.first(where: { ($0["id"] as? String) == sessionId }),
+         let isAlive = row["is_alive"] as? Bool,
+         isAlive {
+        return sessionId
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    }
+
+    XCTFail("session did not become alive before timeout")
+    throw HarnessFailure("session did not become alive before timeout")
+  }
+
+  func waitForEvent(
+    named name: String,
+    timeout: TimeInterval,
+    where predicate: ([String: Any]) -> Bool = { _ in true }
+  ) throws -> [String: Any] {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if let event = try latestEvent(named: name, where: predicate) {
+        return event
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    }
+
+    XCTFail("timed out waiting for event \(name)")
+    throw HarnessFailure("timed out waiting for event \(name)")
+  }
+
+  func scroll(
+    terminalView: TerminalView,
+    untilEvent eventName: String,
+    targetRatio: CGFloat,
+    timeout: TimeInterval
+  ) throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if try latestEvent(named: eventName) != nil {
+        return
+      }
+      let scrollView = terminalView.debugScrollView
+      let maxOrigin = max(
+        0,
+        scrollView.documentView?.frame.height ?? 0 - scrollView.contentView.bounds.height
+      )
+      if maxOrigin > 0 {
+        DispatchQueue.main.sync {
+          scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxOrigin * targetRatio))
+          NotificationCenter.default.post(
+            name: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView
+          )
+          NotificationCenter.default.post(
+            name: NSScrollView.didLiveScrollNotification,
+            object: scrollView
+          )
+        }
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    }
+
+    XCTFail("timed out waiting for \(eventName)")
+    throw HarnessFailure("timed out waiting for \(eventName)")
+  }
+
+  private func startServer() throws {
+    let process = Process()
+    process.currentDirectoryURL = repoRoot
+    process.executableURL = repoRoot.appendingPathComponent("target/debug/tether-server")
+    process.arguments = ["--port", "\(port)"]
+    var environment = ProcessInfo.processInfo.environment
+    environment["TETHER_DATA_DIR"] = tempRoot.appendingPathComponent("data").path
+    environment["RUST_LOG"] = "error"
+    process.environment = environment
+    let sink = Pipe()
+    process.standardOutput = sink
+    process.standardError = sink
+    try process.run()
+    serverProcess = process
+
+    let deadline = Date().addingTimeInterval(15)
+    while Date() < deadline {
+      if let response = try? jsonResponse(url: URL(string: "http://127.0.0.1:\(port)/api/info")!),
+         response.statusCode == 200 {
+        return
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    }
+
+    XCTFail("tether-server did not become ready before timeout")
+    throw HarnessFailure("tether-server did not become ready before timeout")
+  }
+
+  private func ensureCargoBinary(named binaryName: String) throws {
+    let binaryURL = repoRoot.appendingPathComponent("target/debug/\(binaryName)")
+    guard !FileManager.default.isExecutableFile(atPath: binaryURL.path) else { return }
+
+    let build = Process()
+    build.currentDirectoryURL = repoRoot
+    build.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    build.arguments = ["cargo", "build", "-p", binaryName]
+    try build.run()
+    build.waitUntilExit()
+    XCTAssertEqual(build.terminationStatus, 0)
+  }
+
+  private func latestEvent(
+    named name: String,
+    where predicate: ([String: Any]) -> Bool = { _ in true }
+  ) throws -> [String: Any]? {
+    try readEvents()
+      .reversed()
+      .first { ($0["event"] as? String) == name && predicate($0) }
+  }
+
+  private func readEvents() throws -> [[String: Any]] {
+    guard FileManager.default.fileExists(atPath: eventLogURL.path) else { return [] }
+    let contents = try String(contentsOf: eventLogURL, encoding: .utf8)
+    return contents
+      .split(separator: "\n")
+      .compactMap { line in
+        guard let data = String(line).data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+          return nil
+        }
+        return json
+      }
+  }
+
+  private func jsonResponse(
+    url: URL,
+    method: String = "GET",
+    body: [String: Any]? = nil
+  ) throws -> (statusCode: Int, json: [String: Any]) {
+    var request = URLRequest(url: url)
+    request.httpMethod = method
+    if let body {
+      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      request.httpBody = try JSONSerialization.data(withJSONObject: body)
+    }
+    let result = try synchronousData(for: request)
+    let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: result.data) as? [String: Any])
+    return (result.statusCode, json)
+  }
+
+  private func jsonArrayResponse(url: URL) throws -> [[String: Any]] {
+    let result = try synchronousData(for: URLRequest(url: url))
+    XCTAssertEqual(result.statusCode, 200)
+    return try XCTUnwrap(try JSONSerialization.jsonObject(with: result.data) as? [[String: Any]])
+  }
+
+  private func synchronousData(for request: URLRequest) throws -> (data: Data, statusCode: Int) {
+    let semaphore = DispatchSemaphore(value: 0)
+    var payload: Data?
+    var responseCode = 0
+    var capturedError: Error?
+
+    URLSession.shared.dataTask(with: request) { data, response, error in
+      defer { semaphore.signal() }
+      if let error {
+        capturedError = error
+        return
+      }
+      payload = data
+      responseCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+    }.resume()
+
+    semaphore.wait()
+    if let capturedError {
+      throw capturedError
+    }
+    return (try XCTUnwrap(payload), responseCode)
+  }
+
+  private static func repoRoot() throws -> URL {
+    var url = URL(fileURLWithPath: #filePath)
+    while url.path != "/" {
+      if FileManager.default.fileExists(atPath: url.appendingPathComponent("Cargo.toml").path) {
+        return url
+      }
+      url.deleteLastPathComponent()
+    }
+    throw HarnessFailure("failed to resolve repo root")
+  }
+
+  static func uint64(_ payload: [String: Any], key: String) -> UInt64? {
+    if let value = payload[key] as? NSNumber {
+      return value.uint64Value
+    }
+    if let value = payload[key] as? String {
+      return UInt64(value)
+    }
+    return nil
+  }
+}
+
+private struct HarnessFailure: Error, CustomStringConvertible {
+  let description: String
+
+  init(_ description: String) {
+    self.description = description
+  }
 }
 
 private final class TerminalMarkerResponder: NSResponder, TerminalShortcutFocusable {}

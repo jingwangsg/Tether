@@ -381,9 +381,7 @@ async fn wait_for_ready(client: &SshClient) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+    use crate::test_support::ENV_MUTEX;
 
     #[test]
     fn uname_linux_x86_64() {

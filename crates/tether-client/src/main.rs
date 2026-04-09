@@ -1,6 +1,8 @@
 use std::io::{self, Read};
 use std::mem::MaybeUninit;
 use std::os::fd::AsRawFd;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -44,7 +46,13 @@ struct AttachArgs {
     token: Option<String>,
 
     #[arg(long)]
+    offset: Option<u64>,
+
+    #[arg(long)]
     tail_bytes: Option<u64>,
+
+    #[arg(long)]
+    metadata_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -132,8 +140,9 @@ async fn run_attach(args: AttachArgs) -> Result<i32> {
     let mut stdout = BufWriter::new(tokio::io::stdout());
     let mut exit_code = 1;
     let mut saw_exit = false;
-    let mut acked_offset = 0u64;
+    let mut acked_offset = args.offset.unwrap_or_default();
     let mut reconnect_attempts = 0u32;
+    let metadata_logger = MetadataLogger::new(args.metadata_path.clone())?;
 
     loop {
         let ws_url = build_session_ws_url(
@@ -190,6 +199,7 @@ async fn run_attach(args: AttachArgs) -> Result<i32> {
                                 &mut exit_code,
                                 &mut saw_exit,
                                 &mut acked_offset,
+                                metadata_logger.as_ref(),
                             ).await? {
                                 break;
                             }
@@ -269,6 +279,7 @@ async fn handle_server_message<W: AsyncWrite + Unpin>(
     exit_code: &mut i32,
     saw_exit: &mut bool,
     acked_offset: &mut u64,
+    metadata_logger: Option<&MetadataLogger>,
 ) -> Result<bool> {
     let json: serde_json::Value =
         serde_json::from_str(raw).context("failed to parse server json")?;
@@ -306,7 +317,68 @@ async fn handle_server_message<W: AsyncWrite + Unpin>(
             Ok(false)
         }
         "foreground_changed" | "pong" => Ok(false),
+        "scrollback_info" => {
+            if let Some(logger) = metadata_logger {
+                let total_bytes = json
+                    .get("total_bytes")
+                    .and_then(|v| v.as_u64())
+                    .context("scrollback_info missing total_bytes")?;
+                let loaded_from = json
+                    .get("loaded_from")
+                    .and_then(|v| v.as_u64())
+                    .context("scrollback_info missing loaded_from")?;
+                logger.write_scrollback_info(total_bytes, loaded_from)?;
+            }
+            Ok(false)
+        }
         _ => Ok(false),
+    }
+}
+
+#[derive(Clone)]
+struct MetadataLogger {
+    file: Arc<Mutex<std::fs::File>>,
+}
+
+impl MetadataLogger {
+    fn new(path: Option<PathBuf>) -> Result<Option<Self>> {
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create metadata parent directory {}", parent.display())
+            })?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("failed to open metadata log {}", path.display()))?;
+        Ok(Some(Self {
+            file: Arc::new(Mutex::new(file)),
+        }))
+    }
+
+    fn write_scrollback_info(&self, total_bytes: u64, loaded_from: u64) -> Result<()> {
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| anyhow::anyhow!("metadata log mutex poisoned"))?;
+        serde_json::to_writer(
+            &mut *file,
+            &json!({
+                "type": "scrollback_info",
+                "total_bytes": total_bytes,
+                "loaded_from": loaded_from,
+            }),
+        )
+        .context("failed to serialize metadata event")?;
+        use std::io::Write as _;
+        file.write_all(b"\n")
+            .context("failed to terminate metadata event")?;
+        file.flush().context("failed to flush metadata log")?;
+        Ok(())
     }
 }
 
@@ -468,8 +540,9 @@ fn current_winsize(fd: i32) -> Option<(u16, u16)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_session_ws_url, handle_server_message};
+    use super::{build_session_ws_url, handle_server_message, MetadataLogger};
     use tokio::io::BufWriter;
+    use uuid::Uuid;
 
     #[test]
     fn http_server_becomes_ws() {
@@ -543,6 +616,7 @@ mod tests {
             &mut exit_code,
             &mut saw_exit,
             &mut acked_offset,
+            None,
         )
         .await
         .unwrap();
@@ -565,6 +639,7 @@ mod tests {
             &mut exit_code,
             &mut saw_exit,
             &mut acked_offset,
+            None,
         )
         .await
         .unwrap();
@@ -572,5 +647,53 @@ mod tests {
         assert!(!should_exit);
         assert!(!saw_exit);
         assert_eq!(exit_code, 1);
+    }
+
+    #[tokio::test]
+    async fn scrollback_info_is_written_to_metadata_log() {
+        let metadata_path = std::env::temp_dir().join(format!(
+            "tether-client-metadata-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let logger = MetadataLogger::new(Some(metadata_path.clone())).unwrap();
+        let mut stdout = BufWriter::new(tokio::io::sink());
+        let mut exit_code = 1;
+        let mut saw_exit = false;
+        let mut acked_offset = 0u64;
+
+        let should_exit = handle_server_message(
+            r#"{"type":"scrollback_info","total_bytes":1000,"loaded_from":500}"#,
+            &mut stdout,
+            &mut exit_code,
+            &mut saw_exit,
+            &mut acked_offset,
+            logger.as_ref(),
+        )
+        .await
+        .unwrap();
+
+        let contents = std::fs::read_to_string(&metadata_path).unwrap();
+        let line = contents.lines().next().unwrap();
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(!should_exit);
+        assert_eq!(value["type"], "scrollback_info");
+        assert_eq!(value["total_bytes"], 1000);
+        assert_eq!(value["loaded_from"], 500);
+        std::fs::remove_file(metadata_path).ok();
+    }
+
+    #[test]
+    fn metadata_logger_creates_parent_directory() {
+        let metadata_path = std::env::temp_dir()
+            .join(format!("tether-client-{}", Uuid::new_v4()))
+            .join("events.jsonl");
+        let parent = metadata_path.parent().unwrap().to_path_buf();
+
+        let logger = MetadataLogger::new(Some(metadata_path.clone())).unwrap();
+        assert!(logger.is_some());
+        assert!(parent.is_dir());
+
+        std::fs::remove_file(metadata_path).ok();
+        std::fs::remove_dir(parent).ok();
     }
 }

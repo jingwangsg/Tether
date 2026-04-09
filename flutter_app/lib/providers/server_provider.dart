@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/group.dart';
 import '../models/session.dart';
 import '../models/ssh_host.dart';
 import '../services/api_service.dart';
+import '../utils/test_event_logger.dart';
 
 class ServerConfig {
   final String host;
@@ -82,7 +84,8 @@ class ServerNotifier extends StateNotifier<ServerState> {
 
   Future<void> _tryAutoConnect() async {
     try {
-      final config = ServerConfig(host: 'localhost', port: 7680);
+      final config =
+          _testOverrideConfig() ?? ServerConfig(host: 'localhost', port: 7680);
       final probe = ApiService(baseUrl: config.baseUrl);
       try {
         await probe.getInfo().timeout(const Duration(seconds: 2));
@@ -93,6 +96,21 @@ class ServerNotifier extends StateNotifier<ServerState> {
     } catch (_) {
       // No server on default port — stay disconnected
     }
+  }
+
+  ServerConfig? _testOverrideConfig() {
+    final env = Platform.environment;
+    final host = env['TETHER_TEST_SERVER_HOST'];
+    final port = int.tryParse(env['TETHER_TEST_SERVER_PORT'] ?? '');
+    if (host == null || host.isEmpty || port == null) {
+      return null;
+    }
+    return ServerConfig(
+      host: host,
+      port: port,
+      token: env['TETHER_TEST_SERVER_TOKEN'],
+      useTls: env['TETHER_TEST_SERVER_TLS'] == 'true',
+    );
   }
 
   Future<void> connect(ServerConfig config) async {
@@ -106,6 +124,11 @@ class ServerNotifier extends StateNotifier<ServerState> {
         isConnected: true,
         error: null,
       );
+      TestEventLogger.instance.log('server_connected', {
+        'host': config.host,
+        'port': config.port,
+        'use_tls': config.useTls,
+      });
       await refresh();
 
       _refreshTimer?.cancel();
@@ -137,7 +160,8 @@ class ServerNotifier extends StateNotifier<ServerState> {
           (results[1] as List<Session>).map((s) {
             final current =
                 currentSessions.where((c) => c.id == s.id).firstOrNull;
-            if (s.foregroundProcess == null && current?.foregroundProcess != null) {
+            if (s.foregroundProcess == null &&
+                current?.foregroundProcess != null) {
               return s.copyWith(
                 foregroundProcess: current!.foregroundProcess,
                 oscTitle: current.oscTitle,
@@ -153,6 +177,11 @@ class ServerNotifier extends StateNotifier<ServerState> {
         sessionsStructureChanged: true,
         sshHosts: results[2] as List<SshHost>,
       );
+      TestEventLogger.instance.log('sessions_refreshed', {
+        'group_count': (results[0] as List<Group>).length,
+        'session_count': refreshed.length,
+        'session_names': refreshed.map((s) => s.name).toList(),
+      });
     } catch (e) {
       // Silently fail on refresh — data may be stale
     }

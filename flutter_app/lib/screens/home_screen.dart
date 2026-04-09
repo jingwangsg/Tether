@@ -25,6 +25,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   final _terminalAreaKey = GlobalKey<TerminalAreaState>();
   bool _edgeDragActive = false;
   double _dragDistance = 0;
+  bool _autoOpenedTestSession = false;
 
   bool get _usesNativeRenameShortcut => widget.backend.platformId == 'native';
 
@@ -125,8 +126,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
+    final serverState = ref.watch(serverProvider);
+    final sessionState = ref.watch(sessionProvider);
     final uiState = ref.watch(uiProvider);
     final sidebarW = _sidebarWidth(context);
+    _maybeAutoOpenTestSession(serverState, sessionState);
 
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
@@ -190,7 +194,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   ignoring: !uiState.sidebarOpen,
                   child: GestureDetector(
                     onTap:
-                        () => ref.read(uiProvider.notifier).setSidebarOpen(false),
+                        () =>
+                            ref.read(uiProvider.notifier).setSidebarOpen(false),
                     child: AnimatedOpacity(
                       opacity: uiState.sidebarOpen ? 1.0 : 0.0,
                       duration: const Duration(milliseconds: 250),
@@ -260,5 +265,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         );
       },
     );
+  }
+
+  void _maybeAutoOpenTestSession(
+    ServerState serverState,
+    SessionState sessionState,
+  ) {
+    if (_autoOpenedTestSession || sessionState.activeSessionId != null) {
+      return;
+    }
+    final targetName =
+        Platform.environment['TETHER_TEST_AUTO_OPEN_SESSION_NAME'];
+    if (targetName == null || targetName.isEmpty) {
+      return;
+    }
+    String? targetSessionId;
+    for (final session in serverState.sessions) {
+      if (session.name == targetName) {
+        targetSessionId = session.id;
+        break;
+      }
+    }
+    if (targetSessionId == null) {
+      return;
+    }
+    _autoOpenedTestSession = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      ref.read(sessionProvider.notifier).openTab(targetSessionId!);
+    });
   }
 }

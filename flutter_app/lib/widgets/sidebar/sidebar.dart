@@ -383,85 +383,98 @@ class Sidebar extends ConsumerWidget {
     final display = getDisplayInfo(session, serverState.sessions);
     final canOpen = isSessionInteractive(session, serverState.groups);
     final status = deriveSessionToolStatus(session);
+    final semanticsLabel = display.displayName;
+    final semanticsValue = display.subtitle;
     final titleColor =
         canOpen ? (isActive ? Colors.white : Colors.white70) : Colors.white38;
     final subtitleColor = canOpen ? Colors.white38 : Colors.white24;
 
-    return GestureDetector(
-      onSecondaryTapDown:
-          (details) => _showSessionContextMenu(
-            context,
-            ref,
-            session,
-            details.globalPosition,
+    return Semantics(
+      container: true,
+      button: canOpen,
+      enabled: canOpen,
+      selected: isActive,
+      identifier: 'session-tile-${session.id}',
+      label: semanticsLabel,
+      value: semanticsValue,
+      child: GestureDetector(
+        onSecondaryTapDown:
+            (details) => _showSessionContextMenu(
+              context,
+              ref,
+              session,
+              details.globalPosition,
+            ),
+        onLongPressStart:
+            (details) => _showSessionContextMenu(
+              context,
+              ref,
+              session,
+              details.globalPosition,
+            ),
+        child: ListTile(
+          dense: true,
+          selected: isActive,
+          selectedTileColor: Colors.white.withValues(alpha: 0.08),
+          leading:
+              display.iconAsset != null
+                  ? Image.asset(display.iconAsset!, width: 16, height: 16)
+                  : Icon(display.icon, size: 16, color: display.iconColor),
+          title: Text(
+            display.displayName,
+            style: TextStyle(color: titleColor, fontSize: 13),
+            overflow: TextOverflow.ellipsis,
           ),
-      onLongPressStart:
-          (details) => _showSessionContextMenu(
-            context,
-            ref,
-            session,
-            details.globalPosition,
-          ),
-      child: ListTile(
-        dense: true,
-        selected: isActive,
-        selectedTileColor: Colors.white.withValues(alpha: 0.08),
-        leading:
-            display.iconAsset != null
-                ? Image.asset(display.iconAsset!, width: 16, height: 16)
-                : Icon(display.icon, size: 16, color: display.iconColor),
-        title: Text(
-          display.displayName,
-          style: TextStyle(color: titleColor, fontSize: 13),
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle:
-            display.subtitle != null
-                ? Text(
-                  display.subtitle!,
-                  style: TextStyle(color: subtitleColor, fontSize: 11),
-                  overflow: TextOverflow.ellipsis,
-                )
-                : null,
-        trailing: SizedBox(
-          width: status != null ? 44 : 24,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (status != null) ...[
-                SessionStatusDot(
-                  key: ValueKey('session-sidebar-status-${session.id}'),
-                  status: status,
+          subtitle:
+              display.subtitle != null
+                  ? Text(
+                    display.subtitle!,
+                    style: TextStyle(color: subtitleColor, fontSize: 11),
+                    overflow: TextOverflow.ellipsis,
+                  )
+                  : null,
+          trailing: SizedBox(
+            width: status != null ? 44 : 24,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (status != null) ...[
+                  SessionStatusDot(
+                    key: ValueKey('session-sidebar-status-${session.id}'),
+                    status: status,
+                  ),
+                  const SizedBox(width: 6),
+                ],
+                SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: IconButton(
+                    icon: const Icon(Icons.close, size: 14),
+                    color: Colors.white38,
+                    padding: EdgeInsets.zero,
+                    tooltip: 'Delete Session',
+                    onPressed: () {
+                      ref
+                          .read(serverProvider.notifier)
+                          .deleteSession(session.id);
+                      ref.read(sessionProvider.notifier).closeTab(session.id);
+                    },
+                  ),
                 ),
-                const SizedBox(width: 6),
               ],
-              SizedBox(
-                width: 24,
-                height: 24,
-                child: IconButton(
-                  icon: const Icon(Icons.close, size: 14),
-                  color: Colors.white38,
-                  padding: EdgeInsets.zero,
-                  tooltip: 'Delete Session',
-                  onPressed: () {
-                    ref.read(serverProvider.notifier).deleteSession(session.id);
-                    ref.read(sessionProvider.notifier).closeTab(session.id);
-                  },
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
-        onTap:
-            canOpen
-                ? () {
-                  ref.read(sessionProvider.notifier).openTab(session.id);
-                  final ui = ref.read(uiProvider);
-                  if (ui.isMobile) {
-                    ref.read(uiProvider.notifier).setSidebarOpen(false);
+          onTap:
+              canOpen
+                  ? () {
+                    ref.read(sessionProvider.notifier).openTab(session.id);
+                    final ui = ref.read(uiProvider);
+                    if (ui.isMobile) {
+                      ref.read(uiProvider.notifier).setSidebarOpen(false);
+                    }
                   }
-                }
-                : null,
+                  : null,
+        ),
       ),
     );
   }
