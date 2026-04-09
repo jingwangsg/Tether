@@ -361,7 +361,7 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
     final isActive = session.id == activeId;
     final display = getDisplayInfo(session, widget.allSessions);
     final canOpen = isSessionInteractive(session, widget.allGroups);
-    final status = deriveSessionToolStatus(session);
+    final status = deriveSessionIndicatorStatus(session, isActive: isActive);
     final semanticsLabel = display.displayName;
     final semanticsValue = display.subtitle;
     final titleColor =

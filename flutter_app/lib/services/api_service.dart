@@ -185,6 +185,17 @@ class ApiService {
     _checkResponse(response);
   }
 
+  Future<SessionAttentionState> ackSessionAttention(String id) async {
+    final response = await _client.post(
+      _uri('/api/sessions/$id/attention/ack'),
+      headers: _headers,
+    );
+    _checkResponse(response);
+    return SessionAttentionState.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
   Future<UploadedClipboardImage> uploadClipboardImage({
     required String sessionId,
     required String mimeType,
@@ -224,6 +235,23 @@ class ApiService {
 
   void dispose() {
     _client.close();
+  }
+}
+
+class SessionAttentionState {
+  final int attentionSeq;
+  final int attentionAckSeq;
+
+  const SessionAttentionState({
+    required this.attentionSeq,
+    required this.attentionAckSeq,
+  });
+
+  factory SessionAttentionState.fromJson(Map<String, dynamic> json) {
+    return SessionAttentionState(
+      attentionSeq: json['attention_seq'] as int? ?? 0,
+      attentionAckSeq: json['attention_ack_seq'] as int? ?? 0,
+    );
   }
 }
 

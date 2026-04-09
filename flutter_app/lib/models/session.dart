@@ -12,6 +12,8 @@ class Session {
   final int sortOrder;
   final String? foregroundProcess;
   final String? oscTitle;
+  final int attentionSeq;
+  final int attentionAckSeq;
 
   Session({
     required this.id,
@@ -27,6 +29,8 @@ class Session {
     this.sortOrder = 0,
     this.foregroundProcess,
     this.oscTitle,
+    this.attentionSeq = 0,
+    this.attentionAckSeq = 0,
   });
 
   factory Session.fromJson(Map<String, dynamic> json) {
@@ -44,8 +48,12 @@ class Session {
       sortOrder: json['sort_order'] as int? ?? 0,
       foregroundProcess: json['foreground_process'] as String?,
       oscTitle: json['osc_title'] as String?,
+      attentionSeq: json['attention_seq'] as int? ?? 0,
+      attentionAckSeq: json['attention_ack_seq'] as int? ?? 0,
     );
   }
+
+  bool get hasAttention => attentionSeq > attentionAckSeq;
 
   Session copyWith({
     String? name,
@@ -54,6 +62,8 @@ class Session {
     int? sortOrder,
     String? foregroundProcess,
     String? oscTitle,
+    int? attentionSeq,
+    int? attentionAckSeq,
     bool clearForeground = false,
   }) {
     return Session(
@@ -73,6 +83,8 @@ class Session {
               ? null
               : (foregroundProcess ?? this.foregroundProcess),
       oscTitle: clearForeground ? null : (oscTitle ?? this.oscTitle),
+      attentionSeq: attentionSeq ?? this.attentionSeq,
+      attentionAckSeq: attentionAckSeq ?? this.attentionAckSeq,
     );
   }
 }

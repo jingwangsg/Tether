@@ -89,6 +89,10 @@ fn test_router(state: AppState) -> Router {
         .route("/api/sessions/{id}", patch(api::sessions::update_session))
         .route("/api/sessions/{id}", delete(api::sessions::delete_session))
         .route(
+            "/api/sessions/{id}/attention/ack",
+            post(api::sessions::ack_session_attention),
+        )
+        .route(
             "/api/sessions/{id}/clipboard-image",
             post(api::sessions::upload_clipboard_image),
         )
@@ -318,6 +322,48 @@ async fn test_list_sessions_returns_all_created() {
     assert!(ids.contains(&s1["id"].as_str().unwrap()));
     assert!(ids.contains(&s2["id"].as_str().unwrap()));
     assert!(ids.contains(&s3["id"].as_str().unwrap()));
+
+    cleanup_state(&state);
+}
+
+#[tokio::test]
+async fn test_ack_session_attention_updates_global_cursor() {
+    let state = test_state();
+    let app = test_router(state.clone());
+    let gid = create_group(&app, "g").await;
+    let session = create_local_session(&app, &gid, Some("alpha"), None, None).await;
+    let session_id = session["id"].as_str().unwrap();
+
+    state
+        .inner
+        .db
+        .set_session_attention_state(session_id, 3, 1)
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{session_id}/attention/ack"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["attention_seq"], 3);
+    assert_eq!(payload["attention_ack_seq"], 3);
+
+    let sessions = list_sessions(&app).await;
+    let listed = sessions
+        .into_iter()
+        .find(|entry| entry["id"].as_str() == Some(session_id))
+        .expect("expected session to remain listed");
+    assert_eq!(listed["attention_seq"], 3);
+    assert_eq!(listed["attention_ack_seq"], 3);
 
     cleanup_state(&state);
 }
@@ -618,6 +664,8 @@ async fn test_list_sessions_includes_transient_osc_title_from_cache() {
         SessionForeground {
             process: Some("codex".to_string()),
             osc_title: Some("✱ Codex".to_string()),
+            attention_seq: 0,
+            attention_ack_seq: 0,
         },
     );
 
@@ -645,6 +693,8 @@ async fn test_list_sessions_includes_transient_osc_title_from_cache_for_claude()
         SessionForeground {
             process: Some("claude".to_string()),
             osc_title: Some("· Claude Code".to_string()),
+            attention_seq: 0,
+            attention_ack_seq: 0,
         },
     );
 

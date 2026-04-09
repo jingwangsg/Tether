@@ -29,6 +29,8 @@ fn status_message(foreground: SessionForeground) -> ServerMessage {
     ServerMessage::ForegroundChanged {
         process: foreground.process,
         osc_title: foreground.osc_title,
+        attention_seq: foreground.attention_seq,
+        attention_ack_seq: foreground.attention_ack_seq,
     }
 }
 
@@ -544,11 +546,21 @@ async fn proxy_ws_to_remote(
                                     .get("osc_title")
                                     .and_then(|x| x.as_str())
                                     .map(str::to_string);
+                                let attention_seq = v
+                                    .get("attention_seq")
+                                    .and_then(|x| x.as_i64())
+                                    .unwrap_or_default();
+                                let attention_ack_seq = v
+                                    .get("attention_ack_seq")
+                                    .and_then(|x| x.as_i64())
+                                    .unwrap_or_default();
                                 let _ = update_ssh_foreground_cache(
                                     &state.inner.ssh_fg,
                                     session_id,
                                     process,
                                     osc_title,
+                                    attention_seq,
+                                    attention_ack_seq,
                                 );
                                 state.publish_session_status(session_id);
                                 continue;

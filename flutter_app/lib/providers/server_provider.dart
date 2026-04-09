@@ -160,14 +160,29 @@ class ServerNotifier extends StateNotifier<ServerState> {
           (results[1] as List<Session>).map((s) {
             final current =
                 currentSessions.where((c) => c.id == s.id).firstOrNull;
+            var merged = s;
             if (s.foregroundProcess == null &&
                 current?.foregroundProcess != null) {
-              return s.copyWith(
+              merged = s.copyWith(
                 foregroundProcess: current!.foregroundProcess,
                 oscTitle: current.oscTitle,
               );
             }
-            return s;
+            if (current != null &&
+                (current.attentionSeq > merged.attentionSeq ||
+                    current.attentionAckSeq > merged.attentionAckSeq)) {
+              merged = merged.copyWith(
+                attentionSeq:
+                    current.attentionSeq > merged.attentionSeq
+                        ? current.attentionSeq
+                        : merged.attentionSeq,
+                attentionAckSeq:
+                    current.attentionAckSeq > merged.attentionAckSeq
+                        ? current.attentionAckSeq
+                        : merged.attentionAckSeq,
+              );
+            }
+            return merged;
           }).toList();
 
       _replaceState(
@@ -316,6 +331,8 @@ class ServerNotifier extends StateNotifier<ServerState> {
     String sessionId,
     String? process, {
     String? oscTitle,
+    int? attentionSeq,
+    int? attentionAckSeq,
   }) {
     final sessions =
         state.sessions.map((s) {
@@ -323,12 +340,52 @@ class ServerNotifier extends StateNotifier<ServerState> {
             return s.copyWith(
               foregroundProcess: process,
               oscTitle: oscTitle,
+              attentionSeq: attentionSeq,
+              attentionAckSeq: attentionAckSeq,
               clearForeground: process == null,
             );
           }
           return s;
         }).toList();
     _replaceState(sessions: sessions);
+  }
+
+  Future<void> ackSessionAttention(String sessionId) async {
+    final api = state.api;
+    if (api == null) return;
+
+    final session = state.sessions.where((s) => s.id == sessionId).firstOrNull;
+    if (session == null || !session.hasAttention) {
+      return;
+    }
+
+    final previousSessions = state.sessions;
+    final optimisticSessions =
+        previousSessions.map((s) {
+          if (s.id != sessionId) {
+            return s;
+          }
+          return s.copyWith(attentionAckSeq: s.attentionSeq);
+        }).toList();
+    _replaceState(sessions: optimisticSessions);
+
+    try {
+      final updated = await api.ackSessionAttention(sessionId);
+      final sessions =
+          state.sessions.map((s) {
+            if (s.id != sessionId) {
+              return s;
+            }
+            return s.copyWith(
+              attentionSeq: updated.attentionSeq,
+              attentionAckSeq: updated.attentionAckSeq,
+            );
+          }).toList();
+      _replaceState(sessions: sessions);
+    } catch (_) {
+      _replaceState(sessions: previousSessions);
+      rethrow;
+    }
   }
 
   _StructureVersion _replaceState({

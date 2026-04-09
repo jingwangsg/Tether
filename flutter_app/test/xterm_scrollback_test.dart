@@ -112,10 +112,9 @@ void main() {
   group('Phase 1 — tail_bytes and replay batching', () {
     testWidgets('F1: tail_bytes included in WS url', (tester) async {
       final factory = _MockWsFactory();
-      await tester.pumpWidget(_buildHarness(
-        sessionId: 'sess-1',
-        wsFactory: factory,
-      ));
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-1', wsFactory: factory),
+      );
       await tester.pump();
 
       expect(factory.lastUrl, isNotNull);
@@ -128,10 +127,9 @@ void main() {
       tester,
     ) async {
       final factory = _MockWsFactory();
-      await tester.pumpWidget(_buildHarness(
-        sessionId: 'sess-2',
-        wsFactory: factory,
-      ));
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-2', wsFactory: factory),
+      );
       await tester.pump();
 
       final ws = factory.lastService!;
@@ -156,10 +154,9 @@ void main() {
 
     testWidgets('F3: scrollback_info flushes replay buffer', (tester) async {
       final factory = _MockWsFactory();
-      await tester.pumpWidget(_buildHarness(
-        sessionId: 'sess-3',
-        wsFactory: factory,
-      ));
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-3', wsFactory: factory),
+      );
       await tester.pump();
 
       final ws = factory.lastService!;
@@ -182,10 +179,9 @@ void main() {
       tester,
     ) async {
       final factory = _MockWsFactory();
-      await tester.pumpWidget(_buildHarness(
-        sessionId: 'sess-3b',
-        wsFactory: factory,
-      ));
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-3b', wsFactory: factory),
+      );
       await tester.pump();
 
       final ws = factory.lastService!;
@@ -196,7 +192,7 @@ void main() {
       await tester.pump();
 
       // foreground_changed should NOT flush (proxy safety)
-      ws.emit(ForegroundChangedMessage('vim', null));
+      ws.emit(ForegroundChangedMessage('vim', null, 0, 0));
       await tester.pump();
 
       // Now send scrollback_info — THIS should flush
@@ -209,10 +205,9 @@ void main() {
 
     testWidgets('F4: replay flushes on idle timeout', (tester) async {
       final factory = _MockWsFactory();
-      await tester.pumpWidget(_buildHarness(
-        sessionId: 'sess-4',
-        wsFactory: factory,
-      ));
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-4', wsFactory: factory),
+      );
       await tester.pump();
 
       final ws = factory.lastService!;
@@ -232,10 +227,9 @@ void main() {
       tester,
     ) async {
       final factory = _MockWsFactory();
-      await tester.pumpWidget(_buildHarness(
-        sessionId: 'sess-5',
-        wsFactory: factory,
-      ));
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-5', wsFactory: factory),
+      );
       await tester.pump();
 
       final ws = factory.lastService!;
@@ -258,11 +252,9 @@ void main() {
     ) async {
       final factory = _MockWsFactory();
       final key = GlobalKey<XtermTerminalViewState>();
-      await tester.pumpWidget(_buildHarness(
-        sessionId: 'sess-6',
-        wsFactory: factory,
-        stateKey: key,
-      ));
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-6', wsFactory: factory, stateKey: key),
+      );
       await tester.pump();
 
       final ws = factory.lastService!;
@@ -282,10 +274,9 @@ void main() {
 
     testWidgets('F10: terminal uses maxLines 10000', (tester) async {
       final factory = _MockWsFactory();
-      await tester.pumpWidget(_buildHarness(
-        sessionId: 'sess-10',
-        wsFactory: factory,
-      ));
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-10', wsFactory: factory),
+      );
       await tester.pump();
 
       // The widget should build successfully with 10000 maxLines
@@ -297,10 +288,9 @@ void main() {
       tester,
     ) async {
       final factory = _MockWsFactory();
-      await tester.pumpWidget(_buildHarness(
-        sessionId: 'sess-14',
-        wsFactory: factory,
-      ));
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-14', wsFactory: factory),
+      );
       await tester.pump();
 
       final ws = factory.lastService!;
@@ -330,10 +320,9 @@ void main() {
       tester,
     ) async {
       final factory = _MockWsFactory();
-      await tester.pumpWidget(_buildHarness(
-        sessionId: 'sess-9',
-        wsFactory: factory,
-      ));
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-9', wsFactory: factory),
+      );
       await tester.pump();
 
       final ws = factory.lastService!;
@@ -348,11 +337,13 @@ void main() {
     testWidgets('indicator state tracks loaded offset', (tester) async {
       final factory = _MockWsFactory();
       final key = GlobalKey<XtermTerminalViewState>();
-      await tester.pumpWidget(_buildHarness(
-        sessionId: 'sess-indicator',
-        wsFactory: factory,
-        stateKey: key,
-      ));
+      await tester.pumpWidget(
+        _buildHarness(
+          sessionId: 'sess-indicator',
+          wsFactory: factory,
+          stateKey: key,
+        ),
+      );
       await tester.pump();
 
       final ws = factory.lastService!;

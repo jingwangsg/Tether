@@ -35,6 +35,10 @@ pub enum ServerMessage {
         process: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         osc_title: Option<String>,
+        #[serde(default)]
+        attention_seq: i64,
+        #[serde(default)]
+        attention_ack_seq: i64,
     },
     #[serde(rename = "scrollback_info")]
     ScrollbackInfo { total_bytes: u64, loaded_from: u64 },
@@ -196,5 +200,16 @@ mod tests {
         assert_eq!(scrollback_info["type"], "scrollback_info");
         assert_eq!(scrollback_info["total_bytes"], 1000);
         assert_eq!(scrollback_info["loaded_from"], 500);
+
+        let foreground_changed = serde_json::to_value(ServerMessage::ForegroundChanged {
+            process: Some("claude".to_string()),
+            osc_title: Some("· Claude Code".to_string()),
+            attention_seq: 3,
+            attention_ack_seq: 2,
+        })
+        .unwrap();
+        assert_eq!(foreground_changed["type"], "foreground_changed");
+        assert_eq!(foreground_changed["attention_seq"], 3);
+        assert_eq!(foreground_changed["attention_ack_seq"], 2);
     }
 }

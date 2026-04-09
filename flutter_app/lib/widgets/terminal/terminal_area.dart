@@ -82,6 +82,14 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     ref.listenManual(serverProvider, (previous, next) {
       _scheduleInteractiveTabSync(next);
     });
+    ref.listenManual(sessionProvider.select((state) => state.activeSessionId), (
+      previous,
+      next,
+    ) {
+      if (next != null) {
+        _ackAttentionIfNeeded(next);
+      }
+    });
   }
 
   @override
@@ -207,15 +215,20 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                                 _sessionTitles[tab.sessionId] = clean;
                               });
                             },
-                            onForegroundChanged: (process, oscTitle) {
-                              ref
-                                  .read(serverProvider.notifier)
-                                  .updateForegroundProcess(
-                                    tab.sessionId,
-                                    process,
-                                    oscTitle: oscTitle,
-                                  );
-                            },
+                            onForegroundChanged:
+                                (
+                                  process,
+                                  oscTitle,
+                                  attentionSeq,
+                                  attentionAckSeq,
+                                ) => _handleSessionStatusUpdate(
+                                  sessionId: tab.sessionId,
+                                  process: process,
+                                  oscTitle: oscTitle,
+                                  attentionSeq: attentionSeq,
+                                  attentionAckSeq: attentionAckSeq,
+                                  isActive: isActive,
+                                ),
                             onClipboardImage: (data, mimeType) {
                               return _handleClipboardImage(
                                 sessionId: tab.sessionId,
@@ -346,6 +359,45 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       ref.read(sessionProvider.notifier).cleanupStaleTabs(validIds);
     });
   }
+
+  void _handleSessionStatusUpdate({
+    required String sessionId,
+    required String? process,
+    required String? oscTitle,
+    required int attentionSeq,
+    required int attentionAckSeq,
+    required bool isActive,
+  }) {
+    ref
+        .read(serverProvider.notifier)
+        .updateForegroundProcess(
+          sessionId,
+          process,
+          oscTitle: oscTitle,
+          attentionSeq: attentionSeq,
+          attentionAckSeq: attentionAckSeq,
+        );
+    if (isActive && attentionSeq > attentionAckSeq) {
+      _ackAttentionIfNeeded(sessionId);
+    }
+  }
+
+  void _ackAttentionIfNeeded(String sessionId) {
+    final session =
+        ref
+            .read(serverProvider)
+            .sessions
+            .where((item) => item.id == sessionId)
+            .firstOrNull;
+    if (session == null || !session.hasAttention) {
+      return;
+    }
+    ref.read(serverProvider.notifier).ackSessionAttention(sessionId).catchError(
+      (_) {
+        return null;
+      },
+    );
+  }
 }
 
 class _TerminalTabBar extends ConsumerWidget {
@@ -406,7 +458,10 @@ class _TerminalTabBar extends ConsumerWidget {
                 hasProcess
                     ? session.name
                     : (oscTitle != null ? session.name : display.subtitle);
-            final status = deriveSessionToolStatus(session);
+            final status = deriveSessionIndicatorStatus(
+              session,
+              isActive: isActive,
+            );
 
             return ReorderableDelayedDragStartListener(
               key: ValueKey(tab.sessionId),

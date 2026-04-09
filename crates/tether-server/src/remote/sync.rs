@@ -41,6 +41,8 @@ pub async fn sync_remote_host(
                     id,
                     session.foreground_process.clone(),
                     session.osc_title.clone(),
+                    session.attention_seq,
+                    session.attention_ack_seq,
                 );
                 if let Some(state) = state {
                     let _ = next_fg.unwrap_or_default();
@@ -200,6 +202,8 @@ mod tests {
             is_alive: true,
             foreground_process: foreground_process.map(str::to_string),
             osc_title: None,
+            attention_seq: 0,
+            attention_ack_seq: 0,
             local_group_id: None,
         }
     }
@@ -227,6 +231,8 @@ mod tests {
             SessionForeground {
                 process: Some("codex".to_string()),
                 osc_title: None,
+                attention_seq: 0,
+                attention_ack_seq: 0,
             },
         );
 
@@ -254,6 +260,8 @@ mod tests {
             is_alive: true,
             foreground_process: Some("claude".to_string()),
             osc_title: None,
+            attention_seq: 0,
+            attention_ack_seq: 0,
             local_group_id: None,
         };
 
@@ -509,6 +517,8 @@ mod tests {
             SessionForeground {
                 process: Some("claude".to_string()),
                 osc_title: Some("· Claude Code".to_string()),
+                attention_seq: 0,
+                attention_ack_seq: 0,
             },
         );
         ssh_live_sessions.insert(session_id, 1usize);
@@ -548,6 +558,8 @@ mod tests {
             SessionForeground {
                 process: Some("claude".to_string()),
                 osc_title: Some("· Claude Code".to_string()),
+                attention_seq: 0,
+                attention_ack_seq: 0,
             },
         );
         ssh_live_sessions.insert(session_id, 1usize);

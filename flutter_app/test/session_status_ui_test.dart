@@ -26,6 +26,8 @@ Session _session(
   required String name,
   String? foregroundProcess,
   String? oscTitle,
+  int attentionSeq = 0,
+  int attentionAckSeq = 0,
 }) {
   return Session(
     id: id,
@@ -40,6 +42,8 @@ Session _session(
     lastActive: '',
     foregroundProcess: foregroundProcess,
     oscTitle: oscTitle,
+    attentionSeq: attentionSeq,
+    attentionAckSeq: attentionAckSeq,
   );
 }
 
@@ -103,7 +107,7 @@ void main() {
     expect(find.text('Claude Code'), findsOneWidget);
     expect(
       tester.widget<SessionStatusDot>(finder).status,
-      SessionToolStatus.waiting,
+      SessionIndicatorStatus.waiting,
     );
   });
 
@@ -137,7 +141,7 @@ void main() {
     expect(finder, findsOneWidget);
     expect(
       tester.widget<SessionStatusDot>(finder).status,
-      SessionToolStatus.running,
+      SessionIndicatorStatus.running,
     );
   });
 
@@ -202,7 +206,7 @@ void main() {
     expect(finder, findsOneWidget);
     expect(
       tester.widget<SessionStatusDot>(finder).status,
-      SessionToolStatus.running,
+      SessionIndicatorStatus.running,
     );
   });
 
@@ -227,7 +231,7 @@ void main() {
     expect(finder, findsOneWidget);
     expect(
       tester.widget<SessionStatusDot>(finder).status,
-      SessionToolStatus.waiting,
+      SessionIndicatorStatus.waiting,
     );
   });
 
@@ -261,7 +265,7 @@ void main() {
     expect(finder, findsOneWidget);
     expect(
       tester.widget<SessionStatusDot>(finder).status,
-      SessionToolStatus.waiting,
+      SessionIndicatorStatus.waiting,
     );
 
     final notifier = container.read(serverProvider.notifier);
@@ -274,7 +278,7 @@ void main() {
 
     expect(
       tester.widget<SessionStatusDot>(finder).status,
-      SessionToolStatus.running,
+      SessionIndicatorStatus.running,
     );
 
     notifier.updateForegroundProcess(
@@ -286,7 +290,7 @@ void main() {
 
     expect(
       tester.widget<SessionStatusDot>(finder).status,
-      SessionToolStatus.waiting,
+      SessionIndicatorStatus.waiting,
     );
 
     notifier.updateForegroundProcess(session.id, null);
@@ -325,6 +329,81 @@ void main() {
       findsNothing,
     );
     expect(find.text('Claude Code'), findsNothing);
+  });
+
+  testWidgets('sidebar shows bell indicator for completed background session', (
+    tester,
+  ) async {
+    final group = _group('local');
+    final session = _session(
+      'session-8',
+      groupId: group.id,
+      name: 'agent',
+      foregroundProcess: 'claude',
+      oscTitle: '· Claude Code',
+      attentionSeq: 1,
+      attentionAckSeq: 0,
+    );
+    final container = _container(
+      ServerState(isConnected: true, groups: [group], sessions: [session]),
+    );
+    addTearDown(container.dispose);
+
+    await _pumpWithContainer(
+      tester,
+      container,
+      GroupSection(
+        group: group,
+        allGroups: [group],
+        allSessions: [session],
+        depth: 0,
+      ),
+    );
+
+    final finder = find.byKey(
+      const ValueKey('session-sidebar-status-session-8'),
+    );
+    expect(finder, findsOneWidget);
+    expect(
+      tester.widget<SessionStatusDot>(finder).status,
+      SessionIndicatorStatus.attention,
+    );
+  });
+
+  testWidgets('active tab suppresses bell indicator for completed session', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({'show_tab_bar': true});
+    final group = _group('local');
+    final session = _session(
+      'session-9',
+      groupId: group.id,
+      name: 'agent',
+      foregroundProcess: 'claude',
+      oscTitle: '· Claude Code',
+      attentionSeq: 2,
+      attentionAckSeq: 1,
+    );
+    final container = _container(
+      ServerState(isConnected: true, groups: [group], sessions: [session]),
+    );
+    addTearDown(container.dispose);
+
+    container.read(sessionProvider.notifier).openTab(session.id);
+
+    await _pumpWithContainer(
+      tester,
+      container,
+      TerminalArea(backend: const _FakeTerminalBackend()),
+    );
+    await tester.pump();
+
+    final finder = find.byKey(const ValueKey('session-tab-status-session-9'));
+    expect(finder, findsOneWidget);
+    expect(
+      tester.widget<SessionStatusDot>(finder).status,
+      SessionIndicatorStatus.waiting,
+    );
   });
 }
 

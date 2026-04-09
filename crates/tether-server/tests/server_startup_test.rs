@@ -313,6 +313,8 @@ async fn server_startup_clears_legacy_ssh_mirrors_and_sync_rebuilds_shared_state
         is_alive: true,
         foreground_process: None,
         osc_title: None,
+        attention_seq: 0,
+        attention_ack_seq: 0,
         local_group_id: None,
     };
     let remote_port = start_mock_remote(

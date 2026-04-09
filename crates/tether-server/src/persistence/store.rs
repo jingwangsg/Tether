@@ -42,6 +42,12 @@ pub struct SessionRow {
     /// Transient: OSC title from the terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub osc_title: Option<String>,
+    /// Persisted unread-attention sequence for completed tool tasks.
+    #[serde(default)]
+    pub attention_seq: i64,
+    /// Persisted global acknowledgement cursor for completed tool tasks.
+    #[serde(default)]
+    pub attention_ack_seq: i64,
     /// Persisted on the remote server: which local group this session belongs to.
     /// Set when a session is created via create_remote_session and kept in sync
     /// when the user moves the session between groups. Used during sync to restore
@@ -424,7 +430,7 @@ impl Store {
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id FROM sessions ORDER BY sort_order, created_at",
+            "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, attention_seq, attention_ack_seq, local_group_id FROM sessions ORDER BY sort_order, created_at",
         )?;
         let rows = stmt
             .query_map([], |row| {
@@ -442,7 +448,9 @@ impl Store {
                     is_alive: row.get::<_, i32>(10)? != 0,
                     foreground_process: None,
                     osc_title: None,
-                    local_group_id: row.get(11)?,
+                    attention_seq: row.get(11)?,
+                    attention_ack_seq: row.get(12)?,
+                    local_group_id: row.get(13)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -484,6 +492,8 @@ impl Store {
             is_alive: true,
             foreground_process: None,
             osc_title: None,
+            attention_seq: 0,
+            attention_ack_seq: 0,
             local_group_id: local_group_id.map(|s| s.to_string()),
         })
     }
@@ -491,7 +501,7 @@ impl Store {
     pub fn get_session(&self, id: &str) -> anyhow::Result<Option<SessionRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id \
+            "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, attention_seq, attention_ack_seq, local_group_id \
              FROM sessions WHERE id = ?1",
         )?;
         let row = stmt
@@ -510,7 +520,9 @@ impl Store {
                     is_alive: row.get::<_, i32>(10)? != 0,
                     foreground_process: None,
                     osc_title: None,
-                    local_group_id: row.get(11)?,
+                    attention_seq: row.get(11)?,
+                    attention_ack_seq: row.get(12)?,
+                    local_group_id: row.get(13)?,
                 })
             })
             .ok();
@@ -521,8 +533,8 @@ impl Store {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, local_group_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, attention_seq, attention_ack_seq, local_group_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(id) DO UPDATE SET
                  group_id = excluded.group_id,
                  name = excluded.name,
@@ -534,6 +546,8 @@ impl Store {
                  last_active = excluded.last_active,
                  sort_order = excluded.sort_order,
                  is_alive = excluded.is_alive,
+                 attention_seq = excluded.attention_seq,
+                 attention_ack_seq = excluded.attention_ack_seq,
                  local_group_id = excluded.local_group_id",
             params![
                 session.id.as_str(),
@@ -547,6 +561,8 @@ impl Store {
                 session.last_active.as_str(),
                 session.sort_order,
                 session.is_alive as i32,
+                session.attention_seq,
+                session.attention_ack_seq,
                 session.local_group_id.as_deref(),
             ],
         )?;
@@ -619,6 +635,71 @@ impl Store {
             params![cols, rows, id],
         )?;
         Ok(())
+    }
+
+    /// Returns the next attention sequence, or `None` when the session was not found.
+    pub fn increment_session_attention_seq(&self, id: &str) -> anyhow::Result<Option<i64>> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let current = tx
+            .query_row(
+                "SELECT attention_seq FROM sessions WHERE id = ?1",
+                params![id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let Some(current) = current else {
+            tx.commit()?;
+            return Ok(None);
+        };
+
+        let next = current + 1;
+        let now = chrono::Utc::now().to_rfc3339();
+        tx.execute(
+            "UPDATE sessions
+             SET attention_seq = ?1, attention_updated_at = ?2
+             WHERE id = ?3",
+            params![next, now, id],
+        )?;
+        tx.commit()?;
+        Ok(Some(next))
+    }
+
+    /// Returns the number of rows updated (0 means the session was not found).
+    pub fn set_session_attention_ack_seq(
+        &self,
+        id: &str,
+        attention_ack_seq: i64,
+    ) -> anyhow::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let updated = conn.execute(
+            "UPDATE sessions
+             SET attention_ack_seq = ?1, attention_updated_at = ?2
+             WHERE id = ?3",
+            params![attention_ack_seq, now, id],
+        )?;
+        Ok(updated)
+    }
+
+    /// Returns the number of rows updated (0 means the session was not found).
+    pub fn set_session_attention_state(
+        &self,
+        id: &str,
+        attention_seq: i64,
+        attention_ack_seq: i64,
+    ) -> anyhow::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let updated = conn.execute(
+            "UPDATE sessions
+             SET attention_seq = ?1,
+                 attention_ack_seq = ?2,
+                 attention_updated_at = ?3
+             WHERE id = ?4",
+            params![attention_seq, attention_ack_seq, now, id],
+        )?;
+        Ok(updated)
     }
 
     /// Permanently delete a session and its registry entry.
@@ -804,9 +885,8 @@ impl Store {
     /// Return the distinct set of SSH host aliases that currently have group mirrors.
     pub fn list_mirrored_ssh_hosts(&self) -> anyhow::Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT ssh_host FROM groups WHERE ssh_host IS NOT NULL",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT DISTINCT ssh_host FROM groups WHERE ssh_host IS NOT NULL")?;
         let hosts = stmt
             .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<String>, _>>()?;
@@ -827,7 +907,7 @@ impl Store {
             .join(", ");
         let sql = format!(
             "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, \
-             sort_order, is_alive, local_group_id \
+             sort_order, is_alive, attention_seq, attention_ack_seq, local_group_id \
              FROM sessions WHERE group_id IN ({})",
             placeholders
         );
@@ -848,7 +928,9 @@ impl Store {
                     is_alive: row.get::<_, i32>(10)? != 0,
                     foreground_process: None,
                     osc_title: None,
-                    local_group_id: row.get(11)?,
+                    attention_seq: row.get(11)?,
+                    attention_ack_seq: row.get(12)?,
+                    local_group_id: row.get(13)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -978,10 +1060,7 @@ impl Store {
             let mut conn = self.conn.lock().unwrap();
             let tx = conn.transaction()?;
             for gid in &descendant_ids {
-                tx.execute(
-                    "DELETE FROM sessions WHERE group_id = ?1",
-                    params![gid],
-                )?;
+                tx.execute("DELETE FROM sessions WHERE group_id = ?1", params![gid])?;
             }
             for gid in descendant_ids.iter().rev() {
                 tx.execute("DELETE FROM groups WHERE id = ?1", params![gid])?;
@@ -1612,10 +1691,24 @@ mod tests {
             .create_group("remote", "~", None, Some("myhost"))
             .unwrap();
         store
-            .create_session("s-local", &local_group.id, "local-sess", "/bin/sh", "~", None)
+            .create_session(
+                "s-local",
+                &local_group.id,
+                "local-sess",
+                "/bin/sh",
+                "~",
+                None,
+            )
             .unwrap();
         store
-            .create_session("s-remote", &remote_group.id, "remote-sess", "/bin/sh", "~", None)
+            .create_session(
+                "s-remote",
+                &remote_group.id,
+                "remote-sess",
+                "/bin/sh",
+                "~",
+                None,
+            )
             .unwrap();
 
         store.delete_all_remote_mirrors().unwrap();
@@ -1759,40 +1852,38 @@ mod tests {
 
         // Re-create groups for the re-insert test
         store
-            .upsert_remote_group_mirror(&GroupRow {
-                id: g_remote.id.clone(),
-                name: "remote".to_string(),
-                default_cwd: "~".to_string(),
-                sort_order: 0,
-                parent_id: None,
-                ssh_host: None,
-                created_at: "2024-01-01T00:00:00Z".to_string(),
-                updated_at: "2024-01-01T00:00:00Z".to_string(),
-            }, "myhost")
+            .upsert_remote_group_mirror(
+                &GroupRow {
+                    id: g_remote.id.clone(),
+                    name: "remote".to_string(),
+                    default_cwd: "~".to_string(),
+                    sort_order: 0,
+                    parent_id: None,
+                    ssh_host: None,
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                    updated_at: "2024-01-01T00:00:00Z".to_string(),
+                },
+                "myhost",
+            )
             .unwrap();
         store
-            .upsert_remote_group_mirror(&GroupRow {
-                id: g_fallback.id.clone(),
-                name: "fallback".to_string(),
-                default_cwd: "~".to_string(),
-                sort_order: 1,
-                parent_id: None,
-                ssh_host: None,
-                created_at: "2024-01-01T00:00:00Z".to_string(),
-                updated_at: "2024-01-01T00:00:00Z".to_string(),
-            }, "myhost")
+            .upsert_remote_group_mirror(
+                &GroupRow {
+                    id: g_fallback.id.clone(),
+                    name: "fallback".to_string(),
+                    default_cwd: "~".to_string(),
+                    sort_order: 1,
+                    parent_id: None,
+                    ssh_host: None,
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                    updated_at: "2024-01-01T00:00:00Z".to_string(),
+                },
+                "myhost",
+            )
             .unwrap();
 
         store
-            .try_insert_remote_session(
-                "s1",
-                &g_fallback.id,
-                None,
-                "sess",
-                "/bin/sh",
-                "~",
-                true,
-            )
+            .try_insert_remote_session("s1", &g_fallback.id, None, "sess", "/bin/sh", "~", true)
             .unwrap();
         let sessions = store.list_sessions().unwrap();
         assert_eq!(
@@ -1805,15 +1896,9 @@ mod tests {
     fn list_mirrored_ssh_hosts_returns_distinct_hosts() {
         let store = new_store();
         store.create_group("local", "~", None, None).unwrap();
-        store
-            .create_group("a1", "~", None, Some("host-a"))
-            .unwrap();
-        store
-            .create_group("a2", "~", None, Some("host-a"))
-            .unwrap();
-        store
-            .create_group("b1", "~", None, Some("host-b"))
-            .unwrap();
+        store.create_group("a1", "~", None, Some("host-a")).unwrap();
+        store.create_group("a2", "~", None, Some("host-a")).unwrap();
+        store.create_group("b1", "~", None, Some("host-b")).unwrap();
 
         let mut hosts = store.list_mirrored_ssh_hosts().unwrap();
         hosts.sort();
@@ -1853,15 +1938,7 @@ mod tests {
 
         // Registry for s2 must survive: re-insert with wrong fallback
         store
-            .try_insert_remote_session(
-                "s2",
-                &g_fallback.id,
-                None,
-                "pruned",
-                "/bin/sh",
-                "~",
-                true,
-            )
+            .try_insert_remote_session("s2", &g_fallback.id, None, "pruned", "/bin/sh", "~", true)
             .unwrap();
         let sessions = store.list_sessions().unwrap();
         let restored = sessions.iter().find(|s| s.id == "s2").unwrap();
@@ -1894,28 +1971,23 @@ mod tests {
 
         // Re-create the group and check registry survived
         store
-            .upsert_remote_group_mirror(&GroupRow {
-                id: g_pruned.id.clone(),
-                name: "pruned".to_string(),
-                default_cwd: "~".to_string(),
-                sort_order: 0,
-                parent_id: None,
-                ssh_host: None,
-                created_at: "2024-01-01T00:00:00Z".to_string(),
-                updated_at: "2024-01-01T00:00:00Z".to_string(),
-            }, "myhost")
+            .upsert_remote_group_mirror(
+                &GroupRow {
+                    id: g_pruned.id.clone(),
+                    name: "pruned".to_string(),
+                    default_cwd: "~".to_string(),
+                    sort_order: 0,
+                    parent_id: None,
+                    ssh_host: None,
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                    updated_at: "2024-01-01T00:00:00Z".to_string(),
+                },
+                "myhost",
+            )
             .unwrap();
 
         store
-            .try_insert_remote_session(
-                "s1",
-                &g_kept.id,
-                None,
-                "sess",
-                "/bin/sh",
-                "~",
-                true,
-            )
+            .try_insert_remote_session("s1", &g_kept.id, None, "sess", "/bin/sh", "~", true)
             .unwrap();
         let sessions = store.list_sessions().unwrap();
         assert_eq!(

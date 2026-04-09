@@ -382,7 +382,7 @@ class Sidebar extends ConsumerWidget {
     final serverState = ref.read(serverProvider);
     final display = getDisplayInfo(session, serverState.sessions);
     final canOpen = isSessionInteractive(session, serverState.groups);
-    final status = deriveSessionToolStatus(session);
+    final status = deriveSessionIndicatorStatus(session, isActive: isActive);
     final semanticsLabel = display.displayName;
     final semanticsValue = display.subtitle;
     final titleColor =

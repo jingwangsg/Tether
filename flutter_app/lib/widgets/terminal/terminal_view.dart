@@ -145,7 +145,12 @@ class TerminalViewState extends State<TerminalView> {
     _metadataSubscription = ws.messages.listen((message) {
       switch (message) {
         case ForegroundChangedMessage():
-          widget.onForegroundChanged?.call(message.process, message.oscTitle);
+          widget.onForegroundChanged?.call(
+            message.process,
+            message.oscTitle,
+            message.attentionSeq,
+            message.attentionAckSeq,
+          );
         case SessionEventMessage():
           if (message.event == 'exited') {
             _emitExit();

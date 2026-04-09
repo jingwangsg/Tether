@@ -2,6 +2,8 @@ import '../models/session.dart';
 
 enum SessionToolStatus { waiting, running }
 
+enum SessionIndicatorStatus { waiting, running, attention }
+
 SessionToolStatus? deriveSessionToolStatus(Session session) {
   return deriveToolStatus(
     process: session.foregroundProcess,
@@ -31,6 +33,21 @@ SessionToolStatus? deriveToolStatus({
   }
 
   return null;
+}
+
+SessionIndicatorStatus? deriveSessionIndicatorStatus(
+  Session session, {
+  required bool isActive,
+}) {
+  if (session.hasAttention && !isActive) {
+    return SessionIndicatorStatus.attention;
+  }
+
+  return switch (deriveSessionToolStatus(session)) {
+    SessionToolStatus.waiting => SessionIndicatorStatus.waiting,
+    SessionToolStatus.running => SessionIndicatorStatus.running,
+    null => null,
+  };
 }
 
 bool _isSupportedTool(String? process) {

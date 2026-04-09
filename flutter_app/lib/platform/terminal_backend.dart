@@ -4,7 +4,12 @@ import '../providers/server_provider.dart';
 import '../widgets/terminal/terminal_controller.dart';
 
 typedef ForegroundChangedCallback =
-    void Function(String? process, String? oscTitle);
+    void Function(
+      String? process,
+      String? oscTitle,
+      int attentionSeq,
+      int attentionAckSeq,
+    );
 
 /// Abstract interface for platform-specific terminal rendering.
 /// macOS uses NativeBackend (Metal).

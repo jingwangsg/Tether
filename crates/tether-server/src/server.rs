@@ -51,6 +51,10 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
         .route("/api/sessions/{id}", patch(api::sessions::update_session))
         .route("/api/sessions/{id}", delete(api::sessions::delete_session))
         .route(
+            "/api/sessions/{id}/attention/ack",
+            post(api::sessions::ack_session_attention),
+        )
+        .route(
             "/api/sessions/{id}/clipboard-image",
             post(api::sessions::upload_clipboard_image),
         )
@@ -197,8 +201,7 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
                             if !should_clean {
                                 continue;
                             }
-                            match inner_for_periodic_sync.db.delete_mirrors_for_host(&host)
-                            {
+                            match inner_for_periodic_sync.db.delete_mirrors_for_host(&host) {
                                 Ok(session_ids) => {
                                     for sid in session_ids {
                                         if let Ok(uuid) = uuid::Uuid::parse_str(&sid) {

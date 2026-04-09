@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tether/models/session.dart';
 import 'package:tether/utils/session_status.dart';
 
 void main() {
@@ -40,6 +41,63 @@ void main() {
       );
 
       expect(status, isNull);
+    });
+  });
+
+  group('deriveSessionIndicatorStatus', () {
+    Session session({
+      String? process,
+      String? oscTitle,
+      int attentionSeq = 0,
+      int attentionAckSeq = 0,
+    }) {
+      return Session(
+        id: 's1',
+        groupId: 'g1',
+        name: 'agent',
+        shell: 'bash',
+        cols: 80,
+        rows: 24,
+        cwd: '/tmp',
+        isAlive: true,
+        createdAt: '',
+        lastActive: '',
+        foregroundProcess: process,
+        oscTitle: oscTitle,
+        attentionSeq: attentionSeq,
+        attentionAckSeq: attentionAckSeq,
+      );
+    }
+
+    test(
+      'prefers bell indicator for unattended completed background session',
+      () {
+        final indicator = deriveSessionIndicatorStatus(
+          session(
+            process: 'claude',
+            oscTitle: '· Claude Code',
+            attentionSeq: 1,
+            attentionAckSeq: 0,
+          ),
+          isActive: false,
+        );
+
+        expect(indicator, SessionIndicatorStatus.attention);
+      },
+    );
+
+    test('suppresses bell indicator for active session', () {
+      final indicator = deriveSessionIndicatorStatus(
+        session(
+          process: 'claude',
+          oscTitle: '· Claude Code',
+          attentionSeq: 1,
+          attentionAckSeq: 0,
+        ),
+        isActive: true,
+      );
+
+      expect(indicator, SessionIndicatorStatus.waiting);
     });
   });
 }

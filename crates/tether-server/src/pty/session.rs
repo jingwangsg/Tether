@@ -6,6 +6,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -15,6 +16,10 @@ pub struct SessionForeground {
     pub process: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub osc_title: Option<String>,
+    #[serde(default)]
+    pub attention_seq: i64,
+    #[serde(default)]
+    pub attention_ack_seq: i64,
 }
 
 impl Default for SessionForeground {
@@ -22,7 +27,15 @@ impl Default for SessionForeground {
         Self {
             process: None,
             osc_title: None,
+            attention_seq: 0,
+            attention_ack_seq: 0,
         }
+    }
+}
+
+impl SessionForeground {
+    pub fn has_attention(&self) -> bool {
+        self.attention_seq > self.attention_ack_seq
     }
 }
 
@@ -30,6 +43,28 @@ impl Default for SessionForeground {
 enum CommandPhase {
     Prompt,
     CommandActive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolStatus {
+    None,
+    Waiting,
+    Running,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ToolAttentionState {
+    pub(crate) status: ToolStatus,
+    pub(crate) running_since: Option<Instant>,
+}
+
+impl Default for ToolAttentionState {
+    fn default() -> Self {
+        Self {
+            status: ToolStatus::None,
+            running_since: None,
+        }
+    }
 }
 
 pub struct PtySession {
@@ -72,6 +107,8 @@ pub struct PtySession {
     last_alt_screen_exit_time: Mutex<Option<std::time::Instant>>,
     /// Shell lifecycle phase derived from OSC 133 integration.
     command_phase: Mutex<Option<CommandPhase>>,
+    /// Local task-attention tracking derived from tool title/process transitions.
+    tool_attention_state: Mutex<ToolAttentionState>,
     /// Becomes true after we observe any OSC 133 shell-integration marker.
     has_shell_integration: std::sync::atomic::AtomicBool,
     /// Channel to notify the process monitor when a semantic prompt event
@@ -164,6 +201,7 @@ impl PtySession {
             last_detected_alt_screen_tool: Mutex::new(None),
             last_alt_screen_exit_time: Mutex::new(None),
             command_phase: Mutex::new(None),
+            tool_attention_state: Mutex::new(ToolAttentionState::default()),
             has_shell_integration: std::sync::atomic::AtomicBool::new(false),
             semantic_event_tx,
         });
@@ -304,7 +342,17 @@ impl PtySession {
     pub fn detect_foreground(&self) -> SessionForeground {
         let process = self.detect_foreground_process();
         let osc_title = self.get_osc_title();
-        SessionForeground { process, osc_title }
+        let attention = self
+            .foreground
+            .lock()
+            .ok()
+            .map(|current| (current.attention_seq, current.attention_ack_seq));
+        SessionForeground {
+            process,
+            osc_title,
+            attention_seq: attention.map(|(seq, _)| seq).unwrap_or_default(),
+            attention_ack_seq: attention.map(|(_, ack)| ack).unwrap_or_default(),
+        }
     }
 
     pub fn is_known_tool(process: Option<&str>) -> bool {
@@ -326,6 +374,48 @@ impl PtySession {
         if let Ok(mut t) = self.last_detected_alt_screen_tool.lock() {
             *t = tool;
         }
+    }
+
+    pub(crate) fn tool_attention_state(&self) -> ToolAttentionState {
+        self.tool_attention_state
+            .lock()
+            .map(|state| *state)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_tool_attention_state(&self, next: ToolAttentionState) {
+        if let Ok(mut state) = self.tool_attention_state.lock() {
+            *state = next;
+        }
+    }
+
+    pub fn derive_tool_status(foreground: &SessionForeground) -> ToolStatus {
+        if !Self::is_known_tool(foreground.process.as_deref()) {
+            return ToolStatus::None;
+        }
+
+        let Some(prefix) = foreground
+            .osc_title
+            .as_deref()
+            .map(str::trim_start)
+            .and_then(|title| title.chars().next())
+        else {
+            return ToolStatus::None;
+        };
+
+        if prefix == '·' {
+            return ToolStatus::Waiting;
+        }
+
+        if prefix == '*' || prefix == '✱' {
+            return ToolStatus::Running;
+        }
+
+        if ('\u{2800}'..='\u{28FF}').contains(&prefix) {
+            return ToolStatus::Running;
+        }
+
+        ToolStatus::None
     }
 
     fn detect_foreground_process(&self) -> Option<String> {
@@ -535,6 +625,8 @@ mod tests {
         let fg = SessionForeground {
             process: Some("claude".to_string()),
             osc_title: Some("· Claude Code".to_string()),
+            attention_seq: 0,
+            attention_ack_seq: 0,
         };
         let json = serde_json::to_value(&fg).unwrap();
         assert_eq!(json["process"], "claude");
@@ -546,6 +638,8 @@ mod tests {
         let fg = SessionForeground {
             process: Some("claude".to_string()),
             osc_title: None,
+            attention_seq: 0,
+            attention_ack_seq: 0,
         };
         let json = serde_json::to_value(&fg).unwrap();
         assert_eq!(json["process"], "claude");

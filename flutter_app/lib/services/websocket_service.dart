@@ -33,8 +33,15 @@ class ErrorMessage extends ServerMessage {
 class ForegroundChangedMessage extends ServerMessage {
   final String? process;
   final String? oscTitle;
+  final int attentionSeq;
+  final int attentionAckSeq;
 
-  ForegroundChangedMessage(this.process, this.oscTitle);
+  ForegroundChangedMessage(
+    this.process,
+    this.oscTitle,
+    this.attentionSeq,
+    this.attentionAckSeq,
+  );
 }
 
 class ScrollbackInfoMessage extends ServerMessage {
@@ -167,6 +174,8 @@ class WebSocketService {
             ForegroundChangedMessage(
               json['process'] as String?,
               json['osc_title'] as String?,
+              (json['attention_seq'] as num?)?.toInt() ?? 0,
+              (json['attention_ack_seq'] as num?)?.toInt() ?? 0,
             ),
           );
         case 'scrollback_info':

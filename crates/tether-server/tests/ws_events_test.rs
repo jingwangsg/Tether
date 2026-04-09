@@ -260,9 +260,9 @@ async fn ssh_proxy_forwards_remote_foreground_sequence_verbatim() {
         .unwrap();
 
     let (remote_port, shutdown_tx) = start_mock_remote_foreground_server(vec![
-        r#"{"type":"foreground_changed","process":"claude","osc_title":"· Claude Code"}"#,
-        r#"{"type":"foreground_changed","process":"claude","osc_title":"✱ Claude Code"}"#,
-        r#"{"type":"foreground_changed","process":"claude","osc_title":"· Claude Code"}"#,
+        r#"{"type":"foreground_changed","process":"claude","osc_title":"· Claude Code","attention_seq":0,"attention_ack_seq":0}"#,
+        r#"{"type":"foreground_changed","process":"claude","osc_title":"✱ Claude Code","attention_seq":0,"attention_ack_seq":0}"#,
+        r#"{"type":"foreground_changed","process":"claude","osc_title":"· Claude Code","attention_seq":1,"attention_ack_seq":0}"#,
     ])
     .await;
     state
@@ -277,7 +277,11 @@ async fn ssh_proxy_forwards_remote_foreground_sequence_verbatim() {
     );
     let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
 
-    for expected_osc_title in ["· Claude Code", "✱ Claude Code", "· Claude Code"] {
+    for (expected_osc_title, expected_attention_seq, expected_attention_ack_seq) in [
+        ("· Claude Code", 0, 0),
+        ("✱ Claude Code", 0, 0),
+        ("· Claude Code", 1, 0),
+    ] {
         let next = tokio::time::timeout(Duration::from_secs(1), ws.next())
             .await
             .unwrap()
@@ -290,6 +294,8 @@ async fn ssh_proxy_forwards_remote_foreground_sequence_verbatim() {
         assert_eq!(json["type"], "foreground_changed");
         assert_eq!(json["process"], "claude");
         assert_eq!(json["osc_title"], expected_osc_title);
+        assert_eq!(json["attention_seq"], expected_attention_seq);
+        assert_eq!(json["attention_ack_seq"], expected_attention_ack_seq);
     }
 
     let sessions = reqwest::get(format!("http://127.0.0.1:{}/api/sessions", port))
@@ -305,6 +311,8 @@ async fn ssh_proxy_forwards_remote_foreground_sequence_verbatim() {
         .expect("expected mirrored SSH session");
     assert_eq!(listed["foreground_process"], "claude");
     assert_eq!(listed["osc_title"], "· Claude Code");
+    assert_eq!(listed["attention_seq"], 1);
+    assert_eq!(listed["attention_ack_seq"], 0);
 
     shutdown_tx.send(()).ok();
     cleanup(&state);

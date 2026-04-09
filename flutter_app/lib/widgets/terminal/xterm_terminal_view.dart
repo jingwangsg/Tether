@@ -328,9 +328,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       return;
     }
 
-    _ws = widget.wsFactory != null
-        ? widget.wsFactory!(_buildWsUrl)
-        : WebSocketService.withUrlBuilder(_buildWsUrl);
+    _ws =
+        widget.wsFactory != null
+            ? widget.wsFactory!(_buildWsUrl)
+            : WebSocketService.withUrlBuilder(_buildWsUrl);
     _ws!.connect();
 
     _msgSub = _ws!.messages.listen((msg) {
@@ -377,6 +378,8 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
             widget.onForegroundChanged?.call(
               msg.process,
               msg.oscTitle,
+              msg.attentionSeq,
+              msg.attentionAckSeq,
             );
           });
         case ConnectionStateMessage():
@@ -496,7 +499,8 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     if (!mounted || index >= chunks.length) return;
     const maxPerFrame = 65536; // 64KB per microtask
     int written = 0;
-    while (index < chunks.length && written + chunks[index].length <= maxPerFrame) {
+    while (index < chunks.length &&
+        written + chunks[index].length <= maxPerFrame) {
       _writeToTerminal(chunks[index]);
       written += chunks[index].length;
       index++;
@@ -530,7 +534,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
 
   Future<void> _startPrefetch() async {
     if (_isPrefetching || _loadedStartOffset <= 0) return;
-    setState(() { _isPrefetching = true; });
+    setState(() {
+      _isPrefetching = true;
+    });
 
     final serverState = ref.read(serverProvider);
     if (!serverState.isConnected || serverState.config == null) {
@@ -589,7 +595,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       _prefetchStartOffset = fetchStart;
       _prefetchedData = fetchedBytes;
       _prefetchCacheSnapshot = _rawBytesCache.length;
-      if (mounted) setState(() { _isPrefetching = false; });
+      if (mounted)
+        setState(() {
+          _isPrefetching = false;
+        });
 
       // If user is already at the top, swap immediately
       if (_scrollController.hasClients &&
@@ -597,7 +606,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
         _performTerminalSwap();
       }
     } catch (e) {
-      if (mounted) setState(() { _isPrefetching = false; });
+      if (mounted)
+        setState(() {
+          _isPrefetching = false;
+        });
     }
   }
 
@@ -867,8 +879,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     return Stack(
       children: [
         terminalView,
-        if (_searchOpen)
-          Positioned(top: 8, right: 8, child: _buildSearchBar()),
+        if (_searchOpen) Positioned(top: 8, right: 8, child: _buildSearchBar()),
         if (showTopIndicator)
           Positioned(
             top: 4,
@@ -876,7 +887,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
             right: 0,
             child: Center(
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 decoration: BoxDecoration(
                   color: const Color(0xCC1E1E1E),
                   borderRadius: BorderRadius.circular(12),

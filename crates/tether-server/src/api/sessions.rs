@@ -69,6 +69,12 @@ pub struct ClipboardImageUploadResponse {
     pub mime_type: String,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct SessionAttentionStateResponse {
+    pub attention_seq: i64,
+    pub attention_ack_seq: i64,
+}
+
 fn default_limit() -> usize {
     65536
 }
@@ -89,9 +95,13 @@ pub async fn list_sessions(
                 let fg = session.get_foreground();
                 row.foreground_process = fg.process;
                 row.osc_title = fg.osc_title;
+                row.attention_seq = fg.attention_seq;
+                row.attention_ack_seq = fg.attention_ack_seq;
             } else if let Some(fg) = state.inner.ssh_fg.get(&id) {
                 row.foreground_process = fg.process.clone();
                 row.osc_title = fg.osc_title.clone();
+                row.attention_seq = fg.attention_seq;
+                row.attention_ack_seq = fg.attention_ack_seq;
             }
         }
     }
@@ -170,6 +180,8 @@ pub async fn create_session(
         is_alive: session.is_alive(),
         foreground_process: None,
         osc_title: None,
+        attention_seq: 0,
+        attention_ack_seq: 0,
         local_group_id: None,
     };
 
@@ -317,6 +329,73 @@ pub async fn update_session(
     }
 
     StatusCode::OK
+}
+
+pub async fn ack_session_attention(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<SessionAttentionStateResponse>, StatusCode> {
+    let current = match state.inner.db.get_session(&id) {
+        Ok(Some(session)) => session,
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    let next_ack_seq = current.attention_seq;
+    let ssh_host = match state.inner.db.get_session_ssh_host(&id) {
+        Ok(host) => host,
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    if let Some(host_alias) = ssh_host.as_deref() {
+        let port = ready_tunnel_port(&state, host_alias)?;
+        let response = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{port}/api/sessions/{id}/attention/ack"
+            ))
+            .send()
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        if !response.status().is_success() {
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+
+        let attention: SessionAttentionStateResponse =
+            response.json().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+        state
+            .inner
+            .db
+            .set_session_attention_state(&id, attention.attention_seq, attention.attention_ack_seq)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Ok(uuid) = Uuid::parse_str(&id) {
+            if let Some(mut fg) = state.inner.ssh_fg.get_mut(&uuid) {
+                fg.attention_seq = attention.attention_seq;
+                fg.attention_ack_seq = attention.attention_ack_seq;
+                state.publish_session_status(uuid);
+            }
+        }
+        return Ok(Json(attention));
+    }
+
+    state
+        .inner
+        .db
+        .set_session_attention_ack_seq(&id, next_ack_seq)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if let Ok(uuid) = Uuid::parse_str(&id) {
+        if let Some(session) = state.inner.sessions.get(&uuid) {
+            if let Ok(mut fg) = session.foreground.lock() {
+                fg.attention_ack_seq = next_ack_seq;
+            }
+            state.publish_session_status(uuid);
+        }
+    }
+
+    Ok(Json(SessionAttentionStateResponse {
+        attention_seq: current.attention_seq,
+        attention_ack_seq: next_ack_seq,
+    }))
 }
 
 pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
