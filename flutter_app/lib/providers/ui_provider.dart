@@ -1,3 +1,4 @@
+import 'dart:ui' show Offset;
 import 'dart:io' show Platform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/mobile_key.dart';
@@ -11,6 +12,7 @@ class UiState {
   final ModifierMode ctrlMode;
   final ModifierMode altMode;
   final List<MobileKey> mobileKeys;
+  final Offset? floatingNavOffset;
 
   const UiState({
     this.isMobile = false,
@@ -19,6 +21,7 @@ class UiState {
     this.ctrlMode = ModifierMode.inactive,
     this.altMode = ModifierMode.inactive,
     this.mobileKeys = defaultMobileKeys,
+    this.floatingNavOffset,
   });
 
   bool get ctrlActive => ctrlMode != ModifierMode.inactive;
@@ -31,6 +34,8 @@ class UiState {
     ModifierMode? ctrlMode,
     ModifierMode? altMode,
     List<MobileKey>? mobileKeys,
+    Offset? floatingNavOffset,
+    bool clearFloatingNavOffset = false,
   }) {
     return UiState(
       isMobile: isMobile ?? this.isMobile,
@@ -39,17 +44,25 @@ class UiState {
       ctrlMode: ctrlMode ?? this.ctrlMode,
       altMode: altMode ?? this.altMode,
       mobileKeys: mobileKeys ?? this.mobileKeys,
+      floatingNavOffset:
+          clearFloatingNavOffset
+              ? null
+              : (floatingNavOffset ?? this.floatingNavOffset),
     );
   }
 }
 
 class UiNotifier extends StateNotifier<UiState> {
   UiNotifier()
-      : super(
-          Platform.isAndroid
-              ? const UiState(isMobile: true, showKeyBar: true, sidebarOpen: false)
-              : const UiState(),
-        );
+    : super(
+        Platform.isAndroid
+            ? const UiState(
+              isMobile: true,
+              showKeyBar: true,
+              sidebarOpen: false,
+            )
+            : const UiState(),
+      );
 
   void setMobile(bool isMobile) {
     if (state.isMobile == isMobile) return;
@@ -72,34 +85,38 @@ class UiNotifier extends StateNotifier<UiState> {
   // --- Ctrl modifier ---
   void setCtrlTemporary() {
     state = state.copyWith(
-      ctrlMode: state.ctrlMode == ModifierMode.inactive
-          ? ModifierMode.temporary
-          : ModifierMode.inactive,
+      ctrlMode:
+          state.ctrlMode == ModifierMode.inactive
+              ? ModifierMode.temporary
+              : ModifierMode.inactive,
     );
   }
 
   void setCtrlLocked() {
     state = state.copyWith(
-      ctrlMode: state.ctrlMode == ModifierMode.locked
-          ? ModifierMode.inactive
-          : ModifierMode.locked,
+      ctrlMode:
+          state.ctrlMode == ModifierMode.locked
+              ? ModifierMode.inactive
+              : ModifierMode.locked,
     );
   }
 
   // --- Alt modifier ---
   void setAltTemporary() {
     state = state.copyWith(
-      altMode: state.altMode == ModifierMode.inactive
-          ? ModifierMode.temporary
-          : ModifierMode.inactive,
+      altMode:
+          state.altMode == ModifierMode.inactive
+              ? ModifierMode.temporary
+              : ModifierMode.inactive,
     );
   }
 
   void setAltLocked() {
     state = state.copyWith(
-      altMode: state.altMode == ModifierMode.locked
-          ? ModifierMode.inactive
-          : ModifierMode.locked,
+      altMode:
+          state.altMode == ModifierMode.locked
+              ? ModifierMode.inactive
+              : ModifierMode.locked,
     );
   }
 
@@ -127,6 +144,14 @@ class UiNotifier extends StateNotifier<UiState> {
 
   void setMobileKeys(List<MobileKey> keys) {
     state = state.copyWith(mobileKeys: keys);
+  }
+
+  void setFloatingNavOffset(Offset offset) {
+    state = state.copyWith(floatingNavOffset: offset);
+  }
+
+  void resetFloatingNavOffset() {
+    state = state.copyWith(clearFloatingNavOffset: true);
   }
 }
 

@@ -151,94 +151,95 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
               child: ClipRect(
                 child: Stack(
                   fit: StackFit.expand,
-                  children:
-                      openTabs.map((tab) {
-                        final isActive = tab.sessionId == activeId;
-                        final session =
-                            sessions
-                                .where((s) => s.id == tab.sessionId)
-                                .firstOrNull;
-                        final group =
-                            groups
-                                .where((g) => g.id == session?.groupId)
-                                .firstOrNull;
+                  children: [
+                    ...openTabs.map((tab) {
+                      final isActive = tab.sessionId == activeId;
+                      final session =
+                          sessions
+                              .where((s) => s.id == tab.sessionId)
+                              .firstOrNull;
+                      final group =
+                          groups
+                              .where((g) => g.id == session?.groupId)
+                              .firstOrNull;
 
-                        final terminalController = _terminalControllers
-                            .putIfAbsent(tab.sessionId, TerminalController.new);
+                      final terminalController = _terminalControllers
+                          .putIfAbsent(tab.sessionId, TerminalController.new);
 
-                        return Offstage(
-                          offstage: !isActive,
-                          child: widget.backend.createTerminalWidget(
-                            key: ValueKey(
-                              '${widget.backend.platformId}:${tab.sessionId}',
-                            ),
-                            sessionId: tab.sessionId,
-                            controller: terminalController,
-                            serverConfig: serverConfig,
-                            command: session?.shell,
-                            cwd: session?.cwd,
-                            isActive: isActive,
-                            imagePasteBridgeEnabled:
-                                shouldEnableImagePasteBridge(
-                                  session: session,
-                                  group: group,
-                                ),
-                            onSessionExited: () {
-                              ref
-                                  .read(sessionProvider.notifier)
-                                  .closeTab(tab.sessionId);
-                            },
-                            onTitleChanged: (title) {
-                              if (title == null || title.isEmpty) return;
-                              // Strip control chars and Private Use Area (nerd font glyphs → renders as 〓)
-                              final clean =
-                                  title
-                                      .replaceAll(
-                                        RegExp(r'[\x00-\x1F\x7F]'),
-                                        '',
-                                      )
-                                      .replaceAll(
-                                        RegExp(r'[\uE000-\uF8FF]'),
-                                        '',
-                                      )
-                                      .replaceAll(
-                                        RegExp(
-                                          r'[\uDB80-\uDBFF][\uDC00-\uDFFF]',
-                                        ),
-                                        '',
-                                      )
-                                      .trim();
-                              if (clean.isEmpty) return;
-
-                              // Store locally for tab display when no process is active
-                              setState(() {
-                                _sessionTitles[tab.sessionId] = clean;
-                              });
-                            },
-                            onForegroundChanged:
-                                (
-                                  process,
-                                  oscTitle,
-                                  attentionSeq,
-                                  attentionAckSeq,
-                                ) => _handleSessionStatusUpdate(
-                                  sessionId: tab.sessionId,
-                                  process: process,
-                                  oscTitle: oscTitle,
-                                  attentionSeq: attentionSeq,
-                                  attentionAckSeq: attentionAckSeq,
-                                  isActive: isActive,
-                                ),
-                            onClipboardImage: (data, mimeType) {
-                              return _handleClipboardImage(
-                                sessionId: tab.sessionId,
-                                data: data,
-                                mimeType: mimeType,
-                              );
-                            },
+                      return Offstage(
+                        offstage: !isActive,
+                        child: widget.backend.createTerminalWidget(
+                          key: ValueKey(
+                            '${widget.backend.platformId}:${tab.sessionId}',
                           ),
-                        );
-                      }).toList(),
+                          sessionId: tab.sessionId,
+                          controller: terminalController,
+                          serverConfig: serverConfig,
+                          command: session?.shell,
+                          cwd: session?.cwd,
+                          isActive: isActive,
+                          imagePasteBridgeEnabled: shouldEnableImagePasteBridge(
+                            session: session,
+                            group: group,
+                          ),
+                          onSessionExited: () {
+                            ref
+                                .read(sessionProvider.notifier)
+                                .closeTab(tab.sessionId);
+                          },
+                          onTitleChanged: (title) {
+                            if (title == null || title.isEmpty) return;
+                            // Strip control chars and Private Use Area (nerd font glyphs → renders as 〓)
+                            final clean =
+                                title
+                                    .replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '')
+                                    .replaceAll(RegExp(r'[\uE000-\uF8FF]'), '')
+                                    .replaceAll(
+                                      RegExp(r'[\uDB80-\uDBFF][\uDC00-\uDFFF]'),
+                                      '',
+                                    )
+                                    .trim();
+                            if (clean.isEmpty) return;
+
+                            // Store locally for tab display when no process is active
+                            setState(() {
+                              _sessionTitles[tab.sessionId] = clean;
+                            });
+                          },
+                          onForegroundChanged:
+                              (
+                                process,
+                                oscTitle,
+                                attentionSeq,
+                                attentionAckSeq,
+                              ) => _handleSessionStatusUpdate(
+                                sessionId: tab.sessionId,
+                                process: process,
+                                oscTitle: oscTitle,
+                                attentionSeq: attentionSeq,
+                                attentionAckSeq: attentionAckSeq,
+                                isActive: isActive,
+                              ),
+                          onClipboardImage: (data, mimeType) {
+                            return _handleClipboardImage(
+                              sessionId: tab.sessionId,
+                              data: data,
+                              mimeType: mimeType,
+                            );
+                          },
+                        ),
+                      );
+                    }),
+                    if (uiState.showKeyBar && openTabs.isNotEmpty)
+                      MobileFloatingNavPad(
+                        onKeyPress: (data) {
+                          final id = ref.read(sessionProvider).activeSessionId;
+                          if (id != null) {
+                            _terminalControllers[id]?.sendText(data);
+                          }
+                        },
+                      ),
+                  ],
                 ),
               ),
             ),

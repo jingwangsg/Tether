@@ -10,10 +10,10 @@ class MobileKey {
   });
 
   Map<String, dynamic> toJson() => {
-        'label': label,
-        'value': value,
-        'isModifier': isModifier,
-      };
+    'label': label,
+    'value': value,
+    'isModifier': isModifier,
+  };
 
   factory MobileKey.fromJson(Map<String, dynamic> json) {
     return MobileKey(
@@ -24,17 +24,51 @@ class MobileKey {
   }
 }
 
-const defaultMobileKeys = [
-  MobileKey(label: 'Esc', value: '\x1b'),
-  MobileKey(label: 'S-Tab', value: '\x1b[Z'),
-  MobileKey(label: 'Tab', value: '\t'),
-  MobileKey(label: 'Ctrl', value: 'ctrl', isModifier: true),
-  MobileKey(label: 'Alt', value: 'alt', isModifier: true),
-  MobileKey(label: '←', value: '\x1b[D'),
-  MobileKey(label: '→', value: '\x1b[C'),
-  MobileKey(label: '↑', value: '\x1b[A'),
-  MobileKey(label: '↓', value: '\x1b[B'),
+const mobileEscKey = MobileKey(label: 'Esc', value: '\x1b');
+const mobileShiftTabKey = MobileKey(label: 'S-Tab', value: '\x1b[Z');
+const mobileTabKey = MobileKey(label: 'Tab', value: '\t');
+const mobileCtrlKey = MobileKey(label: 'Ctrl', value: 'ctrl', isModifier: true);
+const mobileAltKey = MobileKey(label: 'Alt', value: 'alt', isModifier: true);
+const mobileTildeKey = MobileKey(label: '~', value: '~');
+const mobileSlashKey = MobileKey(label: '/', value: '/');
+
+const mobileArrowLeftKey = MobileKey(label: '←', value: '\x1b[D');
+const mobileArrowRightKey = MobileKey(label: '→', value: '\x1b[C');
+const mobileArrowUpKey = MobileKey(label: '↑', value: '\x1b[A');
+const mobileArrowDownKey = MobileKey(label: '↓', value: '\x1b[B');
+const mobileHomeKey = MobileKey(label: 'Home', value: '\x1b[H');
+const mobileEndKey = MobileKey(label: 'End', value: '\x1b[F');
+const mobilePageUpKey = MobileKey(label: 'PgUp', value: '\x1b[5~');
+const mobilePageDownKey = MobileKey(label: 'PgDn', value: '\x1b[6~');
+
+const defaultMobileToolbarKeys = [
+  mobileEscKey,
+  mobileShiftTabKey,
+  mobileTabKey,
+  mobileCtrlKey,
+  mobileAltKey,
+  mobileTildeKey,
+  mobileSlashKey,
 ];
+
+const defaultMobileNavigationKeys = [
+  mobilePageUpKey,
+  mobileArrowUpKey,
+  mobileHomeKey,
+  mobileArrowLeftKey,
+  mobileArrowDownKey,
+  mobileArrowRightKey,
+  mobilePageDownKey,
+  mobileEndKey,
+];
+
+const defaultMobileNavigationRows = <List<MobileKey?>>[
+  [mobilePageUpKey, mobileArrowUpKey, mobileHomeKey],
+  [mobileArrowLeftKey, mobileArrowDownKey, mobileArrowRightKey],
+  [mobilePageDownKey, null, mobileEndKey],
+];
+
+const defaultMobileKeys = defaultMobileToolbarKeys;
 
 const defaultCustomKeys = [
   MobileKey(label: 'C-c', value: '\x03'),

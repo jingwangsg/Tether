@@ -863,6 +863,8 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       controller: _terminalController,
       scrollController: _scrollController,
       padding: EdgeInsets.zero,
+      deleteDetection: true,
+      keyboardType: TextInputType.visiblePassword,
       textStyle: xterm.TerminalStyle(
         fontSize: settings.fontSize,
         fontFamily: settings.fontFamily,
