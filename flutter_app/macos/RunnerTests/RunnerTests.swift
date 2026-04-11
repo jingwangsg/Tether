@@ -178,6 +178,11 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(result.lastSentRow, 5)
   }
 
+  func testMouseExitReportingMatchesGhosttyDragBehavior() {
+    XCTAssertFalse(TerminalView.shouldReportMouseExit(pressedMouseButtons: 1))
+    XCTAssertTrue(TerminalView.shouldReportMouseExit(pressedMouseButtons: 0))
+  }
+
   func testScrollbarActivationCoordinatorCoalescesUpdatesAroundReactivation() {
     var coordinator = ScrollbarActivationCoordinator()
     let inactiveLatest = TerminalScrollbarState(total: 100, offset: 12, len: 10)

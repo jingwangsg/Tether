@@ -257,9 +257,9 @@ final class TerminalView: NSView {
     override func layout() {
         super.layout()
         scrollView.frame = bounds
-        surfaceView.frame.size = scrollView.contentSize
+        surfaceView.frame.size = scrollView.bounds.size
         prefetchSurfaceView?.frame = bounds
-        documentView.frame.size.width = scrollView.contentSize.width
+        documentView.frame.size.width = scrollView.bounds.width
         layoutOverlayViews()
         synchronizeScrollView()
         synchronizeSurfaceView()
@@ -874,6 +874,10 @@ final class TerminalView: NSView {
             return true
         }
     }
+
+    static func shouldReportMouseExit(pressedMouseButtons: Int) -> Bool {
+        pressedMouseButtons == 0
+    }
 }
 
 #if DEBUG
@@ -1425,6 +1429,11 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
 
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
+        guard TerminalView.shouldReportMouseExit(
+            pressedMouseButtons: NSEvent.pressedMouseButtons
+        ) else {
+            return
+        }
         guard let s = surface else { return }
         ghostty_surface_mouse_pos(s, -1, -1, modsFromEvent(event))
     }
