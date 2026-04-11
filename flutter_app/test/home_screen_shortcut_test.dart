@@ -10,6 +10,7 @@ import 'package:tether/models/session.dart';
 import 'package:tether/platform/terminal_backend.dart';
 import 'package:tether/providers/server_provider.dart';
 import 'package:tether/providers/session_provider.dart';
+import 'package:tether/providers/ui_provider.dart';
 import 'package:tether/screens/home_screen.dart';
 import 'package:tether/widgets/sidebar/group_section.dart';
 import 'package:tether/widgets/sidebar/sidebar.dart';
@@ -229,6 +230,56 @@ void main() {
 
     expect(find.text('Rename Session'), findsOneWidget);
     expect(find.text('⌘R'), findsNothing);
+  });
+
+  testWidgets('mobile home screen suppresses route pop gestures', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final container = _container(const ServerState());
+    addTearDown(container.dispose);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'xterm'),
+    );
+    await tester.pump();
+
+    final popScope = tester.widget<PopScope<void>>(find.byType(PopScope<void>));
+    expect(popScope.canPop, isFalse);
+  });
+
+  testWidgets('mobile back closes sidebar instead of popping the app', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final container = _container(const ServerState());
+    addTearDown(container.dispose);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'xterm'),
+    );
+    await tester.pump();
+
+    container.read(uiProvider.notifier).setSidebarOpen(true);
+    await tester.pumpAndSettle();
+    expect(container.read(uiProvider).sidebarOpen, isTrue);
+
+    WidgetsBinding.instance.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(container.read(uiProvider).sidebarOpen, isFalse);
   });
 }
 

@@ -111,6 +111,48 @@ void main() {
     },
   );
 
+  testWidgets('mobile key bar shows keyboard lock first and toggles it', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final container = _container(
+      serverState: const ServerState(),
+      uiState: const UiState(
+        isMobile: true,
+        showKeyBar: true,
+        sidebarOpen: false,
+      ),
+    );
+    addTearDown(container.dispose);
+
+    await _pumpWithContainer(
+      tester,
+      container,
+      SizedBox(width: 390, child: MobileKeyBar(onKeyPress: (_) {})),
+    );
+
+    final keyboardFinder = find.byKey(
+      const ValueKey('mobile-toolbar-button-Kbd'),
+    );
+    final copyFinder = find.byKey(const ValueKey('mobile-toolbar-button-Copy'));
+
+    expect(keyboardFinder, findsOneWidget);
+    expect(copyFinder, findsOneWidget);
+    expect(
+      tester.getTopLeft(keyboardFinder).dx,
+      lessThan(tester.getTopLeft(copyFinder).dx),
+    );
+
+    await tester.tap(keyboardFinder);
+    await tester.pump();
+
+    expect(container.read(uiProvider).softKeyboardLocked, isTrue);
+  });
+
   testWidgets('mobile key bar button width expands with available width', (
     tester,
   ) async {

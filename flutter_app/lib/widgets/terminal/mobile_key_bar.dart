@@ -157,6 +157,17 @@ class _MobileKeyBarState extends ConsumerState<MobileKeyBar> {
     widget.onKeyPress(modified);
   }
 
+  void _toggleKeyboardLock() {
+    final uiState = ref.read(uiProvider);
+    ref.read(uiProvider.notifier).toggleSoftKeyboardLock();
+    if (!uiState.softKeyboardLocked) {
+      SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+      HapticFeedback.heavyImpact();
+    } else {
+      HapticFeedback.selectionClick();
+    }
+  }
+
   void _handleKeyTap(MobileKey key) {
     HapticFeedback.selectionClick();
     _sendKey(key);
@@ -190,6 +201,12 @@ class _MobileKeyBarState extends ConsumerState<MobileKeyBar> {
     final shortestSide = MediaQuery.of(context).size.shortestSide;
     final isTablet = shortestSide >= 600;
     final items = <_ToolbarItem>[
+      _ToolbarItem.action(
+        label: 'Kbd',
+        onTap: _toggleKeyboardLock,
+        active: uiState.softKeyboardLocked,
+        showLock: uiState.softKeyboardLocked,
+      ),
       _ToolbarItem.action(label: 'Copy', onTap: widget.onCopy),
       _ToolbarItem.action(label: 'Paste', onTap: widget.onPaste),
       ...uiState.mobileKeys.map(_ToolbarItem.key),
@@ -273,6 +290,8 @@ class _MobileKeyBarState extends ConsumerState<MobileKeyBar> {
       return _buildActionButton(
         label: item.label!,
         onTap: item.onTap,
+        active: item.active,
+        showLock: item.showLock,
         fontSize: fontSize,
         buttonHeight: buttonHeight,
         borderRadius: borderRadius,
@@ -301,14 +320,24 @@ class _MobileKeyBarState extends ConsumerState<MobileKeyBar> {
   Widget _buildActionButton({
     required String label,
     required VoidCallback? onTap,
+    required bool active,
+    required bool showLock,
     required double fontSize,
     required double buttonHeight,
     required BorderRadius borderRadius,
   }) {
+    final backgroundColor =
+        active ? _mobileToolbarLockedColor : _mobileToolbarButtonColor;
+    final textColor =
+        onTap == null
+            ? Colors.white24
+            : (active ? Colors.blueAccent : Colors.white70);
+    final fontWeight = active ? FontWeight.bold : FontWeight.w600;
+
     return SizedBox(
       height: buttonHeight,
       child: Material(
-        color: _mobileToolbarButtonColor,
+        color: backgroundColor,
         borderRadius: borderRadius,
         child: InkWell(
           key: ValueKey('mobile-toolbar-button-$label'),
@@ -318,8 +347,12 @@ class _MobileKeyBarState extends ConsumerState<MobileKeyBar> {
             child: _MobileButtonLabel(
               label: label,
               fontSize: fontSize,
-              color: onTap == null ? Colors.white24 : Colors.white70,
-              fontWeight: FontWeight.w600,
+              color: textColor,
+              fontWeight: fontWeight,
+              trailingIcon:
+                  showLock
+                      ? Icon(Icons.lock, size: fontSize, color: textColor)
+                      : null,
             ),
           ),
         ),
@@ -623,14 +656,24 @@ class _MobileFloatingNavPadState extends ConsumerState<MobileFloatingNavPad> {
 }
 
 class _ToolbarItem {
-  const _ToolbarItem.key(this.key) : label = null, onTap = null;
+  const _ToolbarItem.key(this.key)
+    : label = null,
+      onTap = null,
+      active = false,
+      showLock = false;
 
-  const _ToolbarItem.action({required this.label, required this.onTap})
-    : key = null;
+  const _ToolbarItem.action({
+    required this.label,
+    required this.onTap,
+    this.active = false,
+    this.showLock = false,
+  }) : key = null;
 
   final MobileKey? key;
   final String? label;
   final VoidCallback? onTap;
+  final bool active;
+  final bool showLock;
 }
 
 class _MobileButtonLabel extends StatelessWidget {

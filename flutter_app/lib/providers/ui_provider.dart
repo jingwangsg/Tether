@@ -9,6 +9,7 @@ class UiState {
   final bool isMobile;
   final bool showKeyBar;
   final bool sidebarOpen;
+  final bool softKeyboardLocked;
   final ModifierMode ctrlMode;
   final ModifierMode altMode;
   final List<MobileKey> mobileKeys;
@@ -18,6 +19,7 @@ class UiState {
     this.isMobile = false,
     this.showKeyBar = false,
     this.sidebarOpen = true,
+    this.softKeyboardLocked = false,
     this.ctrlMode = ModifierMode.inactive,
     this.altMode = ModifierMode.inactive,
     this.mobileKeys = defaultMobileKeys,
@@ -31,6 +33,7 @@ class UiState {
     bool? isMobile,
     bool? showKeyBar,
     bool? sidebarOpen,
+    bool? softKeyboardLocked,
     ModifierMode? ctrlMode,
     ModifierMode? altMode,
     List<MobileKey>? mobileKeys,
@@ -41,6 +44,7 @@ class UiState {
       isMobile: isMobile ?? this.isMobile,
       showKeyBar: showKeyBar ?? this.showKeyBar,
       sidebarOpen: sidebarOpen ?? this.sidebarOpen,
+      softKeyboardLocked: softKeyboardLocked ?? this.softKeyboardLocked,
       ctrlMode: ctrlMode ?? this.ctrlMode,
       altMode: altMode ?? this.altMode,
       mobileKeys: mobileKeys ?? this.mobileKeys,
@@ -80,6 +84,10 @@ class UiNotifier extends StateNotifier<UiState> {
 
   void setSidebarOpen(bool open) {
     state = state.copyWith(sidebarOpen: open);
+  }
+
+  void toggleSoftKeyboardLock() {
+    state = state.copyWith(softKeyboardLocked: !state.softKeyboardLocked);
   }
 
   // --- Ctrl modifier ---

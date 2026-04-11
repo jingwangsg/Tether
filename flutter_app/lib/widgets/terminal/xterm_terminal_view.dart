@@ -10,7 +10,9 @@ import 'package:xterm/xterm.dart' as xterm;
 import '../../platform/terminal_backend.dart';
 import '../../providers/server_provider.dart';
 import '../../providers/settings_provider.dart';
+import '../../providers/ui_provider.dart';
 import '../../services/websocket_service.dart';
+import 'mobile_key_bar.dart' show applyMobileModifiers;
 import 'terminal_controller.dart';
 
 /// Terminal widget that connects to a server-managed PTY via WebSocket.
@@ -768,7 +770,14 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   }
 
   void _onTerminalInput(String data) {
-    _ws?.sendInput(data);
+    final uiState = ref.read(uiProvider);
+    final output = applyMobileModifiers(data, uiState);
+    _ws?.sendInput(output);
+
+    if (uiState.ctrlMode == ModifierMode.temporary ||
+        uiState.altMode == ModifierMode.temporary) {
+      ref.read(uiProvider.notifier).consumeTemporaryModifiers();
+    }
   }
 
   /// Send raw text to the PTY (used by MobileKeyBar and paste service).
@@ -858,6 +867,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
+    final uiState = ref.watch(uiProvider);
     final terminalView = xterm.TerminalView(
       _terminal,
       controller: _terminalController,
@@ -865,6 +875,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       padding: EdgeInsets.zero,
       deleteDetection: true,
       keyboardType: TextInputType.visiblePassword,
+      hardwareKeyboardOnly: uiState.softKeyboardLocked,
       textStyle: xterm.TerminalStyle(
         fontSize: settings.fontSize,
         fontFamily: settings.fontFamily,
