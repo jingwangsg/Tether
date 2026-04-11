@@ -345,9 +345,15 @@ impl MetadataLogger {
         let Some(path) = path else {
             return Ok(None);
         };
-        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
             std::fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create metadata parent directory {}", parent.display())
+                format!(
+                    "failed to create metadata parent directory {}",
+                    parent.display()
+                )
             })?;
         }
         let file = std::fs::OpenOptions::new()
@@ -651,10 +657,8 @@ mod tests {
 
     #[tokio::test]
     async fn scrollback_info_is_written_to_metadata_log() {
-        let metadata_path = std::env::temp_dir().join(format!(
-            "tether-client-metadata-{}.jsonl",
-            Uuid::new_v4()
-        ));
+        let metadata_path =
+            std::env::temp_dir().join(format!("tether-client-metadata-{}.jsonl", Uuid::new_v4()));
         let logger = MetadataLogger::new(Some(metadata_path.clone())).unwrap();
         let mut stdout = BufWriter::new(tokio::io::sink());
         let mut exit_code = 1;

@@ -24,6 +24,14 @@ fn write_script(dir: &str, content: &str) -> String {
     path
 }
 
+fn write_named_script(dir: &str, name: &str, content: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let path = format!("{}/{}", dir, name);
+    std::fs::write(&path, content).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
 fn spawn_session(script: &str, dir: &str) -> Arc<PtySession> {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     PtySession::spawn(
@@ -287,6 +295,33 @@ async fn test_output_detection_no_false_positive_outside_alt_screen() {
     assert_eq!(
         fg.process, None,
         "should not detect tool outside alternate screen"
+    );
+
+    session.kill();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_codex_child_process_survives_shell_title_reclaim() {
+    let dir = temp_dir();
+    let codex_path = write_named_script(&dir, "codex", "#!/bin/sh\nsleep 30\n");
+    let script = write_script(
+        &dir,
+        &format!(
+            "#!/bin/sh\nprintf '\\033]0;Codex CLI\\007'\n\"{codex_path}\" &\nchild=$!\nsleep 0.3\nprintf '\\033]0;user@host: ~/dir\\007'\nsleep 0.8\nwait \"$child\"\n"
+        ),
+    );
+    let session = spawn_session(&script, &dir);
+
+    let result = poll_foreground(&session, Some("codex")).await;
+    assert_eq!(result, Some("codex".to_string()));
+
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    let fg = session.detect_foreground();
+    assert_eq!(
+        fg.process,
+        Some("codex".to_string()),
+        "should keep detecting codex while the wrapper keeps a codex child alive after reclaiming the shell title"
     );
 
     session.kill();

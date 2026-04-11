@@ -52,20 +52,15 @@ const defaultMobileToolbarKeys = [
 ];
 
 const defaultMobileNavigationKeys = [
-  mobilePageUpKey,
   mobileArrowUpKey,
-  mobileHomeKey,
   mobileArrowLeftKey,
   mobileArrowDownKey,
   mobileArrowRightKey,
-  mobilePageDownKey,
-  mobileEndKey,
 ];
 
 const defaultMobileNavigationRows = <List<MobileKey?>>[
-  [mobilePageUpKey, mobileArrowUpKey, mobileHomeKey],
+  [null, mobileArrowUpKey, null],
   [mobileArrowLeftKey, mobileArrowDownKey, mobileArrowRightKey],
-  [mobilePageDownKey, null, mobileEndKey],
 ];
 
 const defaultMobileKeys = defaultMobileToolbarKeys;

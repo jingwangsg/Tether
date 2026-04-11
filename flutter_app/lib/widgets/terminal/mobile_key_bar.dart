@@ -203,15 +203,15 @@ class _MobileKeyBarState extends ConsumerState<MobileKeyBar> {
           return row.length > maxCount ? row.length : maxCount;
         });
         final compact = constraints.maxWidth < 380 || rowCount >= 7;
-        final rowGap = compact ? 6.0 : 8.0;
-        final buttonHeight = isTablet ? 42.0 : (compact ? 34.0 : 38.0);
-        final fontSize = isTablet ? 14.0 : (compact ? 11.0 : 12.5);
+        final rowGap = compact ? 4.0 : 6.0;
+        final buttonHeight = isTablet ? 38.0 : (compact ? 28.0 : 32.0);
+        final fontSize = isTablet ? 13.0 : (compact ? 10.0 : 11.0);
         final borderRadius = BorderRadius.circular(isTablet ? 10 : 8);
 
         return Container(
           key: const ValueKey('mobile-key-bar'),
           color: _mobileToolbarBackground,
-          padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+          padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -472,14 +472,15 @@ class _MobileFloatingNavPadState extends ConsumerState<MobileFloatingNavPad> {
     final uiState = ref.watch(uiProvider);
     final shortestSide = MediaQuery.of(context).size.shortestSide;
     final isTablet = shortestSide >= 600;
-    final gap = isTablet ? 8.0 : 6.0;
-    final padding = isTablet ? 10.0 : 8.0;
-    final handleHeight = isTablet ? 20.0 : 18.0;
-    final buttonSize = isTablet ? 54.0 : 46.0;
-    final fontSize = isTablet ? 12.5 : 11.5;
+    final gap = isTablet ? 6.0 : 5.0;
+    final padding = isTablet ? 8.0 : 6.0;
+    final handleHeight = isTablet ? 18.0 : 16.0;
+    final buttonSize = isTablet ? 44.0 : 38.0;
+    final fontSize = isTablet ? 11.5 : 10.5;
+    final navRowCount = defaultMobileNavigationRows.length;
     final padSize = Size(
       (padding * 2) + (buttonSize * 3) + (gap * 2),
-      (padding * 2) + handleHeight + 4 + (buttonSize * 3) + (gap * 2),
+      (padding * 2) + handleHeight + 4 + (buttonSize * navRowCount) + (gap * (navRowCount - 1)),
     );
 
     return LayoutBuilder(

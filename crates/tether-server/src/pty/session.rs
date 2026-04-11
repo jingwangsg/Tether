@@ -5,6 +5,7 @@ use bytes::Bytes;
 use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::broadcast;
@@ -65,6 +66,13 @@ impl Default for ToolAttentionState {
             running_since: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PsProcessEntry {
+    pid: i32,
+    pgid: i32,
+    command: String,
 }
 
 pub struct PtySession {
@@ -434,17 +442,29 @@ impl PtySession {
         }
 
         let output = std::process::Command::new("ps")
-            .args(["-o", "args=", "-p", &pgid.to_string()])
+            .args(["-o", "pid=,pgid=,args=", "-g", &pgid.to_string()])
             .output()
             .ok()?;
-        let args = String::from_utf8_lossy(&output.stdout);
-        let args_lower = args.to_lowercase();
 
-        for tool in &["claude", "codex"] {
-            if args_lower.contains(tool) {
-                return Some(tool.to_string());
+        let entries: Vec<_> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(Self::parse_ps_process_entry)
+            .collect();
+
+        for prefer_non_leader in [true, false] {
+            for entry in &entries {
+                if prefer_non_leader && entry.pid == pgid {
+                    continue;
+                }
+                if !prefer_non_leader && entry.pid != pgid {
+                    continue;
+                }
+                if let Some(tool) = Self::detect_known_tool_in_command(&entry.command) {
+                    return Some(tool.to_string());
+                }
             }
         }
+
         None
     }
 
@@ -491,6 +511,59 @@ impl PtySession {
     // --- Reader-loop helpers (called from the PTY reader thread) ---
 
     const KNOWN_TOOLS: [&str; 2] = ["claude", "codex"];
+
+    fn parse_ps_process_entry(line: &str) -> Option<PsProcessEntry> {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let bytes = trimmed.as_bytes();
+        let mut idx = 0usize;
+
+        let pid = Self::take_ps_int_field(trimmed, bytes, &mut idx)?;
+        let pgid = Self::take_ps_int_field(trimmed, bytes, &mut idx)?;
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        let command = trimmed.get(idx..)?.trim().to_string();
+        if command.is_empty() {
+            return None;
+        }
+
+        Some(PsProcessEntry { pid, pgid, command })
+    }
+
+    fn take_ps_int_field(source: &str, bytes: &[u8], idx: &mut usize) -> Option<i32> {
+        while *idx < bytes.len() && bytes[*idx].is_ascii_whitespace() {
+            *idx += 1;
+        }
+        let start = *idx;
+        while *idx < bytes.len() && !bytes[*idx].is_ascii_whitespace() {
+            *idx += 1;
+        }
+        if start == *idx {
+            return None;
+        }
+        source.get(start..*idx)?.parse().ok()
+    }
+
+    fn detect_known_tool_in_command(command: &str) -> Option<&'static str> {
+        let tokens: Vec<_> = command.split_whitespace().take(2).collect();
+        for token in tokens {
+            let basename = Path::new(token)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(token)
+                .to_ascii_lowercase();
+            for tool in &Self::KNOWN_TOOLS {
+                if basename == *tool {
+                    return Some(tool);
+                }
+            }
+        }
+        None
+    }
 
     /// Update sticky_osc_tool based on the latest OSC title.
     /// - Title contains a tool name -> set sticky
