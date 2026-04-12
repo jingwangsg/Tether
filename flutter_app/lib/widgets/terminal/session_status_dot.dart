@@ -5,8 +5,13 @@ import '../../utils/session_status.dart';
 
 class SessionStatusDot extends StatefulWidget {
   final SessionIndicatorStatus status;
+  final String? semanticIdentifier;
 
-  const SessionStatusDot({super.key, required this.status});
+  const SessionStatusDot({
+    super.key,
+    required this.status,
+    this.semanticIdentifier,
+  });
 
   @override
   State<SessionStatusDot> createState() => _SessionStatusDotState();
@@ -67,13 +72,18 @@ class _SessionStatusDotState extends State<SessionStatusDot>
       SessionIndicatorStatus.running => const Color(0xFF34C759),
       SessionIndicatorStatus.attention => const Color(0xFFF8D25C),
     };
+    final semanticValue = switch (widget.status) {
+      SessionIndicatorStatus.waiting => 'waiting',
+      SessionIndicatorStatus.running => 'running',
+      SessionIndicatorStatus.attention => 'attention',
+    };
+
+    Widget child;
 
     if (widget.status == SessionIndicatorStatus.waiting) {
-      return _buildDot(color: color, opacity: 1, scale: 1, glow: 0);
-    }
-
-    if (widget.status == SessionIndicatorStatus.attention) {
-      return AnimatedBuilder(
+      child = _buildDot(color: color, opacity: 1, scale: 1, glow: 0);
+    } else if (widget.status == SessionIndicatorStatus.attention) {
+      child = AnimatedBuilder(
         animation: _controller,
         builder: (context, _) {
           final phase = _controller.value;
@@ -94,19 +104,31 @@ class _SessionStatusDotState extends State<SessionStatusDot>
           );
         },
       );
+    } else {
+      child = AnimatedBuilder(
+        animation: _controller,
+        builder: (context, _) {
+          final pulse = Curves.easeInOut.transform(_controller.value);
+          return _buildDot(
+            color: color,
+            opacity: 0.55 + (pulse * 0.45),
+            scale: 0.88 + (pulse * 0.22),
+            glow: 2 + (pulse * 6),
+          );
+        },
+      );
     }
 
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, _) {
-        final pulse = Curves.easeInOut.transform(_controller.value);
-        return _buildDot(
-          color: color,
-          opacity: 0.55 + (pulse * 0.45),
-          scale: 0.88 + (pulse * 0.22),
-          glow: 2 + (pulse * 6),
-        );
-      },
+    if (widget.semanticIdentifier == null) {
+      return child;
+    }
+
+    return Semantics(
+      container: true,
+      identifier: widget.semanticIdentifier!,
+      label: 'session status',
+      value: semanticValue,
+      child: ExcludeSemantics(child: child),
     );
   }
 

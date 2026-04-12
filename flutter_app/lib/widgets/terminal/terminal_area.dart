@@ -536,6 +536,8 @@ class _TerminalTabBar extends ConsumerWidget {
                         SessionStatusDot(
                           key: ValueKey('session-tab-status-${tab.sessionId}'),
                           status: status,
+                          semanticIdentifier:
+                              'session-tab-status-${tab.sessionId}',
                         ),
                       ],
                       const SizedBox(width: 6),

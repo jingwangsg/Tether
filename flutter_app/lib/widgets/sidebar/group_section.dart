@@ -10,6 +10,7 @@ import '../../providers/ui_provider.dart';
 import '../../utils/session_display.dart';
 import '../../utils/session_interaction.dart';
 import '../../utils/session_status.dart';
+import '../../utils/test_event_logger.dart';
 import '../terminal/session_status_dot.dart';
 import 'group_dialog.dart';
 
@@ -362,8 +363,24 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
     final display = getDisplayInfo(session, widget.allSessions);
     final canOpen = isSessionInteractive(session, widget.allGroups);
     final status = deriveSessionIndicatorStatus(session, isActive: isActive);
+    if (status != null) {
+      TestEventLogger.instance.log('session_sidebar_status_visible', {
+        'session_id': session.id,
+        'session_name': display.displayName,
+        'status': status.name,
+        'source': 'group_section',
+      });
+    }
     final semanticsLabel = display.displayName;
-    final semanticsValue = display.subtitle;
+    final semanticsValue = [
+      display.subtitle,
+      switch (status) {
+        SessionIndicatorStatus.waiting => 'status waiting',
+        SessionIndicatorStatus.running => 'status running',
+        SessionIndicatorStatus.attention => 'status attention',
+        null => null,
+      },
+    ].whereType<String>().join(', ');
     final titleColor =
         canOpen ? (isActive ? Colors.white : Colors.white60) : Colors.white38;
     final subtitleColor = canOpen ? Colors.white38 : Colors.white24;
@@ -375,7 +392,7 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
       selected: isActive,
       identifier: 'session-tile-${session.id}',
       label: semanticsLabel,
-      value: semanticsValue,
+      value: semanticsValue.isEmpty ? null : semanticsValue,
       child: GestureDetector(
         onSecondaryTapDown:
             (details) =>
@@ -428,6 +445,7 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                   SessionStatusDot(
                     key: ValueKey('session-sidebar-status-${session.id}'),
                     status: status,
+                    semanticIdentifier: 'session-sidebar-status-${session.id}',
                   ),
                 ],
                 _buildSessionMenuButton(session),

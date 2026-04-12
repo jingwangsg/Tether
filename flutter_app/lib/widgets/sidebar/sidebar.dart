@@ -11,6 +11,7 @@ import '../../providers/ui_provider.dart';
 import '../../utils/session_display.dart';
 import '../../utils/session_interaction.dart';
 import '../../utils/session_status.dart';
+import '../../utils/test_event_logger.dart';
 import '../terminal/session_status_dot.dart';
 import 'group_dialog.dart';
 import 'group_section.dart';
@@ -383,8 +384,24 @@ class Sidebar extends ConsumerWidget {
     final display = getDisplayInfo(session, serverState.sessions);
     final canOpen = isSessionInteractive(session, serverState.groups);
     final status = deriveSessionIndicatorStatus(session, isActive: isActive);
+    if (status != null) {
+      TestEventLogger.instance.log('session_sidebar_status_visible', {
+        'session_id': session.id,
+        'session_name': display.displayName,
+        'status': status.name,
+        'source': 'sidebar',
+      });
+    }
     final semanticsLabel = display.displayName;
-    final semanticsValue = display.subtitle;
+    final semanticsValue = [
+      display.subtitle,
+      switch (status) {
+        SessionIndicatorStatus.waiting => 'status waiting',
+        SessionIndicatorStatus.running => 'status running',
+        SessionIndicatorStatus.attention => 'status attention',
+        null => null,
+      },
+    ].whereType<String>().join(', ');
     final titleColor =
         canOpen ? (isActive ? Colors.white : Colors.white70) : Colors.white38;
     final subtitleColor = canOpen ? Colors.white38 : Colors.white24;
@@ -396,7 +413,7 @@ class Sidebar extends ConsumerWidget {
       selected: isActive,
       identifier: 'session-tile-${session.id}',
       label: semanticsLabel,
-      value: semanticsValue,
+      value: semanticsValue.isEmpty ? null : semanticsValue,
       child: GestureDetector(
         onSecondaryTapDown:
             (details) => _showSessionContextMenu(
@@ -442,6 +459,7 @@ class Sidebar extends ConsumerWidget {
                   SessionStatusDot(
                     key: ValueKey('session-sidebar-status-${session.id}'),
                     status: status,
+                    semanticIdentifier: 'session-sidebar-status-${session.id}',
                   ),
                   const SizedBox(width: 6),
                 ],

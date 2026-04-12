@@ -24,6 +24,7 @@ private struct UITestConfig {
 final class RunnerUITests: XCTestCase {
     private var tempRoot: URL!
     private var serverProcess: Process?
+    private var serverLogURL: URL!
     private var eventLogURL: URL!
     private var repoRoot: URL!
 
@@ -45,6 +46,7 @@ final class RunnerUITests: XCTestCase {
         tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("tether-ui-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        serverLogURL = tempRoot.appendingPathComponent("tether-server.log")
         eventLogURL = tempRoot.appendingPathComponent("terminal-events.jsonl")
     }
 
@@ -58,7 +60,7 @@ final class RunnerUITests: XCTestCase {
     }
 
     func testMacTerminalLazyLoadsOlderHistory() throws {
-        if externalConfig != nil {
+        if canReachConfiguredExternalServer() {
             try waitForExternalServer()
         } else {
             try ensureCargoBinary(named: "tether-server")
@@ -137,6 +139,109 @@ final class RunnerUITests: XCTestCase {
         XCTAssertLessThan(currentLoaded, initialLoadedFrom)
     }
 
+    func testSidebarAttentionBellAppearsForBackgroundSession() throws {
+        let runId = String(UUID().uuidString.prefix(8))
+        let focusSessionName = "focus-\(runId)"
+        let attentionSessionName = "attention-\(runId)"
+
+        if canReachConfiguredExternalServer() {
+            try waitForServerReady()
+        } else {
+            try ensureCargoBinary(named: "tether-server")
+            try startServer()
+        }
+        try ensureCargoBinary(named: "tether-client")
+
+        let groupId = try createGroup(named: "UI Bell Group \(runId)")
+        _ = try provisionCommandSession(
+            named: focusSessionName,
+            groupId: groupId,
+            command: "while :; do sleep 1; done"
+        )
+        let attentionSessionId = try provisionCommandSession(
+            named: attentionSessionName,
+            groupId: groupId,
+            command:
+                "sleep 1; printf '\\033]0;✱ Codex\\007'; sleep 8; printf '\\033]0;· Codex\\007'; while :; do sleep 1; done"
+        )
+
+        let app = XCUIApplication()
+        app.launchEnvironment["TETHER_CLIENT_PATH"] =
+            repoRoot.appendingPathComponent("target/debug/tether-client").path
+        app.launchEnvironment["TETHER_TERMINAL_TEST_LOG_PATH"] = eventLogURL.path
+        app.launchEnvironment["TETHER_TEST_AUTO_OPEN_SESSION_NAME"] = focusSessionName
+        app.launchEnvironment["TETHER_TEST_SERVER_HOST"] = "127.0.0.1"
+        app.launchEnvironment["TETHER_TEST_SERVER_PORT"] = "\(port)"
+        app.launch()
+
+        _ = try waitForEvent(named: "sessions_refreshed", timeout: 20) {
+            guard let names = $0["session_names"] as? [Any] else {
+                return false
+            }
+            return names.contains { ($0 as? String) == focusSessionName }
+                && names.contains { ($0 as? String) == attentionSessionName }
+        }
+
+        _ = try waitForSession(id: attentionSessionId, timeout: 25) { session in
+            let seq = Self.int(session, key: "attention_seq") ?? 0
+            let ack = Self.int(session, key: "attention_ack_seq") ?? 0
+            return seq > 0 && ack == 0
+        }
+
+        _ = try waitForEvent(named: "session_sidebar_status_visible", timeout: 10) {
+            ($0["session_id"] as? String) == attentionSessionId
+                && ($0["status"] as? String) == "attention"
+        }
+    }
+
+    func testActiveSessionAcknowledgesAttentionAndShowsWaitingIndicator() throws {
+        let runId = String(UUID().uuidString.prefix(8))
+        let attentionSessionName = "attention-\(runId)"
+
+        if canReachConfiguredExternalServer() {
+            try waitForServerReady()
+        } else {
+            try ensureCargoBinary(named: "tether-server")
+            try startServer()
+        }
+        try ensureCargoBinary(named: "tether-client")
+
+        let groupId = try createGroup(named: "UI Bell Active Group \(runId)")
+        let attentionSessionId = try provisionCommandSession(
+            named: attentionSessionName,
+            groupId: groupId,
+            command:
+                "sleep 1; printf '\\033]0;✱ Codex\\007'; sleep 8; printf '\\033]0;· Codex\\007'; while :; do sleep 1; done"
+        )
+
+        let app = XCUIApplication()
+        app.launchEnvironment["TETHER_CLIENT_PATH"] =
+            repoRoot.appendingPathComponent("target/debug/tether-client").path
+        app.launchEnvironment["TETHER_TERMINAL_TEST_LOG_PATH"] = eventLogURL.path
+        app.launchEnvironment["TETHER_TEST_AUTO_OPEN_SESSION_NAME"] = attentionSessionName
+        app.launchEnvironment["TETHER_TEST_SERVER_HOST"] = "127.0.0.1"
+        app.launchEnvironment["TETHER_TEST_SERVER_PORT"] = "\(port)"
+        app.launch()
+
+        _ = try waitForEvent(named: "sessions_refreshed", timeout: 20) {
+            guard let names = $0["session_names"] as? [Any] else {
+                return false
+            }
+            return names.contains { ($0 as? String) == attentionSessionName }
+        }
+
+        _ = try waitForSession(id: attentionSessionId, timeout: 25) { session in
+            let seq = Self.int(session, key: "attention_seq") ?? 0
+            let ack = Self.int(session, key: "attention_ack_seq") ?? 0
+            return seq > 0 && ack == seq
+        }
+
+        _ = try waitForEvent(named: "session_sidebar_status_visible", timeout: 10) {
+            ($0["session_id"] as? String) == attentionSessionId
+                && ($0["status"] as? String) == "waiting"
+        }
+    }
+
     private func waitForExternalServer() throws {
         let deadline = Date().addingTimeInterval(15)
         while Date() < deadline {
@@ -149,21 +254,17 @@ final class RunnerUITests: XCTestCase {
         throw UITestFailure(description: "external UI test server was not ready")
     }
 
-    private func startServer() throws {
-        let process = Process()
-        process.currentDirectoryURL = repoRoot
-        process.executableURL = repoRoot.appendingPathComponent("target/debug/tether-server")
-        process.arguments = ["--port", "\(port)"]
-        var environment = ProcessInfo.processInfo.environment
-        environment["TETHER_DATA_DIR"] = tempRoot.appendingPathComponent("data").path
-        environment["RUST_LOG"] = "error"
-        process.environment = environment
-        let sink = Pipe()
-        process.standardOutput = sink
-        process.standardError = sink
-        try process.run()
-        serverProcess = process
+    private func canReachConfiguredExternalServer() -> Bool {
+        guard externalConfig != nil else {
+            return false
+        }
+        guard let response = try? jsonResponse(url: URL(string: "http://127.0.0.1:\(port)/api/info")!) else {
+            return false
+        }
+        return response.statusCode == 200
+    }
 
+    private func waitForServerReady() throws {
         let deadline = Date().addingTimeInterval(15)
         while Date() < deadline {
             if let response = try? jsonResponse(url: URL(string: "http://127.0.0.1:\(port)/api/info")!),
@@ -173,7 +274,44 @@ final class RunnerUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }
 
-        throw UITestFailure(description: "tether-server did not become ready before timeout")
+        throw UITestFailure(description: "UI test server was not ready")
+    }
+
+    private func startServer() throws {
+        let process = Process()
+        process.currentDirectoryURL = repoRoot
+        process.executableURL = repoRoot.appendingPathComponent("target/debug/tether-server")
+        process.arguments = ["--port", "\(port)"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["TETHER_DATA_DIR"] = tempRoot.appendingPathComponent("data").path
+        environment["RUST_LOG"] = "error"
+        process.environment = environment
+        FileManager.default.createFile(atPath: serverLogURL.path, contents: nil)
+        let logHandle = try FileHandle(forWritingTo: serverLogURL)
+        process.standardOutput = logHandle
+        process.standardError = logHandle
+        try process.run()
+        serverProcess = process
+
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            if !process.isRunning {
+                break
+            }
+            if let response = try? jsonResponse(url: URL(string: "http://127.0.0.1:\(port)/api/info")!),
+               response.statusCode == 200 {
+                return
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+
+        let log =
+            ((try? String(contentsOf: serverLogURL, encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)) ?? "<no server log>"
+        let exitStatus = process.isRunning ? "still running" : "exited with \(process.terminationStatus)"
+        throw UITestFailure(
+            description: "tether-server did not become ready before timeout (\(exitStatus))\n\(log)"
+        )
     }
 
     private func provisionSession(named sessionName: String) throws -> String {
@@ -238,6 +376,43 @@ final class RunnerUITests: XCTestCase {
         }
 
         throw UITestFailure(description: "session did not become alive before timeout")
+    }
+
+    private func createGroup(named name: String) throws -> String {
+        let groupResponse = try jsonResponse(
+            url: URL(string: "http://127.0.0.1:\(port)/api/groups")!,
+            method: "POST",
+            body: [
+                "name": name,
+                "default_cwd": tempRoot.path,
+            ]
+        )
+        XCTAssertEqual(groupResponse.statusCode, 201)
+        return try XCTUnwrap(groupResponse.json["id"] as? String)
+    }
+
+    private func provisionCommandSession(
+        named sessionName: String,
+        groupId: String,
+        command: String
+    ) throws -> String {
+        let sessionResponse = try jsonResponse(
+            url: URL(string: "http://127.0.0.1:\(port)/api/sessions")!,
+            method: "POST",
+            body: [
+                "group_id": groupId,
+                "name": sessionName,
+                "command": command,
+                "cwd": tempRoot.path,
+            ]
+        )
+        XCTAssertEqual(sessionResponse.statusCode, 201)
+        let sessionId = try XCTUnwrap(sessionResponse.json["id"] as? String)
+
+        _ = try waitForSession(id: sessionId, timeout: 15) {
+            ($0["is_alive"] as? Bool) == true
+        }
+        return sessionId
     }
 
     private func scrollUntilEvent(
@@ -311,7 +486,7 @@ final class RunnerUITests: XCTestCase {
             .firstMatch
     }
 
-    private func sessionTileElement(in app: XCUIApplication) -> XCUIElement {
+    private func sessionTileElement(in app: XCUIApplication, named sessionName: String) -> XCUIElement {
         let byLabelButton = app.buttons[sessionName]
         if byLabelButton.exists {
             return byLabelButton
@@ -328,8 +503,82 @@ final class RunnerUITests: XCTestCase {
             .firstMatch
     }
 
-    private func openSession(in app: XCUIApplication) throws {
-        let sessionTile = sessionTileElement(in: app)
+    private func sessionStatusElement(in app: XCUIApplication, identifier: String) -> XCUIElement {
+        app.descendants(matching: .any)
+            .matching(identifier: identifier)
+            .firstMatch
+    }
+
+    private func waitForSessionTileValue(
+        in app: XCUIApplication,
+        sessionName: String,
+        contains expected: String,
+        timeout: TimeInterval
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastLabel = "<missing>"
+        var lastValue = "<missing>"
+        while Date() < deadline {
+            let tile = sessionTileElement(in: app, named: sessionName)
+            if tile.exists {
+                lastLabel = tile.label
+                lastValue = (tile.value as? String) ?? "<nil>"
+                if lastLabel.localizedCaseInsensitiveContains(expected)
+                    || lastValue.localizedCaseInsensitiveContains(expected) {
+                    return
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+
+        throw UITestFailure(
+            description:
+                "timed out waiting for session tile \(sessionName) to contain \(expected) (label=\(lastLabel), value=\(lastValue))"
+        )
+    }
+
+    private func waitForStatusValue(
+        in app: XCUIApplication,
+        identifier: String,
+        equals expected: String,
+        timeout: TimeInterval
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let status = sessionStatusElement(in: app, identifier: identifier)
+            if status.exists {
+                let label = status.label.trimmingCharacters(in: .whitespacesAndNewlines)
+                let value = (status.value as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if label == expected || value == expected {
+                    return
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+
+        throw UITestFailure(description: "timed out waiting for status \(identifier) to equal \(expected)")
+    }
+
+    private func waitForSession(
+        id sessionId: String,
+        timeout: TimeInterval,
+        where predicate: ([String: Any]) -> Bool = { _ in true }
+    ) throws -> [String: Any] {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let sessions = try jsonArrayResponse(url: URL(string: "http://127.0.0.1:\(port)/api/sessions")!)
+            if let row = sessions.first(where: { ($0["id"] as? String) == sessionId && predicate($0) }) {
+                return row
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+
+        throw UITestFailure(description: "timed out waiting for session \(sessionId)")
+    }
+
+    private func openSession(in app: XCUIApplication, named sessionName: String) throws {
+        let sessionTile = sessionTileElement(in: app, named: sessionName)
         if sessionTile.waitForExistence(timeout: 2) {
             sessionTile.click()
             return
@@ -419,6 +668,16 @@ final class RunnerUITests: XCTestCase {
             url.deleteLastPathComponent()
         }
         throw UITestFailure(description: "failed to resolve repo root")
+    }
+
+    private static func int(_ payload: [String: Any], key: String) -> Int? {
+        if let value = payload[key] as? NSNumber {
+            return value.intValue
+        }
+        if let value = payload[key] as? String {
+            return Int(value)
+        }
+        return nil
     }
 
     private static func uint64(_ payload: [String: Any], key: String) -> UInt64? {
