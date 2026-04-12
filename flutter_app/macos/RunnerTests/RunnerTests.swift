@@ -514,6 +514,44 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(completed)
   }
 
+  func testTerminalAppReactivationRestoresGhosttyFocusAndRedrawsSurfaces() {
+    TerminalApp.shared.setup()
+    guard let surface = ghostty_surface_t(bitPattern: 0x4321) else {
+      XCTFail("failed to construct fake surface pointer")
+      return
+    }
+
+    var focusValues: [Bool] = []
+    var redrawCount = 0
+
+    TerminalApp.shared.focusSetterForTesting = { _, focused in
+      focusValues.append(focused)
+    }
+    TerminalApp.shared.drawHandlerForTesting = { drawnSurface in
+      if drawnSurface == surface {
+        redrawCount += 1
+      }
+    }
+    TerminalApp.shared.registerSurface(surface)
+    defer {
+      TerminalApp.shared.unregisterSurface(surface)
+      TerminalApp.shared.focusSetterForTesting = nil
+      TerminalApp.shared.drawHandlerForTesting = nil
+    }
+
+    NotificationCenter.default.post(
+      name: NSApplication.didResignActiveNotification,
+      object: NSApp
+    )
+    NotificationCenter.default.post(
+      name: NSApplication.didBecomeActiveNotification,
+      object: NSApp
+    )
+
+    XCTAssertEqual(focusValues, [false, true])
+    XCTAssertEqual(redrawCount, 1)
+  }
+
   func testNativeTerminalLazyLoadingIntegration() throws {
     let harness = try TerminalLazyLoadingHarness()
     defer { harness.cleanup() }

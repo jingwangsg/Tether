@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -41,7 +40,8 @@ class XtermTerminalView extends ConsumerStatefulWidget {
   ConsumerState<XtermTerminalView> createState() => XtermTerminalViewState();
 }
 
-class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
+class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
+    with WidgetsBindingObserver {
   late xterm.Terminal _terminal;
   late final xterm.TerminalController _terminalController;
   late final ScrollController _scrollController;
@@ -91,6 +91,8 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
 
   // Search state
   bool _searchOpen = false;
+  bool _appLifecycleActive = true;
+  int _layoutGeneration = 0;
   final List<({int line, int col, int length})> _searchMatches = [];
   int _currentMatchIndex = -1;
   final List<xterm.TerminalHighlight> _searchHighlights = [];
@@ -104,6 +106,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   @override
   void initState() {
     super.initState();
+    final lifecycleState = WidgetsBinding.instance.lifecycleState;
+    _appLifecycleActive =
+        lifecycleState == null || lifecycleState == AppLifecycleState.resumed;
+    WidgetsBinding.instance.addObserver(this);
     _scrollController = ScrollController();
     _scrollController.addListener(_onScrollChanged);
     _terminalController = xterm.TerminalController();
@@ -118,6 +124,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     _bindDecoderPipeline();
     HardwareKeyboard.instance.addHandler(_handleSearchKey);
     _connect();
+    _syncEffectiveActiveState(forceRelayoutOnResume: false);
   }
 
   bool _handleSearchKey(KeyEvent event) {
@@ -313,12 +320,16 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       );
     }
     if (oldWidget.isActive != widget.isActive) {
-      if (widget.isActive) {
-        _resume();
-      } else {
-        _pause();
-      }
+      _syncEffectiveActiveState(forceRelayoutOnResume: true);
     }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final lifecycleActive = state == AppLifecycleState.resumed;
+    if (_appLifecycleActive == lifecycleActive) return;
+    _appLifecycleActive = lifecycleActive;
+    _syncEffectiveActiveState(forceRelayoutOnResume: lifecycleActive);
   }
 
   void _connect() {
@@ -443,6 +454,11 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   void _flushWrites() {
     _writeScheduled = false;
     if (!mounted || _writeQueue.isEmpty) return;
+    if (_isPaused) {
+      _pauseBuffer.addAll(_writeQueue);
+      _writeQueue.clear();
+      return;
+    }
 
     int totalLen = 0;
     for (final chunk in _writeQueue) {
@@ -597,10 +613,11 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       _prefetchStartOffset = fetchStart;
       _prefetchedData = fetchedBytes;
       _prefetchCacheSnapshot = _rawBytesCache.length;
-      if (mounted)
+      if (mounted) {
         setState(() {
           _isPrefetching = false;
         });
+      }
 
       // If user is already at the top, swap immediately
       if (_scrollController.hasClients &&
@@ -608,10 +625,11 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
         _performTerminalSwap();
       }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _isPrefetching = false;
         });
+      }
     }
   }
 
@@ -754,10 +772,50 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
 
   void _pause() {
     _isPaused = true;
+    if (_writeQueue.isNotEmpty) {
+      _pauseBuffer.addAll(_writeQueue);
+      _writeQueue.clear();
+    }
+    _writeScheduled = false;
     _ws?.sendPause();
   }
 
-  void _resume() {
+  void _syncEffectiveActiveState({required bool forceRelayoutOnResume}) {
+    final shouldBeActive = widget.isActive && _appLifecycleActive;
+    if (shouldBeActive) {
+      if (_isPaused) {
+        _resume(forceRelayout: forceRelayoutOnResume);
+      }
+    } else {
+      if (!_isPaused) {
+        _pause();
+      }
+    }
+  }
+
+  void _sendCurrentSize() {
+    final width = _terminal.viewWidth;
+    final height = _terminal.viewHeight;
+    if (width > 0 && height > 0) {
+      _ws?.sendResize(width, height);
+    }
+  }
+
+  void _resume({bool forceRelayout = false}) {
+    if (forceRelayout && mounted) {
+      setState(() {
+        _layoutGeneration++;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _resumeAfterLayout();
+      });
+      return;
+    }
+    _resumeAfterLayout();
+  }
+
+  void _resumeAfterLayout() {
     _isPaused = false;
     if (_pauseBuffer.isNotEmpty) {
       for (final chunk in _pauseBuffer) {
@@ -766,6 +824,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
       _pauseBuffer.clear();
       _scheduleFlush();
     }
+    _sendCurrentSize();
     _ws?.sendResume();
   }
 
@@ -848,6 +907,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
   @override
   void dispose() {
     widget.controller.detach();
+    WidgetsBinding.instance.removeObserver(this);
     HardwareKeyboard.instance.removeHandler(_handleSearchKey);
     _scrollController.removeListener(_onScrollChanged);
     _disposeAllSearchHighlights();
@@ -869,6 +929,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView> {
     final settings = ref.watch(settingsProvider);
     final uiState = ref.watch(uiProvider);
     final terminalView = xterm.TerminalView(
+      key: ValueKey(_layoutGeneration),
       _terminal,
       controller: _terminalController,
       scrollController: _scrollController,

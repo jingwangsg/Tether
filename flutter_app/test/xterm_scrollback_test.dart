@@ -22,6 +22,9 @@ class _MockWebSocketService extends WebSocketService {
   final StreamController<ServerMessage> _ctrl =
       StreamController<ServerMessage>.broadcast();
   final String capturedUrl;
+  final List<({int cols, int rows})> resizeCalls = [];
+  int pauseCalls = 0;
+  int resumeCalls = 0;
 
   _MockWebSocketService(this.capturedUrl) : super('ws://unused');
 
@@ -32,13 +35,19 @@ class _MockWebSocketService extends WebSocketService {
   void connect() {}
 
   @override
-  void sendPause() {}
+  void sendPause() {
+    pauseCalls += 1;
+  }
 
   @override
-  void sendResume() {}
+  void sendResume() {
+    resumeCalls += 1;
+  }
 
   @override
-  void sendResize(int cols, int rows) {}
+  void sendResize(int cols, int rows) {
+    resizeCalls.add((cols: cols, rows: rows));
+  }
 
   @override
   void sendInput(String data) {}
@@ -312,6 +321,59 @@ void main() {
 
       // Should complete without crash or hang
       expect(find.byType(SizedBox), findsWidgets);
+    });
+
+    testWidgets('lifecycle resume re-sends terminal size after relayout', (
+      tester,
+    ) async {
+      final factory = _MockWsFactory();
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-lifecycle', wsFactory: factory),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final ws = factory.lastService!;
+      expect(ws.resizeCalls, isNotEmpty);
+
+      final initialResizeCount = ws.resizeCalls.length;
+      final lastKnownSize = ws.resizeCalls.last;
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+      expect(ws.pauseCalls, 1);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      await tester.pump();
+
+      expect(ws.resumeCalls, 1);
+      expect(ws.resizeCalls.length, greaterThan(initialResizeCount));
+      expect(ws.resizeCalls.last, lastKnownSize);
+    });
+
+    testWidgets('paused lifecycle buffers already queued writes until resume', (
+      tester,
+    ) async {
+      final factory = _MockWsFactory();
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-buffered-lifecycle', wsFactory: factory),
+      );
+      await tester.pump();
+
+      final ws = factory.lastService!;
+      ws.emit(OutputMessage(_textBytes('queued-before-pause')));
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+
+      expect(ws.pauseCalls, 1);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(ws.resumeCalls, 1);
+      expect(tester.takeException(), isNull);
     });
   });
 

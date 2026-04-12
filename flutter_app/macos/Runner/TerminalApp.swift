@@ -11,6 +11,8 @@ class TerminalApp {
     static let shared = TerminalApp()
 
     private(set) var app: ghostty_app_t?
+    var focusSetterForTesting: ((ghostty_app_t, Bool) -> Void)?
+    var drawHandlerForTesting: ((ghostty_surface_t) -> Void)?
 
     // Surfaces that should be redrawn on wakeup (active/visible only)
     private var drawableSurfaces: Set<ghostty_surface_t> = []
@@ -110,7 +112,33 @@ class TerminalApp {
             self.surfaceLock.lock()
             let surfaces = Array(self.drawableSurfaces)
             self.surfaceLock.unlock()
-            for s in surfaces { ghostty_surface_draw(s) }
+            for s in surfaces { self.drawSurface(s) }
+        }
+    }
+
+    private func setAppFocus(_ focused: Bool) {
+        guard let app else { return }
+        if let focusSetterForTesting {
+            focusSetterForTesting(app, focused)
+            return
+        }
+        ghostty_app_set_focus(app, focused)
+    }
+
+    private func drawSurface(_ surface: ghostty_surface_t) {
+        if let drawHandlerForTesting {
+            drawHandlerForTesting(surface)
+            return
+        }
+        ghostty_surface_draw(surface)
+    }
+
+    private func redrawDrawableSurfaces() {
+        surfaceLock.lock()
+        let surfaces = Array(drawableSurfaces)
+        surfaceLock.unlock()
+        for surface in surfaces {
+            drawSurface(surface)
         }
     }
 
@@ -214,7 +242,31 @@ class TerminalApp {
         }
         ghostty_config_free(cfg)
         app = newApp
+        setAppFocus(NSApp.isActive)
+
+        let center = NotificationCenter.default
+        center.addObserver(
+            self,
+            selector: #selector(applicationDidBecomeActive(notification:)),
+            name: NSApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        center.addObserver(
+            self,
+            selector: #selector(applicationDidResignActive(notification:)),
+            name: NSApplication.didResignActiveNotification,
+            object: nil
+        )
         print("[TerminalApp] ready")
+    }
+
+    @objc private func applicationDidBecomeActive(notification: NSNotification) {
+        setAppFocus(true)
+        redrawDrawableSurfaces()
+    }
+
+    @objc private func applicationDidResignActive(notification: NSNotification) {
+        setAppFocus(false)
     }
 
     func handleAction(app: ghostty_app_t, target: ghostty_target_s, action: ghostty_action_s) {
@@ -320,6 +372,7 @@ class TerminalApp {
     }
 
     deinit {
+        NotificationCenter.default.removeObserver(self)
         if let a = app { ghostty_app_free(a) }
     }
 }
