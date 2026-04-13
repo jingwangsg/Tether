@@ -203,8 +203,8 @@ async fn handle_socket(
     let session_for_input = session.clone();
     let session_for_events = session.clone();
 
-    // Dedicated PTY writer
-    let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    // Dedicated PTY writer — bounded channel provides backpressure from WS → PTY
+    let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
     let input_writer_session = session_for_input.clone();
     tokio::task::spawn_blocking(move || {
         while let Some(data) = input_rx.blocking_recv() {
@@ -293,7 +293,7 @@ async fn handle_socket(
                             if let Ok(decoded) =
                                 base64::engine::general_purpose::STANDARD.decode(&data)
                             {
-                                let _ = input_tx.send(decoded);
+                                let _ = input_tx.send(decoded).await;
                             }
                         }
                         ClientMessage::Resize { cols, rows } => {
@@ -713,6 +713,29 @@ mod tests {
             }
             other => panic!("Expected Lagged error with capacity 256, got {:?}", other),
         }
+    }
+
+    /// Unbounded channels grow without limit -- bounded channels provide backpressure.
+    #[test]
+    fn bounded_input_channel_provides_backpressure() {
+        // Unbounded: can enqueue arbitrarily many messages
+        let (unbounded_tx, _unbounded_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        for _ in 0..10_000 {
+            unbounded_tx.send(vec![0u8; 64]).unwrap();
+        }
+        // All 10k messages accepted without blocking -- no backpressure
+
+        // Bounded: try_send fails once the buffer is full
+        let (bounded_tx, _bounded_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+        let mut sent = 0usize;
+        for _ in 0..10_000 {
+            match bounded_tx.try_send(vec![0u8; 64]) {
+                Ok(_) => sent += 1,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => break,
+                Err(e) => panic!("unexpected error: {:?}", e),
+            }
+        }
+        assert_eq!(sent, 256, "bounded channel should cap at its capacity");
     }
 
     /// With the increased capacity (2048), the same burst should not lag.
