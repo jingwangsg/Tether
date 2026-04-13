@@ -67,8 +67,13 @@ impl Store {
         })
     }
 
+    /// Lock the connection mutex, recovering from poison instead of panicking.
+    fn lock_conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        crate::lock_or_recover(&self.conn)
+    }
+
     pub fn init_tables(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS groups (
                 id          TEXT PRIMARY KEY,
@@ -138,7 +143,7 @@ impl Store {
 
     #[allow(dead_code)]
     pub fn mark_shared_remote_model_initialized(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
             params![SHARED_REMOTE_MODEL_VERSION_KEY, SHARED_REMOTE_MODEL_VERSION],
@@ -150,7 +155,7 @@ impl Store {
     /// We intentionally discard stale SSH-backed local mirrors and let the
     /// remote-authoritative sync rebuild them in the shared format.
     pub fn migrate_legacy_shared_remote_model_if_needed(&self) -> anyhow::Result<bool> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let current: Option<String> = conn
             .query_row(
                 "SELECT value FROM settings WHERE key = ?1",
@@ -189,7 +194,7 @@ impl Store {
     // --- Groups ---
 
     pub fn list_groups(&self) -> anyhow::Result<Vec<GroupRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, default_cwd, sort_order, parent_id, created_at, updated_at, ssh_host FROM groups ORDER BY sort_order, name",
         )?;
@@ -217,7 +222,7 @@ impl Store {
         parent_id: Option<&str>,
         ssh_host: Option<&str>,
     ) -> anyhow::Result<GroupRow> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         let max_order: i32 = conn
@@ -284,7 +289,7 @@ impl Store {
         values.push(Box::new(id.to_string()));
 
         let sql = format!("UPDATE groups SET {} WHERE id = ?", sets.join(", "));
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let n = conn.execute(
             &sql,
             rusqlite::params_from_iter(values.iter().map(|v| v.as_ref())),
@@ -300,7 +305,7 @@ impl Store {
         group: &GroupRow,
         ssh_host: &str,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute(
             "INSERT INTO groups (id, name, default_cwd, sort_order, parent_id, ssh_host, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -328,7 +333,7 @@ impl Store {
 
     /// Collect all descendant group IDs (recursive) including the given id itself
     pub fn collect_descendant_ids(&self, id: &str) -> anyhow::Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut result = vec![id.to_string()];
         let mut queue = vec![id.to_string()];
         while let Some(parent) = queue.pop() {
@@ -348,7 +353,7 @@ impl Store {
     /// Wrapped in a transaction to prevent orphaned data on partial failure.
     pub fn delete_group(&self, id: &str) -> anyhow::Result<Vec<String>> {
         let ids = self.collect_descendant_ids(id)?;
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         for gid in &ids {
             tx.execute(
@@ -369,7 +374,7 @@ impl Store {
     /// Walks ancestors from `parent_id` upward; returns true if `group_id` is found.
     #[allow(dead_code)]
     pub fn would_create_cycle(&self, group_id: &str, parent_id: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut current = Some(parent_id.to_string());
         while let Some(ref pid) = current {
             if pid == group_id {
@@ -388,7 +393,7 @@ impl Store {
     }
 
     pub fn get_group(&self, id: &str) -> anyhow::Result<Option<GroupRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, default_cwd, sort_order, parent_id, created_at, updated_at, ssh_host FROM groups WHERE id = ?1",
         )?;
@@ -412,7 +417,7 @@ impl Store {
     /// Return the `ssh_host` field of a group directly (avoids constructing a full GroupRow).
     #[allow(dead_code)]
     pub fn get_group_ssh_host(&self, group_id: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let result = conn.query_row(
             "SELECT ssh_host FROM groups WHERE id = ?1",
             params![group_id],
@@ -428,7 +433,7 @@ impl Store {
     // --- Sessions ---
 
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, attention_seq, attention_ack_seq, local_group_id FROM sessions ORDER BY sort_order, created_at",
         )?;
@@ -466,7 +471,7 @@ impl Store {
         cwd: &str,
         local_group_id: Option<&str>,
     ) -> anyhow::Result<SessionRow> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let now = chrono::Utc::now().to_rfc3339();
         let tx = conn.transaction()?;
         tx.execute(
@@ -499,7 +504,7 @@ impl Store {
     }
 
     pub fn get_session(&self, id: &str) -> anyhow::Result<Option<SessionRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, attention_seq, attention_ack_seq, local_group_id \
              FROM sessions WHERE id = ?1",
@@ -530,7 +535,7 @@ impl Store {
     }
 
     pub fn upsert_remote_session_mirror(&self, session: &SessionRow) -> anyhow::Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO sessions (id, group_id, name, shell, cols, rows, cwd, created_at, last_active, sort_order, is_alive, attention_seq, attention_ack_seq, local_group_id)
@@ -576,7 +581,7 @@ impl Store {
 
     /// Returns the number of rows updated (0 means the session was not found).
     pub fn update_session_name(&self, id: &str, name: &str) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let n = conn.execute(
             "UPDATE sessions SET name = ?1 WHERE id = ?2",
             params![name, id],
@@ -586,7 +591,7 @@ impl Store {
 
     /// Returns the number of rows updated (0 means the session was not found).
     pub fn update_session_sort_order(&self, id: &str, sort_order: i32) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let n = conn.execute(
             "UPDATE sessions SET sort_order = ?1 WHERE id = ?2",
             params![sort_order, id],
@@ -596,7 +601,7 @@ impl Store {
 
     /// Returns the number of rows updated (0 means the session was not found).
     pub fn update_session_group(&self, id: &str, group_id: &str) -> anyhow::Result<usize> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         let n = tx.execute(
             "UPDATE sessions SET group_id = ?1 WHERE id = ?2",
@@ -620,7 +625,7 @@ impl Store {
         id: &str,
         local_group_id: &str,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute(
             "UPDATE sessions SET local_group_id = ?1 WHERE id = ?2",
             params![local_group_id, id],
@@ -629,7 +634,7 @@ impl Store {
     }
 
     pub fn update_session_size(&self, id: &str, cols: u16, rows: u16) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute(
             "UPDATE sessions SET cols = ?1, rows = ?2 WHERE id = ?3",
             params![cols, rows, id],
@@ -639,7 +644,7 @@ impl Store {
 
     /// Returns the next attention sequence, or `None` when the session was not found.
     pub fn increment_session_attention_seq(&self, id: &str) -> anyhow::Result<Option<i64>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         let current = tx
             .query_row(
@@ -671,7 +676,7 @@ impl Store {
         id: &str,
         attention_ack_seq: i64,
     ) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let now = chrono::Utc::now().to_rfc3339();
         let updated = conn.execute(
             "UPDATE sessions
@@ -689,7 +694,7 @@ impl Store {
         attention_seq: i64,
         attention_ack_seq: i64,
     ) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let now = chrono::Utc::now().to_rfc3339();
         let updated = conn.execute(
             "UPDATE sessions
@@ -713,7 +718,7 @@ impl Store {
     /// intentionally leaves the registry intact so SSH sessions are restored to their
     /// original groups on reconnect.
     pub fn delete_session(&self, id: &str) -> anyhow::Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
         tx.execute(
@@ -727,7 +732,7 @@ impl Store {
     /// Return the `ssh_host` of the group that owns this session, if any.
     /// Returns `None` when the session is local (group has no ssh_host).
     pub fn get_session_ssh_host(&self, session_id: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let result = conn.query_row(
             "SELECT g.ssh_host FROM sessions s \
              JOIN groups g ON s.group_id = g.id \
@@ -748,7 +753,7 @@ impl Store {
     /// Does NOT touch `session_group_registry`.
     #[cfg(test)]
     pub fn mark_local_sessions_dead(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute(
             "UPDATE sessions SET is_alive = 0 \
              WHERE group_id IN (SELECT id FROM groups WHERE ssh_host IS NULL)",
@@ -761,7 +766,7 @@ impl Store {
     /// session-group registry assignments. Used on startup because local PTYs do
     /// not survive a local server restart and should not be revived.
     pub fn delete_local_sessions(&self) -> anyhow::Result<Vec<String>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
 
         let local_session_ids = {
@@ -798,7 +803,7 @@ impl Store {
     /// Return the IDs of all sessions belonging to SSH-backed groups.
     #[allow(dead_code)]
     pub fn get_remote_session_ids(&self) -> anyhow::Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT s.id FROM sessions s \
              JOIN groups g ON s.group_id = g.id WHERE g.ssh_host IS NOT NULL",
@@ -810,7 +815,7 @@ impl Store {
     }
 
     pub fn get_remote_session_ids_by_host(&self, host_alias: &str) -> anyhow::Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT s.id FROM sessions s \
              JOIN groups g ON s.group_id = g.id WHERE g.ssh_host = ?1",
@@ -827,7 +832,7 @@ impl Store {
     /// that table persists group assignments so sessions are restored to the right group.
     #[allow(dead_code)]
     pub fn delete_remote_sessions(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         conn.execute(
             "DELETE FROM sessions \
              WHERE group_id IN (SELECT id FROM groups WHERE ssh_host IS NOT NULL)",
@@ -841,7 +846,7 @@ impl Store {
     /// Mirrors are rebuilt when SSH tunnels reconnect via `sync_remote_host`.
     /// Intentionally does NOT touch `session_group_registry`.
     pub fn delete_all_remote_mirrors(&self) -> anyhow::Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM sessions \
@@ -858,7 +863,7 @@ impl Store {
     /// Returns the IDs of deleted sessions (for cache cleanup).
     /// Intentionally does NOT touch `session_group_registry`.
     pub fn delete_mirrors_for_host(&self, host_alias: &str) -> anyhow::Result<Vec<String>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         // Query inside the transaction so the returned IDs are authoritative.
         let mut stmt = tx.prepare(
@@ -884,7 +889,7 @@ impl Store {
 
     /// Return the distinct set of SSH host aliases that currently have group mirrors.
     pub fn list_mirrored_ssh_hosts(&self) -> anyhow::Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt =
             conn.prepare("SELECT DISTINCT ssh_host FROM groups WHERE ssh_host IS NOT NULL")?;
         let hosts = stmt
@@ -898,7 +903,7 @@ impl Store {
         if group_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let placeholders = group_ids
             .iter()
             .enumerate()
@@ -938,7 +943,7 @@ impl Store {
     }
 
     pub fn batch_reorder_groups(&self, orders: &[(String, i32)]) -> anyhow::Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         let now = chrono::Utc::now().to_rfc3339();
         for (id, order) in orders {
@@ -968,7 +973,7 @@ impl Store {
         if stale_ids.is_empty() {
             return Ok(());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         for id in &stale_ids {
             tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
@@ -981,7 +986,7 @@ impl Store {
         &self,
         orders: &[(String, i32, Option<String>)],
     ) -> anyhow::Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         for (id, order, group_id) in orders {
             tx.execute(
@@ -1004,7 +1009,7 @@ impl Store {
     }
 
     pub fn get_groups_by_ssh_host(&self, host_alias: &str) -> anyhow::Result<Vec<GroupRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, default_cwd, sort_order, parent_id, created_at, updated_at, ssh_host \
              FROM groups WHERE ssh_host = ?1 ORDER BY sort_order, name",
@@ -1057,7 +1062,7 @@ impl Store {
 
         for id in stale_roots {
             let descendant_ids = self.collect_descendant_ids(&id)?;
-            let mut conn = self.conn.lock().unwrap();
+            let mut conn = self.lock_conn();
             let tx = conn.transaction()?;
             for gid in &descendant_ids {
                 tx.execute("DELETE FROM sessions WHERE group_id = ?1", params![gid])?;
@@ -1089,7 +1094,7 @@ impl Store {
         cwd: &str,
         is_alive: bool,
     ) -> anyhow::Result<bool> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn();
 
         let group_id: String;
         let authoritative: bool;
@@ -2247,7 +2252,7 @@ mod tests {
         // Simulate a poisoned registry (e.g. from a prior buggy sync).
         // Manually insert a wrong registry entry for the session.
         {
-            let conn = store.conn.lock().unwrap();
+            let conn = crate::lock_or_recover(&store.conn);
             conn.execute(
                 "INSERT INTO session_group_registry (session_id, group_id) VALUES ('sid-x', ?1)",
                 rusqlite::params![g_poison.id],
@@ -2282,7 +2287,7 @@ mod tests {
 
         // Registry should now be corrected to groupB.
         let reg_group: String = {
-            let conn = store.conn.lock().unwrap();
+            let conn = crate::lock_or_recover(&store.conn);
             conn.query_row(
                 "SELECT group_id FROM session_group_registry WHERE session_id = 'sid-x'",
                 [],

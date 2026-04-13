@@ -37,13 +37,19 @@ impl ScrollbackBuffer {
 
     pub fn append(&mut self, data: &[u8]) {
         // Append to ring buffer — bulk operation instead of byte-by-byte
-        let overflow = (self.ring.len() + data.len()).saturating_sub(self.max_memory);
-        if overflow > 0 {
-            self.ring.drain(..overflow.min(self.ring.len()));
+        if data.len() >= self.max_memory {
+            // Single chunk larger than the buffer: clear and keep only the tail
+            self.ring.clear();
+            self.ring.extend(&data[data.len() - self.max_memory..]);
+        } else {
+            let overflow = (self.ring.len() + data.len()).saturating_sub(self.max_memory);
+            if overflow > 0 {
+                self.ring.drain(..overflow.min(self.ring.len()));
+            }
+            self.ring.extend(data);
         }
-        self.ring.extend(data);
 
-        // Append to disk
+        // Append to disk (always write the full original data)
         if let Some(ref mut file) = self.disk_file {
             if self.max_disk_bytes == 0 || self.disk_bytes < self.max_disk_bytes {
                 if file.write_all(data).is_ok() {
@@ -165,23 +171,43 @@ mod tests {
         let mut buf = ScrollbackBuffer::new(&dir, 1, 1);
 
         buf.append(&vec![b'A'; 1024]);
-        // Now write 2048 bytes. The append logic drains overflow from existing
-        // ring first, then extends with all new data. Since the single append
-        // is larger than max_memory, the ring will temporarily exceed the cap.
+        // Now write 2048 bytes -- only the last 1024 should remain.
         let data2 = vec![b'B'; 2048];
         buf.append(&data2);
         let contents = buf.get_ring_contents();
-        // Ring holds all 2048 B's (the drain removed the A's but the new
-        // data itself exceeds max_memory in one append call).
-        assert_eq!(contents.len(), 2048);
-        assert_eq!(contents, vec![b'B'; 2048]);
+        assert!(
+            contents.len() <= 1024,
+            "ring should never exceed max_memory, got {}",
+            contents.len()
+        );
+        assert_eq!(contents, vec![b'B'; 1024]);
 
-        // A subsequent small append will trim back down
+        // A subsequent small append should still stay within bounds
         buf.append(b"C");
         let contents2 = buf.get_ring_contents();
-        // overflow = (2048 + 1) - 1024 = 1025, drain 1025, then add 1 byte
         assert_eq!(contents2.len(), 1024);
         assert_eq!(contents2[1023], b'C');
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn oversized_append_stays_within_max_memory() {
+        let dir = temp_session_dir();
+        // 1KB memory = 1024 bytes
+        let mut buf = ScrollbackBuffer::new(&dir, 1, 1);
+
+        // Append 2048 bytes in a single call -- must not exceed max_memory
+        let data = vec![b'X'; 2048];
+        buf.append(&data);
+        let contents = buf.get_ring_contents();
+        assert!(
+            contents.len() <= 1024,
+            "ring exceeded max_memory: got {} bytes",
+            contents.len()
+        );
+        // Should keep only the last 1024 bytes
+        assert_eq!(contents, vec![b'X'; 1024]);
 
         cleanup(&dir);
     }

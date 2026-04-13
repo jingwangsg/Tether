@@ -25,7 +25,7 @@ fn write_script(dir: &str, content: &str) -> String {
 }
 
 fn spawn_session(script: &str, dir: &str) -> Arc<PtySession> {
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = tokio::sync::mpsc::channel(1024);
     PtySession::spawn(
         Uuid::new_v4(),
         Uuid::new_v4(),

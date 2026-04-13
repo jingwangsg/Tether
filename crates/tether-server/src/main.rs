@@ -11,6 +11,10 @@ mod state;
 mod test_support;
 mod ws;
 
+// Re-export from the library crate so `crate::lock_or_recover` resolves
+// from submodules (e.g. store.rs) in both lib and binary crate builds.
+pub use tether_server::lock_or_recover;
+
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 

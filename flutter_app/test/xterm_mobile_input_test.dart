@@ -26,8 +26,9 @@ class _RecordingWebSocketService extends WebSocketService {
   void connect() {}
 
   @override
-  void sendInput(String data) {
+  bool sendInput(String data) {
     sentInputs.add(data);
+    return true;
   }
 
   @override

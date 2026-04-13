@@ -80,7 +80,7 @@ fn test_state_with_terminal(terminal: TerminalSection) -> AppState {
             remote_manager: RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
-            semantic_event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            semantic_event_tx: tokio::sync::mpsc::channel(1024).0,
             semantic_event_rx: std::sync::Mutex::new(None),
         }),
     }

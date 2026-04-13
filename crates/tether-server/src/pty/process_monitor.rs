@@ -94,7 +94,7 @@ fn full_session_update(state: &AppState, session: &Arc<PtySession>, source_label
 /// - Notification path: immediate re-evaluation triggered by semantic prompt events.
 pub async fn run_process_monitor(
     state: AppState,
-    mut semantic_event_rx: tokio::sync::mpsc::UnboundedReceiver<Uuid>,
+    mut semantic_event_rx: tokio::sync::mpsc::Receiver<Uuid>,
 ) {
     let mut slow_interval = tokio::time::interval(Duration::from_secs(2));
     loop {

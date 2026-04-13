@@ -831,10 +831,11 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
   void _onTerminalInput(String data) {
     final uiState = ref.read(uiProvider);
     final output = applyMobileModifiers(data, uiState);
-    _ws?.sendInput(output);
+    final sent = _ws?.sendInput(output) ?? false;
 
-    if (uiState.ctrlMode == ModifierMode.temporary ||
-        uiState.altMode == ModifierMode.temporary) {
+    if (sent &&
+        (uiState.ctrlMode == ModifierMode.temporary ||
+            uiState.altMode == ModifierMode.temporary)) {
       ref.read(uiProvider.notifier).consumeTemporaryModifiers();
     }
   }

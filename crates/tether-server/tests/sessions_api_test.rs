@@ -56,7 +56,7 @@ fn test_state() -> AppState {
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let (status_tx, _) = tokio::sync::broadcast::channel(64);
-    let (semantic_event_tx, semantic_event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (semantic_event_tx, semantic_event_rx) = tokio::sync::mpsc::channel(1024);
 
     AppState {
         inner: Arc::new(AppStateInner {

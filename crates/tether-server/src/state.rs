@@ -30,9 +30,10 @@ pub struct AppStateInner {
     pub ssh_live_sessions: DashMap<Uuid, usize>,
     /// Channel sender for semantic prompt events (session_id).
     /// Shared with all PtySession instances; the receiver goes to process_monitor.
-    pub semantic_event_tx: tokio::sync::mpsc::UnboundedSender<Uuid>,
+    /// Bounded to prevent unbounded memory growth; excess events are dropped via try_send.
+    pub semantic_event_tx: tokio::sync::mpsc::Sender<Uuid>,
     /// Receiver for semantic prompt events, taken once by the process monitor.
-    pub semantic_event_rx: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Uuid>>>,
+    pub semantic_event_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Uuid>>>,
 }
 
 impl AppState {
@@ -55,7 +56,7 @@ impl AppState {
 
         let (shutdown_tx, _) = broadcast::channel(1);
         let (status_tx, _) = broadcast::channel(64);
-        let (semantic_event_tx, semantic_event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (semantic_event_tx, semantic_event_rx) = tokio::sync::mpsc::channel(1024);
 
         Ok(Self {
             inner: Arc::new(AppStateInner {
@@ -85,3 +86,4 @@ impl AppState {
         let _ = self.inner.status_tx.send((session_id, foreground));
     }
 }
+
