@@ -391,7 +391,8 @@ class ServerNotifier extends StateNotifier<ServerState> {
       _replaceState(sessions: sessions);
     } catch (_) {
       _replaceState(sessions: previousSessions);
-      rethrow;
+      // Resync client/server state so the UI doesn't stay desynced.
+      await refresh();
     }
   }
 
