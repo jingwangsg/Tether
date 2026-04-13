@@ -96,56 +96,38 @@ class _SelectionHandlesOverlayState extends State<SelectionHandlesOverlay> {
     setState(() => _isDragging = false);
   }
 
-  /// Convert a local position within our Stack to a [xterm.CellOffset] using
-  /// the RenderTerminal's coordinate system.
-  xterm.CellOffset? _localToCellOffset(
-    Offset localPosition,
-    RenderTerminal renderTerminal,
-  ) {
-    // Stack local -> global -> RenderTerminal local
-    final stackRenderBox = context.findRenderObject() as RenderBox?;
-    if (stackRenderBox == null) return null;
-    final global = stackRenderBox.localToGlobal(localPosition);
-    final rtLocal = renderTerminal.globalToLocal(global);
-    return renderTerminal.getCellOffset(rtLocal);
-  }
+  void _onBaseHandleDrag(DragUpdateDetails details) {
+    final rt = _getRenderTerminal();
+    if (rt == null) return;
 
-  void _onBaseHandleDrag(DragUpdateDetails details, Offset handlePosition) {
-    final renderTerminal = _getRenderTerminal();
-    if (renderTerminal == null) return;
+    final sel = widget.terminalController.selection?.normalized;
+    if (sel == null) return;
 
-    final selection = widget.terminalController.selection;
-    if (selection == null) return;
-
-    final newPos = handlePosition + details.delta;
-    final cellOffset = _localToCellOffset(newPos, renderTerminal);
-    if (cellOffset == null) return;
+    // Convert global position directly to RenderTerminal coordinates.
+    final rtLocal = rt.globalToLocal(details.globalPosition);
+    final cellOffset = rt.getCellOffset(rtLocal);
 
     // Keep the current extent, update the base.
-    final normalized = selection.normalized;
     final newBase = widget.terminal.buffer.createAnchorFromOffset(cellOffset);
-    final newExtent =
-        widget.terminal.buffer.createAnchorFromOffset(normalized.end);
+    final newExtent = widget.terminal.buffer.createAnchorFromOffset(sel.end);
     widget.terminalController.setSelection(newBase, newExtent);
   }
 
-  void _onExtentHandleDrag(DragUpdateDetails details, Offset handlePosition) {
-    final renderTerminal = _getRenderTerminal();
-    if (renderTerminal == null) return;
+  void _onExtentHandleDrag(DragUpdateDetails details) {
+    final rt = _getRenderTerminal();
+    if (rt == null) return;
 
-    final selection = widget.terminalController.selection;
-    if (selection == null) return;
+    final sel = widget.terminalController.selection?.normalized;
+    if (sel == null) return;
 
-    final newPos = handlePosition + details.delta;
-    final cellOffset = _localToCellOffset(newPos, renderTerminal);
-    if (cellOffset == null) return;
+    // Convert global position directly to RenderTerminal coordinates.
+    final rtLocal = rt.globalToLocal(details.globalPosition);
+    final cellOffset = rt.getCellOffset(rtLocal);
 
     // Selection end is exclusive, so add 1 to x for inclusive feel.
     final adjustedOffset = xterm.CellOffset(cellOffset.x + 1, cellOffset.y);
 
-    final normalized = selection.normalized;
-    final newBase =
-        widget.terminal.buffer.createAnchorFromOffset(normalized.begin);
+    final newBase = widget.terminal.buffer.createAnchorFromOffset(sel.begin);
     final newExtent =
         widget.terminal.buffer.createAnchorFromOffset(adjustedOffset);
     widget.terminalController.setSelection(newBase, newExtent);
@@ -193,10 +175,8 @@ class _SelectionHandlesLayer extends StatefulWidget {
   final xterm.BufferRange selection;
   final RenderTerminal? Function() getRenderTerminal;
   final bool isDragging;
-  final void Function(DragUpdateDetails details, Offset handlePosition)
-      onBaseHandleDrag;
-  final void Function(DragUpdateDetails details, Offset handlePosition)
-      onExtentHandleDrag;
+  final void Function(DragUpdateDetails details) onBaseHandleDrag;
+  final void Function(DragUpdateDetails details) onExtentHandleDrag;
   final VoidCallback onDragStart;
   final VoidCallback onDragEnd;
   final VoidCallback onCopy;
@@ -291,10 +271,20 @@ class _SelectionHandlesLayerState extends State<_SelectionHandlesLayer> {
       // Position above the selection. Use the topmost handle y minus some
       // padding for the toolbar height.
       final topY = math.min(base.dy, extent.dy);
+      final extentY = math.max(base.dy, extent.dy);
+
+      // Clamp toolbar within the parent Stack bounds.
+      final stackSize = (context.findRenderObject() as RenderBox).size;
+      const toolbarWidth = 120.0; // approximate
+      final clampedLeft =
+          (midX - toolbarWidth / 2).clamp(0.0, stackSize.width - toolbarWidth);
+      final clampedTop =
+          topY - 48 < 0 ? extentY + 8 : topY - 48; // below selection if no room above
+
       children.add(
         Positioned(
-          left: midX - 60, // roughly half the toolbar width
-          top: topY - 48,
+          left: clampedLeft,
+          top: clampedTop,
           child: _buildToolbar(),
         ),
       );
@@ -308,8 +298,7 @@ class _SelectionHandlesLayerState extends State<_SelectionHandlesLayer> {
         child: _DragHandle(
           onDragStart: widget.onDragStart,
           onDragEnd: widget.onDragEnd,
-          onDragUpdate: (details) =>
-              widget.onBaseHandleDrag(details, base),
+          onDragUpdate: widget.onBaseHandleDrag,
         ),
       ),
     );
@@ -322,8 +311,7 @@ class _SelectionHandlesLayerState extends State<_SelectionHandlesLayer> {
         child: _DragHandle(
           onDragStart: widget.onDragStart,
           onDragEnd: widget.onDragEnd,
-          onDragUpdate: (details) =>
-              widget.onExtentHandleDrag(details, extent),
+          onDragUpdate: widget.onExtentHandleDrag,
         ),
       ),
     );
