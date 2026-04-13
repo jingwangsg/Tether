@@ -167,7 +167,7 @@ impl PtySession {
 
         let master_reader = pair.master.try_clone_reader()?;
 
-        let (output_tx, _) = broadcast::channel(256);
+        let (output_tx, _) = broadcast::channel(2048);
 
         let session_dir = format!("{}/sessions/{}", scrollback_data_dir, id);
         let scrollback =

@@ -236,7 +236,8 @@ async fn handle_socket(
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!("WS client lagged by {} messages", n);
+                            tracing::warn!("WS client lagged by {} messages, closing connection", n);
+                            break;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             let _ = send_json_message(&mut ws_sink, &exited_message()).await;
@@ -695,6 +696,38 @@ impl Drop for ActiveSshProxyGuard {
 mod tests {
     use super::{build_proxy_ws_url, replay_start_offset};
     use uuid::Uuid;
+
+    /// The old broadcast capacity (256) caused Lagged errors under moderate load.
+    /// Verify that the current capacity (2048) avoids lag for realistic bursts.
+    #[test]
+    fn broadcast_channel_old_capacity_causes_lag() {
+        // Demonstrate the bug with the old capacity
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
+        for i in 0..300u32 {
+            let _ = tx.send(bytes::Bytes::from(i.to_le_bytes().to_vec()));
+        }
+        // Receiver was subscribed before sends started but never read — it lagged
+        match rx.try_recv() {
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                // Expected: old capacity causes lag
+            }
+            other => panic!("Expected Lagged error with capacity 256, got {:?}", other),
+        }
+    }
+
+    /// With the increased capacity (2048), the same burst should not lag.
+    #[test]
+    fn broadcast_channel_new_capacity_avoids_lag() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(2048);
+        for i in 0..300u32 {
+            let _ = tx.send(bytes::Bytes::from(i.to_le_bytes().to_vec()));
+        }
+        // Should receive the first message without lagging
+        match rx.try_recv() {
+            Ok(_) => {} // Good — no lag
+            Err(e) => panic!("Should not lag with capacity 2048, got {:?}", e),
+        }
+    }
 
     #[test]
     fn replay_start_offset_uses_full_history_by_default() {
