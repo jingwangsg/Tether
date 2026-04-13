@@ -681,12 +681,15 @@ impl ActiveSshProxyGuard {
 
 impl Drop for ActiveSshProxyGuard {
     fn drop(&mut self) {
-        if let Some(mut entry) = self.state.inner.ssh_live_sessions.get_mut(&self.session_id) {
-            if *entry > 1 {
-                *entry -= 1;
+        use dashmap::mapref::entry::Entry;
+        // Use atomic entry API to avoid TOCTOU race between get_mut and remove
+        if let Entry::Occupied(mut entry) =
+            self.state.inner.ssh_live_sessions.entry(self.session_id)
+        {
+            if *entry.get() > 1 {
+                *entry.get_mut() -= 1;
             } else {
-                drop(entry);
-                self.state.inner.ssh_live_sessions.remove(&self.session_id);
+                entry.remove();
             }
         }
     }
@@ -696,6 +699,50 @@ impl Drop for ActiveSshProxyGuard {
 mod tests {
     use super::{build_proxy_ws_url, replay_start_offset};
     use uuid::Uuid;
+
+    /// Concurrent drops of ActiveSshProxyGuard for the same session_id must
+    /// properly clean up the DashMap entry without races.
+    #[test]
+    fn active_ssh_proxy_guard_concurrent_drop_cleanup() {
+        use dashmap::DashMap;
+        use std::sync::Arc;
+
+        let map: Arc<DashMap<Uuid, usize>> = Arc::new(DashMap::new());
+        let session_id = Uuid::new_v4();
+
+        // Simulate 100 concurrent guards
+        let num_guards = 100usize;
+        for _ in 0..num_guards {
+            map.entry(session_id)
+                .and_modify(|c| *c += 1)
+                .or_insert(1);
+        }
+        assert_eq!(*map.get(&session_id).unwrap(), num_guards);
+
+        // Drop them concurrently from multiple threads using the atomic entry API
+        let mut handles = Vec::new();
+        for _ in 0..num_guards {
+            let map_clone = map.clone();
+            handles.push(std::thread::spawn(move || {
+                use dashmap::mapref::entry::Entry;
+                if let Entry::Occupied(mut entry) = map_clone.entry(session_id) {
+                    if *entry.get() > 1 {
+                        *entry.get_mut() -= 1;
+                    } else {
+                        entry.remove();
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        // Entry must be fully removed — no stale leftovers
+        assert!(
+            map.get(&session_id).is_none(),
+            "entry should be removed after all guards dropped"
+        );
+    }
 
     /// The old broadcast capacity (256) caused Lagged errors under moderate load.
     /// Verify that the current capacity (2048) avoids lag for realistic bursts.
