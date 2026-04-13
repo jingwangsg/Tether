@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,6 +13,7 @@ import '../../providers/settings_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../services/websocket_service.dart';
 import 'mobile_key_bar.dart' show applyMobileModifiers;
+import 'selection_handles_overlay.dart';
 import 'terminal_controller.dart';
 
 /// Terminal widget that connects to a server-managed PTY via WebSocket.
@@ -92,7 +94,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
   // Search state
   bool _searchOpen = false;
   bool _appLifecycleActive = true;
-  int _layoutGeneration = 0;
+  GlobalKey<xterm.TerminalViewState>? _xtermViewKey;
   final List<({int line, int col, int length})> _searchMatches = [];
   int _currentMatchIndex = -1;
   final List<xterm.TerminalHighlight> _searchHighlights = [];
@@ -106,6 +108,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
   @override
   void initState() {
     super.initState();
+    _xtermViewKey = GlobalKey<xterm.TerminalViewState>();
     final lifecycleState = WidgetsBinding.instance.lifecycleState;
     _appLifecycleActive =
         lifecycleState == null || lifecycleState == AppLifecycleState.resumed;
@@ -804,7 +807,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
   void _resume({bool forceRelayout = false}) {
     if (forceRelayout && mounted) {
       setState(() {
-        _layoutGeneration++;
+        _xtermViewKey = GlobalKey<xterm.TerminalViewState>();
       });
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -930,7 +933,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     final settings = ref.watch(settingsProvider);
     final uiState = ref.watch(uiProvider);
     final terminalView = xterm.TerminalView(
-      key: ValueKey(_layoutGeneration),
+      key: _xtermViewKey,
       _terminal,
       controller: _terminalController,
       scrollController: _scrollController,
@@ -947,13 +950,29 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
       },
     );
 
+    Widget terminalWidget = terminalView;
+    if (Platform.isAndroid) {
+      terminalWidget = SelectionHandlesOverlay(
+        terminalController: _terminalController,
+        xtermViewKey: _xtermViewKey!,
+        terminal: _terminal,
+        onCopy: () {
+          copySelection();
+          _terminalController.clearSelection();
+        },
+        onPaste: pasteFromClipboard,
+        scrollController: _scrollController,
+        child: terminalView,
+      );
+    }
+
     final showTopIndicator = _loadedStartOffset > 0 || _isPrefetching;
 
-    if (!_searchOpen && !showTopIndicator) return terminalView;
+    if (!_searchOpen && !showTopIndicator) return terminalWidget;
 
     return Stack(
       children: [
-        terminalView,
+        terminalWidget,
         if (_searchOpen) Positioned(top: 8, right: 8, child: _buildSearchBar()),
         if (showTopIndicator)
           Positioned(
