@@ -225,12 +225,13 @@ class WebSocketService {
       _channel!.sink.add(jsonEncode(msg));
       return true;
     }
-    // Buffer while disconnected
+    // Buffer while disconnected — return false so callers know
+    // the input was not actually delivered to the server yet.
     _pendingInput.add(msg);
     while (_pendingInput.length > maxPendingInput) {
       _pendingInput.removeAt(0);
     }
-    return true;
+    return false;
   }
 
   void sendResize(int cols, int rows) {

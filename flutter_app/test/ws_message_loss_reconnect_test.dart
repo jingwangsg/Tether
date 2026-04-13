@@ -10,9 +10,9 @@ void main() {
       final service = WebSocketService('ws://unused');
       // Do NOT call connect — channel is null
 
-      // sendInput should return true (buffered) and queue the message
+      // sendInput should return false (buffered, not delivered) and queue the message
       final result = service.sendInput('hello');
-      expect(result, isTrue, reason: 'sendInput should return true when buffered');
+      expect(result, isFalse, reason: 'sendInput should return false when only buffered');
       expect(service.pendingInput, isNotEmpty,
           reason: 'pendingInput should contain the buffered message');
       expect(service.pendingInput.length, 1);

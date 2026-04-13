@@ -744,61 +744,6 @@ mod tests {
         );
     }
 
-    /// The old broadcast capacity (256) caused Lagged errors under moderate load.
-    /// Verify that the current capacity (2048) avoids lag for realistic bursts.
-    #[test]
-    fn broadcast_channel_old_capacity_causes_lag() {
-        // Demonstrate the bug with the old capacity
-        let (tx, mut rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
-        for i in 0..300u32 {
-            let _ = tx.send(bytes::Bytes::from(i.to_le_bytes().to_vec()));
-        }
-        // Receiver was subscribed before sends started but never read — it lagged
-        match rx.try_recv() {
-            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
-                // Expected: old capacity causes lag
-            }
-            other => panic!("Expected Lagged error with capacity 256, got {:?}", other),
-        }
-    }
-
-    /// Unbounded channels grow without limit -- bounded channels provide backpressure.
-    #[test]
-    fn bounded_input_channel_provides_backpressure() {
-        // Unbounded: can enqueue arbitrarily many messages
-        let (unbounded_tx, _unbounded_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        for _ in 0..10_000 {
-            unbounded_tx.send(vec![0u8; 64]).unwrap();
-        }
-        // All 10k messages accepted without blocking -- no backpressure
-
-        // Bounded: try_send fails once the buffer is full
-        let (bounded_tx, _bounded_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
-        let mut sent = 0usize;
-        for _ in 0..10_000 {
-            match bounded_tx.try_send(vec![0u8; 64]) {
-                Ok(_) => sent += 1,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => break,
-                Err(e) => panic!("unexpected error: {:?}", e),
-            }
-        }
-        assert_eq!(sent, 256, "bounded channel should cap at its capacity");
-    }
-
-    /// With the increased capacity (2048), the same burst should not lag.
-    #[test]
-    fn broadcast_channel_new_capacity_avoids_lag() {
-        let (tx, mut rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(2048);
-        for i in 0..300u32 {
-            let _ = tx.send(bytes::Bytes::from(i.to_le_bytes().to_vec()));
-        }
-        // Should receive the first message without lagging
-        match rx.try_recv() {
-            Ok(_) => {} // Good — no lag
-            Err(e) => panic!("Should not lag with capacity 2048, got {:?}", e),
-        }
-    }
-
     #[test]
     fn replay_start_offset_uses_full_history_by_default() {
         assert_eq!(replay_start_offset(0, 0, 1024), 0);

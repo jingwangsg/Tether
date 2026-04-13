@@ -87,33 +87,3 @@ impl AppState {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use uuid::Uuid;
-
-    /// Bounded semantic event channel with try_send drops excess messages
-    /// instead of growing without limit.
-    #[test]
-    fn bounded_semantic_event_channel_drops_excess() {
-        let (tx, _rx) = tokio::sync::mpsc::channel::<Uuid>(1024);
-        let mut sent = 0usize;
-        for _ in 0..2000 {
-            match tx.try_send(Uuid::new_v4()) {
-                Ok(_) => sent += 1,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => break,
-                Err(e) => panic!("unexpected error: {:?}", e),
-            }
-        }
-        assert_eq!(sent, 1024, "bounded channel should cap at its capacity");
-    }
-
-    /// Unbounded channel grows without limit (the old behavior we're fixing).
-    #[test]
-    fn unbounded_semantic_event_channel_grows_without_limit() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<Uuid>();
-        for _ in 0..5000 {
-            tx.send(Uuid::new_v4()).unwrap();
-        }
-        // All 5000 messages accepted — no backpressure, unbounded memory growth
-    }
-}

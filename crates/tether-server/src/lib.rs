@@ -25,8 +25,6 @@ mod lock_tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    /// Poisoning a mutex with .lock().unwrap() causes a panic; with if-let-Ok
-    /// the lock is silently skipped; lock_or_recover recovers the inner value.
     #[test]
     fn lock_or_recover_handles_poisoned_mutex() {
         let mutex = Arc::new(Mutex::new(42i32));
@@ -39,19 +37,10 @@ mod lock_tests {
         })
         .join();
 
-        // Verify the mutex is poisoned
         assert!(mutex.lock().is_err(), "mutex should be poisoned");
 
-        // Old behavior: if let Ok(guard) = mutex.lock() silently skips
-        let was_skipped = if let Ok(_guard) = mutex.lock() {
-            false
-        } else {
-            true // silently skipped
-        };
-        assert!(was_skipped, "poisoned mutex is silently skipped by if-let-Ok");
-
-        // Fixed behavior: lock_or_recover recovers the value
+        // lock_or_recover recovers the inner value instead of panicking or skipping
         let guard = lock_or_recover(&mutex);
-        assert_eq!(*guard, 42, "lock_or_recover should recover the inner value");
+        assert_eq!(*guard, 42);
     }
 }
