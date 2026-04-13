@@ -227,7 +227,8 @@ impl PtySession {
                 Ok(0) => break,
                 Ok(n) => {
                     let data = Bytes::copy_from_slice(&buf[..n]);
-                    if let Ok(mut sb) = session.scrollback.lock() {
+                    {
+                        let mut sb = crate::lock_or_recover(&session.scrollback);
                         sb.append(&buf[..n]);
                     }
                     // Parse OSC title sequences for remote process detection

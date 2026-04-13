@@ -11,6 +11,15 @@ mod state;
 mod test_support;
 mod ws;
 
+/// Lock a mutex, recovering from poison by logging and using `into_inner()`.
+/// This prevents silent skipping (if let Ok) and panics (.unwrap()) on poison.
+pub fn lock_or_recover<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!("mutex was poisoned, recovering inner value");
+        poisoned.into_inner()
+    })
+}
+
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
