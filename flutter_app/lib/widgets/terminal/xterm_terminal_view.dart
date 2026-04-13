@@ -671,7 +671,8 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
       }
     }
 
-    // 3. Clean up search state that references old terminal buffer
+    // 3. Clean up search and selection state that references old terminal buffer
+    _terminalController.clearSelection();
     _disposeAllSearchHighlights();
     _searchMatches.clear();
     if (_searchOpen) {
@@ -956,10 +957,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
         terminalController: _terminalController,
         xtermViewKey: _xtermViewKey!,
         terminal: _terminal,
-        onCopy: () {
-          copySelection();
-          _terminalController.clearSelection();
-        },
+        onCopy: copySelection,
         onPaste: pasteFromClipboard,
         scrollController: _scrollController,
         child: terminalView,
