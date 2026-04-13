@@ -72,6 +72,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
   Timer? _refreshTimer;
   int _groupStructureVersion = 0;
   int _sessionStructureVersion = 0;
+  int _connectionGeneration = 0;
 
   ServerNotifier({bool autoConnect = true}) : super(const ServerState()) {
     if (autoConnect) {
@@ -114,6 +115,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
   }
 
   Future<void> connect(ServerConfig config) async {
+    _connectionGeneration++;
     final api = ApiService(baseUrl: config.baseUrl, authToken: config.token);
 
     try {
@@ -146,12 +148,17 @@ class ServerNotifier extends StateNotifier<ServerState> {
     final api = state.api;
     if (api == null) return;
 
+    final generation = _connectionGeneration;
+
     try {
       final results = await Future.wait([
         api.listGroups(),
         api.listSessions(),
         api.listSshHosts(),
       ]);
+
+      // Discard results if connect/disconnect happened while awaiting.
+      if (_connectionGeneration != generation) return;
 
       // Preserve the freshest transient foreground state we have from
       // WebSocket events, since the HTTP session list may lag behind.
@@ -479,6 +486,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
   }
 
   void disconnect() {
+    _connectionGeneration++;
     _refreshTimer?.cancel();
     state.api?.dispose();
     state = const ServerState();
