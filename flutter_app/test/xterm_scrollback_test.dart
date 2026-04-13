@@ -50,7 +50,7 @@ class _MockWebSocketService extends WebSocketService {
   }
 
   @override
-  void sendInput(String data) {}
+  bool sendInput(String data) => true;
 
   @override
   void dispose() {

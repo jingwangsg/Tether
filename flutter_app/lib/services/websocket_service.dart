@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// Message types sent by the server
@@ -70,6 +71,30 @@ class WebSocketService {
   // connection is actually usable (not just that connect() was called).
   bool _confirmed = false;
   static const _maxReconnectDelay = Duration(seconds: 30);
+
+  // Bounded outbound queue for messages sent while disconnected.
+  static const maxPendingInput = 64;
+  final List<Map<String, dynamic>> _pendingInput = [];
+  Map<String, dynamic>? _pendingResize;
+
+  @visibleForTesting
+  List<Map<String, dynamic>> get pendingInput =>
+      List.unmodifiable(_pendingInput);
+
+  @visibleForTesting
+  Map<String, dynamic>? get pendingResize => _pendingResize;
+
+  /// Flush and return pending messages. Exposed for testing.
+  @visibleForTesting
+  List<Map<String, dynamic>> flushPendingForTest() {
+    final items = List<Map<String, dynamic>>.from(_pendingInput);
+    if (_pendingResize != null) {
+      items.add(_pendingResize!);
+      _pendingResize = null;
+    }
+    _pendingInput.clear();
+    return items;
+  }
 
   WebSocketService(String url) : _urlBuilder = (() => url);
 
@@ -146,6 +171,7 @@ class WebSocketService {
     if (!_confirmed) {
       _confirmed = true;
       _reconnectAttempts = 0;
+      _flushPending();
       _messageController.add(ConnectionStateMessage(true));
     }
 
@@ -194,11 +220,27 @@ class WebSocketService {
   }
 
   bool sendInput(String data) {
-    return _send({'type': 'input', 'data': base64Encode(utf8.encode(data))});
+    final msg = {'type': 'input', 'data': base64Encode(utf8.encode(data))};
+    if (_channel != null) {
+      _channel!.sink.add(jsonEncode(msg));
+      return true;
+    }
+    // Buffer while disconnected
+    _pendingInput.add(msg);
+    while (_pendingInput.length > maxPendingInput) {
+      _pendingInput.removeAt(0);
+    }
+    return true;
   }
 
   void sendResize(int cols, int rows) {
-    _send({'type': 'resize', 'cols': cols, 'rows': rows});
+    final msg = {'type': 'resize', 'cols': cols, 'rows': rows};
+    if (_channel != null) {
+      _channel!.sink.add(jsonEncode(msg));
+    } else {
+      // Keep only the latest pending resize
+      _pendingResize = msg;
+    }
   }
 
   void sendPing() {
@@ -219,6 +261,19 @@ class WebSocketService {
     return true;
   }
 
+  void _flushPending() {
+    if (_channel == null) return;
+    // Flush pending resize first (server needs dimensions before input)
+    if (_pendingResize != null) {
+      _channel!.sink.add(jsonEncode(_pendingResize!));
+      _pendingResize = null;
+    }
+    for (final msg in _pendingInput) {
+      _channel!.sink.add(jsonEncode(msg));
+    }
+    _pendingInput.clear();
+  }
+
   void _startPing() {
     _pingTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       sendPing();
@@ -236,6 +291,8 @@ class WebSocketService {
     _confirmed = false;
     _reconnectTimer?.cancel();
     _stopPing();
+    _pendingInput.clear();
+    _pendingResize = null;
     _channel?.sink.close();
     _channel = null;
     _messageController.close();
