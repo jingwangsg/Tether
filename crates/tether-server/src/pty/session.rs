@@ -113,7 +113,7 @@ pub struct PtySession {
     has_shell_integration: std::sync::atomic::AtomicBool,
     /// Channel to notify the process monitor when a semantic prompt event
     /// has been processed (after all per-chunk state is settled).
-    semantic_event_tx: tokio::sync::mpsc::UnboundedSender<Uuid>,
+    semantic_event_tx: tokio::sync::mpsc::Sender<Uuid>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -134,7 +134,7 @@ impl PtySession {
         scrollback_memory_kb: usize,
         scrollback_disk_max_mb: usize,
         terminal_env: PtyTerminalEnv,
-        semantic_event_tx: tokio::sync::mpsc::UnboundedSender<Uuid>,
+        semantic_event_tx: tokio::sync::mpsc::Sender<Uuid>,
     ) -> anyhow::Result<Arc<Self>> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
@@ -262,7 +262,7 @@ impl PtySession {
                     // Title changes also trigger re-evaluation because tools like
                     // Claude Code signal their Running/Waiting state via the title.
                     if had_semantic_event || had_title_change {
-                        let _ = session.semantic_event_tx.send(session.id);
+                        let _ = session.semantic_event_tx.try_send(session.id);
                     }
                     let _ = tx.send(data);
                 }

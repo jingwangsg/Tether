@@ -55,7 +55,7 @@ fn test_state() -> AppState {
             remote_manager: tether_server::remote::manager::RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
-            semantic_event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            semantic_event_tx: tokio::sync::mpsc::channel(1024).0,
             semantic_event_rx: std::sync::Mutex::new(None),
         }),
     }
@@ -654,7 +654,7 @@ async fn test_auth_required_when_token_set() {
             remote_manager: tether_server::remote::manager::RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
-            semantic_event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            semantic_event_tx: tokio::sync::mpsc::channel(1024).0,
             semantic_event_rx: std::sync::Mutex::new(None),
         }),
     };
