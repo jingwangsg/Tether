@@ -193,8 +193,8 @@ class WebSocketService {
     }
   }
 
-  void sendInput(String data) {
-    _send({'type': 'input', 'data': base64Encode(utf8.encode(data))});
+  bool sendInput(String data) {
+    return _send({'type': 'input', 'data': base64Encode(utf8.encode(data))});
   }
 
   void sendResize(int cols, int rows) {
@@ -213,8 +213,10 @@ class WebSocketService {
     _send({'type': 'resume'});
   }
 
-  void _send(Map<String, dynamic> message) {
-    _channel?.sink.add(jsonEncode(message));
+  bool _send(Map<String, dynamic> message) {
+    if (_channel == null) return false;
+    _channel!.sink.add(jsonEncode(message));
+    return true;
   }
 
   void _startPing() {
