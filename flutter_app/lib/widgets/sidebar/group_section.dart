@@ -457,11 +457,15 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                     color: Colors.white38,
                     padding: EdgeInsets.zero,
                     tooltip: 'Delete Session',
-                    onPressed: () {
-                      ref
-                          .read(serverProvider.notifier)
-                          .deleteSession(session.id);
-                      ref.read(sessionProvider.notifier).closeTab(session.id);
+                    onPressed: () async {
+                      try {
+                        await ref
+                            .read(serverProvider.notifier)
+                            .deleteSession(session.id);
+                        ref.read(sessionProvider.notifier).closeTab(session.id);
+                      } catch (_) {
+                        // Delete failed — leave tab open
+                      }
                     },
                   ),
                 ),
@@ -574,13 +578,19 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
                 ),
               ),
             ],
-        onSelected: (value) {
+        onSelected: (value) async {
           switch (value) {
             case 'rename':
               _showRenameSessionDialog(session);
             case 'delete':
-              ref.read(serverProvider.notifier).deleteSession(session.id);
-              ref.read(sessionProvider.notifier).closeTab(session.id);
+              try {
+                await ref
+                    .read(serverProvider.notifier)
+                    .deleteSession(session.id);
+                ref.read(sessionProvider.notifier).closeTab(session.id);
+              } catch (_) {
+                // Delete failed — leave tab open
+              }
           }
         },
       ),
@@ -852,14 +862,20 @@ class _GroupSectionState extends ConsumerState<GroupSection> {
           child: Text('Delete Session', style: TextStyle(color: Colors.red)),
         ),
       ],
-    ).then((value) {
+    ).then((value) async {
       if (value == null) return;
       switch (value) {
         case 'rename':
           _showRenameSessionDialog(session);
         case 'delete':
-          ref.read(serverProvider.notifier).deleteSession(session.id);
-          ref.read(sessionProvider.notifier).closeTab(session.id);
+          try {
+            await ref
+                .read(serverProvider.notifier)
+                .deleteSession(session.id);
+            ref.read(sessionProvider.notifier).closeTab(session.id);
+          } catch (_) {
+            // Delete failed — leave tab open
+          }
       }
     });
   }

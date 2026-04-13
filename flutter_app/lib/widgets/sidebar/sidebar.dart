@@ -471,11 +471,15 @@ class Sidebar extends ConsumerWidget {
                     color: Colors.white38,
                     padding: EdgeInsets.zero,
                     tooltip: 'Delete Session',
-                    onPressed: () {
-                      ref
-                          .read(serverProvider.notifier)
-                          .deleteSession(session.id);
-                      ref.read(sessionProvider.notifier).closeTab(session.id);
+                    onPressed: () async {
+                      try {
+                        await ref
+                            .read(serverProvider.notifier)
+                            .deleteSession(session.id);
+                        ref.read(sessionProvider.notifier).closeTab(session.id);
+                      } catch (_) {
+                        // Delete failed — leave tab open
+                      }
                     },
                   ),
                 ),
@@ -703,15 +707,19 @@ class Sidebar extends ConsumerWidget {
           child: Text('Delete', style: TextStyle(color: Colors.red)),
         ),
       ],
-    ).then((value) {
+    ).then((value) async {
       if (value == null) return;
       if (!context.mounted) return;
       switch (value) {
         case 'rename':
           _showRenameSessionDialog(context, ref, session);
         case 'delete':
-          ref.read(serverProvider.notifier).deleteSession(session.id);
-          ref.read(sessionProvider.notifier).closeTab(session.id);
+          try {
+            await ref.read(serverProvider.notifier).deleteSession(session.id);
+            ref.read(sessionProvider.notifier).closeTab(session.id);
+          } catch (_) {
+            // Delete failed — leave tab open
+          }
       }
     });
   }
