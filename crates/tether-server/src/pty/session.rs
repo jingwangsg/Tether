@@ -167,15 +167,15 @@ impl PtySession {
 
         let master_reader = pair.master.try_clone_reader()?;
 
-        let (output_tx, _) = broadcast::channel(2048);
-
-        let session_dir = format!("{}/sessions/{}", scrollback_data_dir, id);
-        let scrollback =
-            ScrollbackBuffer::new(&session_dir, scrollback_memory_kb, scrollback_disk_max_mb);
-
         // The master itself implements Write, so we use try_clone_reader for reading
         // and a separate writer obtained from the master for writing
         let master_writer: Box<dyn Write + Send> = pair.master.take_writer()?;
+
+        // Create scrollback AFTER all fallible PTY setup to avoid orphaned dirs
+        let (output_tx, _) = broadcast::channel(2048);
+        let session_dir = format!("{}/sessions/{}", scrollback_data_dir, id);
+        let scrollback =
+            ScrollbackBuffer::new(&session_dir, scrollback_memory_kb, scrollback_disk_max_mb);
 
         let session = Arc::new(Self {
             id,
@@ -620,6 +620,44 @@ impl PtySession {
 #[cfg(test)]
 mod tests {
     use super::SessionForeground;
+
+    /// ScrollbackBuffer::new() must be called after all fallible PTY setup.
+    /// If a PTY spawn fails with an invalid shell, no session dir should remain.
+    #[test]
+    fn failed_spawn_does_not_leave_orphaned_scrollback_dir() {
+        let data_dir =
+            std::env::temp_dir().join(format!("tether-test-orphan-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let id = uuid::Uuid::new_v4();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1024);
+
+        // Spawn with a nonexistent shell — should fail
+        let result = super::PtySession::spawn(
+            id,
+            uuid::Uuid::new_v4(),
+            "test",
+            "/nonexistent/shell/that/does/not/exist",
+            "/tmp",
+            80,
+            24,
+            &data_dir.to_string_lossy(),
+            1,
+            1,
+            super::PtyTerminalEnv::default(),
+            tx,
+        );
+        assert!(result.is_err(), "spawn with invalid shell should fail");
+
+        // The session dir should NOT exist (no orphaned directory)
+        let session_dir = data_dir.join("sessions").join(id.to_string());
+        assert!(
+            !session_dir.exists(),
+            "session dir should not be created when spawn fails: {:?}",
+            session_dir
+        );
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
 
     #[test]
     fn session_foreground_serializes_with_osc_title() {
