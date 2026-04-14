@@ -307,6 +307,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
       paste: paste,
       showSearch: showSearch,
       copy: copySelection,
+      performAction: _performAction,
     );
   }
 
@@ -320,6 +321,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
         paste: paste,
         showSearch: showSearch,
         copy: copySelection,
+        performAction: _performAction,
       );
     }
     if (oldWidget.isActive != widget.isActive) {
@@ -869,6 +871,24 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     if (selection == null) return;
     final text = _terminal.buffer.getText(selection);
     Clipboard.setData(ClipboardData(text: text));
+  }
+
+  void _performAction(String action) {
+    if (action == 'increase_font_size:1') {
+      final current = ref.read(settingsProvider).fontSize;
+      ref.read(settingsProvider.notifier).setFontSize(
+        (current + 1).clamp(10, 24),
+      );
+    } else if (action == 'decrease_font_size:1') {
+      final current = ref.read(settingsProvider).fontSize;
+      ref.read(settingsProvider.notifier).setFontSize(
+        (current - 1).clamp(10, 24),
+      );
+    } else if (action == 'reset_font_size') {
+      ref.read(settingsProvider.notifier).setFontSize(
+        TerminalSettings.defaultFontSize,
+      );
+    }
   }
 
   Future<void> pasteFromClipboard() async {

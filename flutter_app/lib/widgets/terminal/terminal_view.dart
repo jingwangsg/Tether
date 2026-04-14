@@ -71,6 +71,7 @@ class TerminalViewState extends State<TerminalView> {
       sendText: sendText,
       paste: paste,
       showSearch: showSearch,
+      performAction: _performAction,
     );
     _connectMetadata();
   }
@@ -84,6 +85,7 @@ class TerminalViewState extends State<TerminalView> {
         sendText: sendText,
         paste: paste,
         showSearch: showSearch,
+        performAction: _performAction,
       );
     }
     if (oldWidget.isActive != widget.isActive && _viewId != null) {
