@@ -5,17 +5,20 @@ class TerminalController {
   void Function(String text)? _paste;
   VoidCallback? _showSearch;
   VoidCallback? _copy;
+  void Function(String action)? _performAction;
 
   void attach({
     required void Function(String text) sendText,
     required void Function(String text) paste,
     required VoidCallback showSearch,
     VoidCallback? copy,
+    void Function(String action)? performAction,
   }) {
     _sendText = sendText;
     _paste = paste;
     _showSearch = showSearch;
     _copy = copy;
+    _performAction = performAction;
   }
 
   void detach() {
@@ -23,6 +26,7 @@ class TerminalController {
     _paste = null;
     _showSearch = null;
     _copy = null;
+    _performAction = null;
   }
 
   void sendText(String text) => _sendText?.call(text);
@@ -32,4 +36,6 @@ class TerminalController {
   void showSearch() => _showSearch?.call();
 
   void copy() => _copy?.call();
+
+  void performAction(String action) => _performAction?.call(action);
 }

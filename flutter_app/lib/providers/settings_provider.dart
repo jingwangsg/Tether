@@ -6,6 +6,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/mobile_key.dart';
 
 class TerminalSettings {
+  static const double defaultFontSize = 14;
+
   final String fontFamily;
   final double fontSize;
   final List<MobileKey> customKeys;
@@ -15,7 +17,7 @@ class TerminalSettings {
 
   const TerminalSettings({
     this.fontFamily = 'MesloLGSNF',
-    this.fontSize = 14,
+    this.fontSize = defaultFontSize,
     this.customKeys = defaultCustomKeys,
     this.showTabBar = false,
     this.globalHotkey,
