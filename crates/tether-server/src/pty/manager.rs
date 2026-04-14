@@ -1,3 +1,4 @@
+use crate::config::ssh_terminfo_preamble;
 use crate::pty::session::{PtySession, PtyTerminalEnv};
 use crate::state::AppState;
 use std::sync::Arc;
@@ -61,12 +62,20 @@ pub fn resolve_ssh_command(ssh_host: Option<&str>, shell: &str, cwd: &str) -> (S
             1,
         );
         let ssh_cmd = if cwd != "~" && !cwd.is_empty() {
+            // Install xterm-ghostty terminfo on the remote before starting
+            // the shell.  SSH forwards TERM but not TERMINFO, so without
+            // this TUI apps that rely on terminfo (gdu, htop, etc.) fail.
+            let ti_preamble = ssh_terminfo_preamble();
             format!(
-                "{} -t \"cd {} && exec \\$SHELL -l\"",
+                "{} -t \"{}; cd {} && exec \\$SHELL -l\"",
                 shell_with_keepalive,
+                ti_preamble,
                 shell_quote(cwd)
             )
         } else {
+            // When cwd is ~ or empty, use plain SSH so sshd starts the
+            // user's login shell directly.  This avoids sending POSIX
+            // syntax that would break non-POSIX remote shells (fish, tcsh).
             shell_with_keepalive
         };
         let local_cwd = shellexpand::tilde("~").to_string();

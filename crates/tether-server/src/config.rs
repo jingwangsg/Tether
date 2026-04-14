@@ -27,6 +27,61 @@ pub(crate) fn ghostty_terminfo_asset() -> (&'static str, &'static str, &'static 
     )
 }
 
+/// Generate a shell preamble that installs xterm-ghostty terminfo on a remote host.
+///
+/// SSH forwards `TERM` but not `TERMINFO`, so remote servers typically cannot
+/// find the `xterm-ghostty` terminfo entry.  This preamble is prepended to the
+/// remote command so that TUI programs (e.g. gdu-go, htop) work correctly.
+///
+/// Strategy:
+///   1. Skip entirely if the terminfo file already exists.
+///   2. Try `tic` (produces the platform-native binary format).
+///   3. Fall back to writing the pre-compiled binary into both `x/` (Linux)
+///      and `78/` (macOS hex) subdirectories of `~/.terminfo`.
+///
+/// The returned string is intended to be embedded inside a double-quoted SSH
+/// remote command.  Dollar signs are escaped as `\$` so they survive local
+/// shell expansion and are expanded by the **remote** shell.
+pub(crate) fn ssh_terminfo_preamble() -> String {
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let b64_src = engine.encode(GHOSTTY_TERMINFO_SOURCE);
+    let b64_bin = engine.encode(GHOSTTY_TERMINFO);
+
+    // Build the script piece-by-piece to keep escaping manageable.
+    // All `\$` sequences survive local shell double-quote expansion and
+    // arrive as `$` on the remote shell.
+    let mut s = String::with_capacity(b64_src.len() + b64_bin.len() + 512);
+    // Use -s (exists AND non-zero size) instead of -f so that a failed
+    // base64 decode that leaves an empty file doesn't permanently prevent
+    // retries on subsequent SSH sessions.
+    s.push_str(
+        "if [ ! -s \\$HOME/.terminfo/x/xterm-ghostty ] && \
+         [ ! -s \\$HOME/.terminfo/78/xterm-ghostty ]; then ",
+    );
+    // Try tic first (creates the correct binary format for the platform)
+    s.push_str(&format!(
+        "printf '%s' '{}' | base64 -d 2>/dev/null | \
+         tic -x -o \\$HOME/.terminfo - 2>/dev/null || ",
+        b64_src
+    ));
+    // Fallback: write the pre-compiled binary into both directory conventions
+    s.push_str("{ ");
+    s.push_str(
+        "mkdir -p \\$HOME/.terminfo/x \\$HOME/.terminfo/78 2>/dev/null; ",
+    );
+    s.push_str(&format!(
+        "printf '%s' '{}' | base64 -d > \\$HOME/.terminfo/x/xterm-ghostty 2>/dev/null; ",
+        b64_bin
+    ));
+    s.push_str(
+        "cp \\$HOME/.terminfo/x/xterm-ghostty \
+         \\$HOME/.terminfo/78/ 2>/dev/null; ",
+    );
+    s.push_str("}; fi");
+    s
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     #[serde(default)]

@@ -48,7 +48,8 @@ fn ssh_with_remote_cwd_includes_cd() {
 fn ssh_with_home_cwd_skips_cd() {
     let (shell, cwd) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~");
 
-    // When cwd is ~, no cd wrapper needed (but keepalive is still injected)
+    // When cwd is ~, use plain SSH (no remote command) to avoid breaking
+    // non-POSIX remote shells (fish, tcsh).
     assert_eq!(
         shell, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox",
         "should be ssh command with keepalive"
@@ -187,11 +188,30 @@ fn transformation_returns_different_values_than_originals() {
 fn full_command_format_is_correct() {
     let (shell, _) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~/work");
 
-    // ~/ prefix stays unquoted for tilde expansion; path component is single-quoted
-    assert_eq!(
-        shell,
-        r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox -t "cd ~/'work' && exec \$SHELL -l""#,
-        "full command format should match exactly"
+    // The command now includes a terminfo installation preamble before the cd.
+    // ~/ prefix stays unquoted for tilde expansion; path component is single-quoted.
+    assert!(
+        shell.starts_with(r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox -t ""#),
+        "full command format should start correctly, got: {}",
+        &shell[..shell.len().min(120)]
+    );
+    assert!(
+        shell.ends_with(r#"; cd ~/'work' && exec \$SHELL -l""#),
+        "full command format should end with cd and exec, got: {}",
+        &shell[shell.len().saturating_sub(80)..]
+    );
+    // Verify the terminfo preamble structure
+    assert!(
+        shell.contains("if [ ! -s \\$HOME/.terminfo/x/xterm-ghostty ]"),
+        "should contain terminfo existence check (using -s for non-zero size)"
+    );
+    assert!(
+        shell.contains("base64 -d"),
+        "should contain base64 decode step"
+    );
+    assert!(
+        shell.contains("tic -x"),
+        "should contain tic compilation step"
     );
 }
 
@@ -199,9 +219,14 @@ fn full_command_format_is_correct() {
 fn full_command_format_with_absolute_path() {
     let (shell, _) = resolve_ssh_command(Some("prod"), "ssh prod", "/var/app");
 
-    assert_eq!(
-        shell,
-        r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay prod -t "cd '/var/app' && exec \$SHELL -l""#,
+    assert!(
+        shell.starts_with(r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay prod -t ""#),
+        "should start with correct ssh command"
+    );
+    assert!(
+        shell.ends_with(r#"; cd '/var/app' && exec \$SHELL -l""#),
+        "should end with cd to absolute path and exec, got: {}",
+        &shell[shell.len().saturating_sub(80)..]
     );
 }
 
