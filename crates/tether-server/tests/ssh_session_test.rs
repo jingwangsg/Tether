@@ -48,11 +48,23 @@ fn ssh_with_remote_cwd_includes_cd() {
 fn ssh_with_home_cwd_skips_cd() {
     let (shell, cwd) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~");
 
-    // When cwd is ~, use plain SSH (no remote command) to avoid breaking
-    // non-POSIX remote shells (fish, tcsh).
-    assert_eq!(
-        shell, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox",
-        "should be ssh command with keepalive"
+    // When cwd is ~, no cd is needed but terminfo preamble + exec $SHELL -l are still injected.
+    assert!(
+        shell.starts_with("ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox -t"),
+        "should be ssh command with keepalive and -t, got: {}",
+        &shell[..shell.len().min(120)]
+    );
+    assert!(
+        !shell.contains("cd "),
+        "should not contain cd when cwd is ~"
+    );
+    assert!(
+        shell.contains("exec \\$SHELL -l"),
+        "should exec login shell"
+    );
+    assert!(
+        shell.contains("terminfo"),
+        "should contain terminfo setup preamble"
     );
     let home = shellexpand::tilde("~").to_string();
     assert_eq!(cwd, home);
@@ -62,9 +74,18 @@ fn ssh_with_home_cwd_skips_cd() {
 fn ssh_with_empty_cwd_skips_cd() {
     let (shell, cwd) = resolve_ssh_command(Some("devbox"), "ssh devbox", "");
 
-    assert_eq!(
-        shell, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox",
-        "empty cwd should skip cd"
+    assert!(
+        shell.starts_with("ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox -t"),
+        "empty cwd should use -t with terminfo preamble, got: {}",
+        &shell[..shell.len().min(120)]
+    );
+    assert!(
+        !shell.contains("cd "),
+        "should not contain cd when cwd is empty"
+    );
+    assert!(
+        shell.contains("exec \\$SHELL -l"),
+        "should exec login shell"
     );
     let home = shellexpand::tilde("~").to_string();
     assert_eq!(cwd, home);

@@ -61,11 +61,11 @@ pub fn resolve_ssh_command(ssh_host: Option<&str>, shell: &str, cwd: &str) -> (S
             "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay ",
             1,
         );
+        // Install xterm-ghostty terminfo on the remote before starting
+        // the shell.  SSH forwards TERM but not TERMINFO, so without
+        // this TUI apps that rely on terminfo (gdu, htop, etc.) fail.
+        let ti_preamble = ssh_terminfo_preamble();
         let ssh_cmd = if cwd != "~" && !cwd.is_empty() {
-            // Install xterm-ghostty terminfo on the remote before starting
-            // the shell.  SSH forwards TERM but not TERMINFO, so without
-            // this TUI apps that rely on terminfo (gdu, htop, etc.) fail.
-            let ti_preamble = ssh_terminfo_preamble();
             format!(
                 "{} -t \"{}; cd {} && exec \\$SHELL -l\"",
                 shell_with_keepalive,
@@ -73,10 +73,10 @@ pub fn resolve_ssh_command(ssh_host: Option<&str>, shell: &str, cwd: &str) -> (S
                 shell_quote(cwd)
             )
         } else {
-            // When cwd is ~ or empty, use plain SSH so sshd starts the
-            // user's login shell directly.  This avoids sending POSIX
-            // syntax that would break non-POSIX remote shells (fish, tcsh).
-            shell_with_keepalive
+            format!(
+                "{} -t \"{}; exec \\$SHELL -l\"",
+                shell_with_keepalive, ti_preamble
+            )
         };
         let local_cwd = shellexpand::tilde("~").to_string();
         (ssh_cmd, local_cwd)
