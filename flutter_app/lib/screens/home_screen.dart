@@ -15,6 +15,23 @@ class HomeScreen extends ConsumerStatefulWidget {
 
   const HomeScreen({super.key, required this.backend});
 
+  static String? fontZoomAction(LogicalKeyboardKey key) {
+    if (key == LogicalKeyboardKey.equal ||
+        key == LogicalKeyboardKey.add ||
+        key == LogicalKeyboardKey.numpadAdd) {
+      return 'increase_font_size:1';
+    }
+    if (key == LogicalKeyboardKey.minus ||
+        key == LogicalKeyboardKey.numpadSubtract) {
+      return 'decrease_font_size:1';
+    }
+    if (key == LogicalKeyboardKey.digit0 ||
+        key == LogicalKeyboardKey.numpad0) {
+      return 'reset_font_size';
+    }
+    return null;
+  }
+
   @override
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
@@ -75,14 +92,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   bool _handleGlobalKey(KeyEvent event) {
-    if (event is KeyDownEvent && HardwareKeyboard.instance.isMetaPressed) {
-      if (event.logicalKey == LogicalKeyboardKey.keyR &&
-          !_usesNativeRenameShortcut) {
-        _renameActiveSession();
-        return true;
+    if ((event is KeyDownEvent || event is KeyRepeatEvent) &&
+        HardwareKeyboard.instance.isMetaPressed) {
+      // Non-repeatable shortcuts: only on initial key down
+      if (event is KeyDownEvent) {
+        if (event.logicalKey == LogicalKeyboardKey.keyR &&
+            !_usesNativeRenameShortcut) {
+          _renameActiveSession();
+          return true;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.keyF) {
+          _terminalAreaKey.currentState?.showSearchForActiveSession();
+          return true;
+        }
       }
-      if (event.logicalKey == LogicalKeyboardKey.keyF) {
-        _terminalAreaKey.currentState?.showSearchForActiveSession();
+      // Font zoom: supports key repeat (hold to keep zooming)
+      final fontAction = HomeScreen.fontZoomAction(event.logicalKey);
+      if (fontAction != null) {
+        _terminalAreaKey.currentState?.performActionOnActiveSession(fontAction);
         return true;
       }
     }

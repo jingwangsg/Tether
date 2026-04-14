@@ -303,6 +303,12 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     _terminalControllers[activeId]?.showSearch();
   }
 
+  void performActionOnActiveSession(String action) {
+    final activeId = ref.read(sessionProvider).activeSessionId;
+    if (activeId == null) return;
+    _terminalControllers[activeId]?.performAction(action);
+  }
+
   Future<void> _handleClipboardImage({
     required String sessionId,
     required Uint8List data,
