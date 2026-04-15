@@ -397,11 +397,29 @@ final class TerminalView: NSView {
             guard let self else { return }
             switch self.scrollbarCoordinator.receive(state) {
             case .apply:
-                self.synchronizeScrollView()
+                if NSEvent.pressedMouseButtons & 1 != 0 {
+                    // During a left-button drag, only update document height
+                    // but do NOT scroll the NSScrollView. Ghostty manages
+                    // its own viewport scrolling during selection. Scrolling
+                    // the NSScrollView mid-drag moves the surfaceView, which
+                    // causes coordinate discontinuities in mouseDragged events.
+                    self.documentView.frame.size.height = Self.documentHeight(
+                        contentHeight: self.scrollView.contentSize.height,
+                        cellHeight: self.surfaceView.cellHeight,
+                        scrollbarState: self.scrollbarCoordinator.latestState
+                    )
+                } else {
+                    self.synchronizeScrollView()
+                }
             case .deferred:
                 self.scheduleDeferredScrollbarFlushIfNeeded()
             }
             self.updateIndicators()
+        }
+        surface.mouseDidReleaseHandler = { [weak self] in
+            guard let self else { return }
+            self.synchronizeScrollView(forceScrollOffset: true)
+            self.synchronizeSurfaceView()
         }
     }
 
@@ -904,6 +922,7 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     var eventSink: FlutterEventSink?
     var scrollbarHandler: ((TerminalScrollbarState?) -> Void)?
     var scrollbackInfoHandler: ((ScrollbackInfoState) -> Void)?
+    var mouseDidReleaseHandler: (() -> Void)?
 
     private var observers: [NSObjectProtocol] = []
     private var eventMonitor: Any?
@@ -1387,6 +1406,7 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
             modsFromEvent(event)
         )
         ghostty_surface_mouse_pressure(s, 0, 0)
+        mouseDidReleaseHandler?()
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
