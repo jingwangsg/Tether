@@ -6,7 +6,7 @@
 # Usage: ./scripts/build_libghostty.sh [--tag <tag>]
 set -euo pipefail
 
-GHOSTTY_TAG="${GHOSTTY_TAG:-v1.1.3}"
+GHOSTTY_TAG="${GHOSTTY_TAG:-v1.3.1}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/.ghostty_build"
 OUT_DIR="$REPO_ROOT/flutter_app/macos/Runner/ghostty"

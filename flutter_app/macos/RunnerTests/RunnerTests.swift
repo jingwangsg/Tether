@@ -631,6 +631,65 @@ class RunnerTests: XCTestCase {
     XCTAssertLessThan(terminalView.debugLoadedStartOffsetBytes, initialLoadedFrom)
   }
 
+  func testNativeTerminalResizePreservesSemanticLoadedOffsets() throws {
+    let harness = try TerminalLazyLoadingHarness()
+    defer { harness.cleanup() }
+
+    TerminalApp.shared.setup()
+    let sessionId = try harness.provisionSemanticPromptSession(named: "semantic-resize-session")
+    let terminalView: TerminalView = DispatchQueue.main.sync {
+      let terminalView = TerminalView(
+        sessionId: sessionId,
+        serverBaseUrl: "http://127.0.0.1:\(harness.port)",
+        authToken: nil,
+      )
+
+      let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
+        styleMask: [.titled, .closable, .resizable],
+        backing: .buffered,
+        defer: false,
+      )
+      window.contentView = terminalView
+      window.makeKeyAndOrderFront(nil)
+      terminalView.window?.displayIfNeeded()
+      return terminalView
+    }
+    defer {
+      DispatchQueue.main.sync {
+        terminalView.window?.orderOut(nil)
+        terminalView.window?.close()
+      }
+    }
+
+    let primaryScrollback = try harness.waitForEvent(named: "scrollback_info", timeout: 20) {
+      ($0["role"] as? String) == "primary"
+    }
+    let initialLoadedFrom = try XCTUnwrap(
+      TerminalLazyLoadingHarness.uint64(primaryScrollback, key: "loaded_from")
+    )
+    XCTAssertGreaterThan(initialLoadedFrom, 0)
+    let initialLoadedStartOffset = terminalView.debugLoadedStartOffsetBytes
+    let initialTotalScrollbackBytes = terminalView.debugTotalScrollbackBytes
+    XCTAssertEqual(initialLoadedStartOffset, initialLoadedFrom)
+    XCTAssertGreaterThan(initialTotalScrollbackBytes, 0)
+
+    DispatchQueue.main.sync {
+      guard let window = terminalView.window else { return }
+      let frame = window.frame
+      window.setFrame(
+        NSRect(x: frame.origin.x, y: frame.origin.y, width: 340, height: frame.height),
+        display: true
+      )
+      window.displayIfNeeded()
+      terminalView.layoutSubtreeIfNeeded()
+    }
+    RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+
+    XCTAssertEqual(terminalView.debugLoadedStartOffsetBytes, initialLoadedStartOffset)
+    XCTAssertEqual(terminalView.debugTotalScrollbackBytes, initialTotalScrollbackBytes)
+  }
+
 }
 
 private final class TerminalLazyLoadingHarness {
@@ -719,6 +778,68 @@ private final class TerminalLazyLoadingHarness {
 
     XCTFail("session did not become alive before timeout")
     throw HarnessFailure("session did not become alive before timeout")
+  }
+
+  func provisionSemanticPromptSession(named sessionName: String) throws -> String {
+    let scriptURL = tempRoot.appendingPathComponent("emit-semantic-history.sh")
+    let script = """
+    #!/bin/sh
+    printf '\\033]133;A;redraw=1\\007'
+    printf 'tether-codex> '
+    printf '\\033]133;B\\007'
+    printf 'plan a fix for wrapped codex overflow rendering that exceeds one terminal row and forces prompt redraw decisions in narrow windows'
+    printf '\\r\\n'
+    printf '\\033]133;C\\007'
+    i=0
+    while [ "$i" -lt 70000 ]; do
+      printf 'semantic-%06d output line for resize verification with enough repeated width to wrap in narrow windows and preserve history integrity across rebuilds................................\\n' "$i"
+      i=$((i + 1))
+    done
+    printf '\\033]133;D;0\\007'
+    while :; do
+      sleep 1
+    done
+    """
+    try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+    let groupResponse = try jsonResponse(
+      url: URL(string: "http://127.0.0.1:\(port)/api/groups")!,
+      method: "POST",
+      body: [
+        "name": "Runner Semantic Group",
+        "default_cwd": tempRoot.path,
+      ]
+    )
+    XCTAssertEqual(groupResponse.statusCode, 201)
+    let groupId = try XCTUnwrap(groupResponse.json["id"] as? String)
+
+    let sessionResponse = try jsonResponse(
+      url: URL(string: "http://127.0.0.1:\(port)/api/sessions")!,
+      method: "POST",
+      body: [
+        "group_id": groupId,
+        "name": sessionName,
+        "command": scriptURL.path,
+        "cwd": tempRoot.path,
+      ]
+    )
+    XCTAssertEqual(sessionResponse.statusCode, 201)
+    let sessionId = try XCTUnwrap(sessionResponse.json["id"] as? String)
+
+    let deadline = Date().addingTimeInterval(10)
+    while Date() < deadline {
+      let list = try jsonArrayResponse(url: URL(string: "http://127.0.0.1:\(port)/api/sessions")!)
+      if let row = list.first(where: { ($0["id"] as? String) == sessionId }),
+         let isAlive = row["is_alive"] as? Bool,
+         isAlive {
+        return sessionId
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    }
+
+    XCTFail("semantic session did not become alive before timeout")
+    throw HarnessFailure("semantic session did not become alive before timeout")
   }
 
   func waitForEvent(
@@ -810,6 +931,11 @@ private final class TerminalLazyLoadingHarness {
     build.currentDirectoryURL = repoRoot
     build.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     build.arguments = ["cargo", "build", "-p", binaryName]
+    var environment = ProcessInfo.processInfo.environment
+    let existingPath = environment["PATH"] ?? ""
+    let home = environment["HOME"] ?? NSHomeDirectory()
+    environment["PATH"] = "\(home)/.cargo/bin:/opt/homebrew/bin:\(existingPath)"
+    build.environment = environment
     try build.run()
     build.waitUntilExit()
     XCTAssertEqual(build.terminationStatus, 0)

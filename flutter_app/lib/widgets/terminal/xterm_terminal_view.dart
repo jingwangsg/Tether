@@ -13,6 +13,7 @@ import '../../providers/settings_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../services/websocket_service.dart';
 import 'mobile_key_bar.dart' show applyMobileModifiers;
+import 'semantic_prompt_state.dart';
 import 'selection_handles_overlay.dart';
 import 'terminal_controller.dart';
 
@@ -59,6 +60,7 @@ class XtermTerminalView extends ConsumerStatefulWidget {
   final void Function(String? title)? onTitleChanged;
   final ForegroundChangedCallback? onForegroundChanged;
   final WebSocketService Function(String Function() urlBuilder)? wsFactory;
+  final Future<Uint8List?> Function(int offset, int limit)? scrollbackFetcher;
 
   const XtermTerminalView({
     super.key,
@@ -69,6 +71,7 @@ class XtermTerminalView extends ConsumerStatefulWidget {
     this.onTitleChanged,
     this.onForegroundChanged,
     this.wsFactory,
+    this.scrollbackFetcher,
   });
 
   @override
@@ -111,8 +114,16 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
   int totalScrollbackBytes = 0;
   final List<Uint8List> _rawBytesCache = [];
   int _rawBytesCacheSize = 0;
+  bool _hasTruncatedRawBytesCache = false;
   static const _maxCacheSize = 5 * 1024 * 1024; // 5MB
   int _currentMaxLines = 10000;
+  final TerminalSemanticPromptState _semanticPromptState =
+      TerminalSemanticPromptState();
+  Timer? _semanticResizeRebuildTimer;
+  bool _isRebuildingSemanticResize = false;
+  bool _needsFollowupSemanticResize = false;
+  int _semanticResizeRebuildCount = 0;
+  Size? _lastViewportSize;
 
   // Prefetch state
   bool _isPrefetching = false;
@@ -149,21 +160,219 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     _scrollController = ScrollController();
     _scrollController.addListener(_onScrollChanged);
     _terminalController = xterm.TerminalController();
-    _terminal = xterm.Terminal(
-      maxLines: 10000,
-      wordSeparators: terminalWordSeparators,
-    );
-    _terminal.onOutput = _onTerminalInput;
-    _terminal.onTitleChange = (title) {
-      widget.onTitleChanged?.call(title);
-    };
-    _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
-      _ws?.sendResize(width, height);
-    };
+    _terminal = _createTerminal(maxLines: 10000);
     _bindDecoderPipeline();
     HardwareKeyboard.instance.addHandler(_handleSearchKey);
     _connect();
     _syncEffectiveActiveState(forceRelayoutOnResume: false);
+  }
+
+  xterm.Terminal _createTerminal({required int maxLines}) {
+    final terminal = xterm.Terminal(
+      maxLines: maxLines,
+      wordSeparators: terminalWordSeparators,
+    );
+    _configureTerminal(terminal);
+    return terminal;
+  }
+
+  void _configureTerminal(xterm.Terminal terminal) {
+    terminal.onOutput = _onTerminalInput;
+    terminal.onTitleChange = (title) {
+      widget.onTitleChanged?.call(title);
+    };
+    terminal.onPrivateOSC =
+        (code, args) => _handlePrivateOsc(terminal, code, args);
+    if (_semanticPromptState.shouldUseResizeRecovery) {
+      terminal.reflowEnabled = false;
+    }
+    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      _ws?.sendResize(width, height);
+      if (_semanticPromptState.shouldUseResizeRecovery &&
+          !_isRebuildingSemanticResize) {
+        _scheduleSemanticResizeRebuild();
+      }
+    };
+  }
+
+  void _handlePrivateOsc(
+    xterm.Terminal terminal,
+    String code,
+    List<String> args,
+  ) {
+    final changed = _semanticPromptState.handlePrivateOsc(code, args);
+    if (!changed) return;
+    terminal.reflowEnabled = !_semanticPromptState.shouldUseResizeRecovery;
+  }
+
+  void _scheduleSemanticResizeRebuild() {
+    if (_isRebuildingSemanticResize) {
+      _needsFollowupSemanticResize = true;
+      return;
+    }
+    _semanticResizeRebuildTimer?.cancel();
+    _semanticResizeRebuildTimer = Timer(const Duration(milliseconds: 16), () {
+      unawaited(_rebuildTerminalFromCache());
+    });
+  }
+
+  void _handleViewportSizeChange(Size nextSize) {
+    final previousSize = _lastViewportSize;
+    _lastViewportSize = nextSize;
+    if (previousSize == null ||
+        previousSize == nextSize ||
+        !_semanticPromptState.shouldUseResizeRecovery ||
+        _isRebuildingSemanticResize) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _scheduleSemanticResizeRebuild();
+    });
+  }
+
+  Future<List<Uint8List>?> _semanticResizeReplayChunks() async {
+    if (!_hasTruncatedRawBytesCache && _rawBytesCacheSize >= _ackedOffset) {
+      return List<Uint8List>.from(_rawBytesCache);
+    }
+
+    if (widget.scrollbackFetcher != null) {
+      final data = await widget.scrollbackFetcher!(_loadedStartOffset, _ackedOffset);
+      return data == null ? null : <Uint8List>[data];
+    }
+
+    final serverState = ref.read(serverProvider);
+    if (!serverState.isConnected || serverState.config == null) {
+      return null;
+    }
+
+    if (_ackedOffset <= 0) {
+      return null;
+    }
+
+    final config = serverState.config!;
+    final uri = Uri.parse(
+      '${config.baseUrl}/api/sessions/${widget.sessionId}/scrollback'
+      '?offset=$_loadedStartOffset&limit=$_ackedOffset',
+    );
+    final headers = <String, String>{};
+    if (config.token != null && config.token!.isNotEmpty) {
+      headers['Authorization'] = 'Bearer ${config.token}';
+    }
+
+    final response = await http.get(uri, headers: headers);
+    if (response.statusCode != 200) {
+      return null;
+    }
+
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
+    return <Uint8List>[base64Decode(json['data'] as String)];
+  }
+
+  Future<void> _rebuildTerminalFromCache() async {
+    if (!mounted ||
+        _isRebuildingSemanticResize ||
+        !_semanticPromptState.shouldUseResizeRecovery) {
+      return;
+    }
+    _isRebuildingSemanticResize = true;
+    _semanticResizeRebuildCount += 1;
+    _isPaused = true;
+    _writeScheduled = false;
+
+    if (_writeQueue.isNotEmpty) {
+      int totalLen = 0;
+      for (final chunk in _writeQueue) {
+        totalLen += chunk.length;
+      }
+      final merged = Uint8List(totalLen);
+      int offset = 0;
+      for (final chunk in _writeQueue) {
+        merged.setRange(offset, offset + chunk.length, chunk);
+        offset += chunk.length;
+      }
+      _writeQueue.clear();
+      _bytesInput.add(merged);
+    }
+
+    try {
+      final replayChunks = await _semanticResizeReplayChunks();
+      if (!mounted || replayChunks == null) {
+        _finishSemanticResizeRebuild();
+        return;
+      }
+
+      final oldScrollBack = _terminal.buffer.scrollBack;
+      double scrollRatio = 0.0;
+      if (_scrollController.hasClients && oldScrollBack > 0) {
+        final maxExtent = _scrollController.position.maxScrollExtent;
+        if (maxExtent > 0) {
+          scrollRatio = _scrollController.position.pixels / maxExtent;
+        }
+      }
+
+      _terminalController.clearSelection();
+      _disposeAllSearchHighlights();
+      _searchMatches.clear();
+      if (_searchOpen) {
+        _searchController.clear();
+        _currentMatchIndex = -1;
+      }
+
+      _decoderSub?.cancel();
+      _bytesInput.close();
+      _bytesInput = StreamController<List<int>>(sync: true);
+
+      final rebuiltTerminal = _createTerminal(maxLines: _currentMaxLines);
+      final replayDecoder = StreamController<List<int>>(sync: true);
+      replayDecoder.stream
+          .transform(const Utf8Decoder(allowMalformed: true))
+          .listen((text) => rebuiltTerminal.write(text));
+      for (final chunk in replayChunks) {
+        replayDecoder.add(chunk);
+      }
+      replayDecoder.close();
+
+      _terminal = rebuiltTerminal;
+      _bindDecoderPipeline();
+      if (mounted) {
+        setState(() {});
+      }
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _scrollController.hasClients) {
+          final maxExtent = _scrollController.position.maxScrollExtent;
+          final newScrollBack = _terminal.buffer.scrollBack;
+          if (maxExtent > 0 && newScrollBack > 0 && oldScrollBack > 0) {
+            final oldAbsoluteLine = (scrollRatio * oldScrollBack).round();
+            final lineHeight = maxExtent / newScrollBack;
+            final offset = (oldAbsoluteLine * lineHeight).clamp(0.0, maxExtent);
+            _scrollController.jumpTo(offset);
+          }
+        }
+        _finishSemanticResizeRebuild();
+      });
+    } catch (_) {
+      _finishSemanticResizeRebuild();
+    }
+  }
+
+  void _finishSemanticResizeRebuild() {
+    _isPaused = false;
+    if (_pauseBuffer.isNotEmpty) {
+      for (final chunk in _pauseBuffer) {
+        _writeQueue.add(chunk);
+      }
+      _pauseBuffer.clear();
+      _scheduleFlush();
+    }
+    final shouldReplayAgain = _needsFollowupSemanticResize;
+    _needsFollowupSemanticResize = false;
+    _isRebuildingSemanticResize = false;
+    _ws?.sendResume();
+    if (shouldReplayAgain) {
+      _scheduleSemanticResizeRebuild();
+    }
   }
 
   bool _handleSearchKey(KeyEvent event) {
@@ -635,10 +844,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
 
       // Build background terminal with all data (prefetched + cached)
       _currentMaxLines += 5000;
-      final bgTerminal = xterm.Terminal(
-        maxLines: _currentMaxLines,
-        wordSeparators: terminalWordSeparators,
-      );
+      final bgTerminal = _createTerminal(maxLines: _currentMaxLines);
 
       // Process prefetched (older) bytes through a fresh decoder
       final bgDecoder = StreamController<List<int>>(sync: true);
@@ -741,13 +947,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
 
     // 6. Swap terminal
     _terminal = newTerminal;
-    _terminal.onOutput = _onTerminalInput;
-    _terminal.onTitleChange = (title) {
-      widget.onTitleChanged?.call(title);
-    };
-    _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
-      _ws?.sendResize(width, height);
-    };
+    _configureTerminal(_terminal);
 
     // 7. Bind decoder to new terminal
     _bindDecoderPipeline();
@@ -801,7 +1001,13 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
         _pauseBuffer.clear();
         _scheduleFlush();
       }
+      final shouldReplayAgain = _needsFollowupSemanticResize;
+      _needsFollowupSemanticResize = false;
+      _isRebuildingSemanticResize = false;
       _ws?.sendResume();
+      if (shouldReplayAgain) {
+        _scheduleSemanticResizeRebuild();
+      }
     });
   }
 
@@ -812,6 +1018,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     while (_rawBytesCacheSize > _maxCacheSize && _rawBytesCache.isNotEmpty) {
       final removed = _rawBytesCache.removeAt(0);
       _rawBytesCacheSize -= removed.length;
+      _hasTruncatedRawBytesCache = true;
     }
   }
 
@@ -979,6 +1186,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     _searchFocusNode.dispose();
     _foregroundDebounce?.cancel();
     _replayFlushTimer?.cancel();
+    _semanticResizeRebuildTimer?.cancel();
     _msgSub?.cancel();
     _ws?.dispose();
     _decoderSub?.cancel();
@@ -1025,9 +1233,11 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
 
     final showTopIndicator = _loadedStartOffset > 0 || _isPrefetching;
 
-    if (!_searchOpen && !showTopIndicator) return terminalWidget;
-
-    return Stack(
+    Widget content;
+    if (!_searchOpen && !showTopIndicator) {
+      content = terminalWidget;
+    } else {
+      content = Stack(
       children: [
         terminalWidget,
         if (_searchOpen) Positioned(top: 8, right: 8, child: _buildSearchBar()),
@@ -1054,6 +1264,16 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
             ),
           ),
       ],
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _handleViewportSizeChange(
+          Size(constraints.maxWidth, constraints.maxHeight),
+        );
+        return content;
+      },
     );
   }
 
@@ -1129,5 +1349,34 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
         onPressed: onPressed,
       ),
     );
+  }
+
+  @visibleForTesting
+  bool get semanticPromptSeen => _semanticPromptState.hasSeenSemanticPrompt;
+
+  @visibleForTesting
+  bool get terminalReflowEnabled => _terminal.reflowEnabled;
+
+  @visibleForTesting
+  int get semanticResizeRebuildCount => _semanticResizeRebuildCount;
+
+  @visibleForTesting
+  void debugTriggerSemanticResizeRebuild() {
+    _scheduleSemanticResizeRebuild();
+  }
+
+  @visibleForTesting
+  void debugMarkReplayCacheTruncated() {
+    _hasTruncatedRawBytesCache = true;
+  }
+
+  @visibleForTesting
+  String get debugTerminalText {
+    final buffer = _terminal.buffer;
+    final lines = <String>[];
+    for (int i = 0; i < buffer.lines.length; i++) {
+      lines.add(buffer.lines[i].getText());
+    }
+    return lines.join('\n');
   }
 }

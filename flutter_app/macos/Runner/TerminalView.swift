@@ -1,6 +1,13 @@
 import AppKit
 import FlutterMacOS
 
+private func readProcessEnvironmentValue(_ key: String) -> String? {
+    if let raw = getenv(key) {
+        return String(cString: raw)
+    }
+    return ProcessInfo.processInfo.environment[key]
+}
+
 struct TerminalScrollbarState: Equatable {
     let total: UInt64
     let offset: UInt64
@@ -72,7 +79,7 @@ final class TerminalTestLogger {
 
     init(sessionId: String) {
         self.sessionId = sessionId
-        if let rawPath = ProcessInfo.processInfo.environment["TETHER_TERMINAL_TEST_LOG_PATH"],
+        if let rawPath = readProcessEnvironmentValue("TETHER_TERMINAL_TEST_LOG_PATH"),
            !rawPath.isEmpty {
             self.fileURL = URL(fileURLWithPath: rawPath)
             if let parent = self.fileURL?.deletingLastPathComponent() {
@@ -179,9 +186,9 @@ final class TerminalView: NSView {
         self.loadingLabel = NSTextField(labelWithString: "Loading more history…")
         self.testLogger = TerminalTestLogger(sessionId: sessionId)
         self.exposesDebugAccessibilityState =
-            ProcessInfo.processInfo.environment["TETHER_TERMINAL_TEST_MODE"] == "1"
+            readProcessEnvironmentValue("TETHER_TERMINAL_TEST_MODE") == "1"
         self.prefetchReadyDelay =
-            (Double(ProcessInfo.processInfo.environment["TETHER_TERMINAL_TEST_PREFETCH_DELAY_MS"] ?? "") ?? 0) / 1000
+            (Double(readProcessEnvironmentValue("TETHER_TERMINAL_TEST_PREFETCH_DELAY_MS") ?? "") ?? 0) / 1000
         self.testPrefetchTriggerRatioOverride =
             Self.readCGFloatEnv("TETHER_TERMINAL_TEST_PREFETCH_TRIGGER_RATIO")
         self.testTopTriggerRatioOverride =
@@ -717,7 +724,7 @@ final class TerminalView: NSView {
     }
 
     private static func readCGFloatEnv(_ key: String) -> CGFloat? {
-        guard let raw = ProcessInfo.processInfo.environment[key],
+        guard let raw = readProcessEnvironmentValue(key),
               let value = Double(raw) else {
             return nil
         }
@@ -1128,9 +1135,8 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     }
 
     private func resolveTetherClientPath() -> String? {
-        let env = ProcessInfo.processInfo.environment
         var candidates: [String] = []
-        if let envPath = env["TETHER_CLIENT_PATH"], !envPath.isEmpty {
+        if let envPath = readProcessEnvironmentValue("TETHER_CLIENT_PATH"), !envPath.isEmpty {
             candidates.append(envPath)
         }
         candidates.append(
