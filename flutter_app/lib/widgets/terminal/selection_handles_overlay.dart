@@ -1,9 +1,58 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 // ignore: implementation_imports
 import 'package:xterm/src/ui/render.dart' show RenderTerminal;
 import 'package:xterm/xterm.dart' as xterm;
+
+/// State machine for detecting long-press-drag on touch and deciding
+/// when to override xterm's word-level selection with character-level.
+class LongPressDragTracker {
+  bool touchDown = false;
+  DateTime? touchDownTime;
+  Offset? lastTouchGlobalPos;
+  bool longPressDragActive = false;
+  bool handleDragging = false;
+
+  /// Minimum hold duration to distinguish long press from double tap.
+  static const holdThreshold = Duration(milliseconds: 400);
+
+  void onPointerDown(Offset globalPos) {
+    touchDown = true;
+    touchDownTime = DateTime.now();
+    lastTouchGlobalPos = globalPos;
+    longPressDragActive = false;
+  }
+
+  void onPointerMove(Offset globalPos) {
+    lastTouchGlobalPos = globalPos;
+  }
+
+  void onPointerUpOrCancel() {
+    touchDown = false;
+    longPressDragActive = false;
+    touchDownTime = null;
+  }
+
+  /// Called when a selection change is detected on the terminal controller.
+  /// Returns true if the selection should be overridden with character-level.
+  bool onSelectionChanged({required bool hasSelection}) {
+    if (handleDragging || !touchDown || !hasSelection) return false;
+
+    if (!longPressDragActive) {
+      final held = touchDownTime != null
+          ? DateTime.now().difference(touchDownTime!)
+          : Duration.zero;
+      if (held >= holdThreshold) {
+        longPressDragActive = true;
+      }
+      return false;
+    }
+
+    return lastTouchGlobalPos != null;
+  }
+}
 
 /// Android-style draggable selection handles overlay for the terminal.
 ///
@@ -37,6 +86,9 @@ class SelectionHandlesOverlay extends StatefulWidget {
 
 class _SelectionHandlesOverlayState extends State<SelectionHandlesOverlay> {
   bool _isDragging = false;
+  final LongPressDragTracker _dragTracker = LongPressDragTracker();
+  bool _overridingSelection = false;
+  Offset? _longPressAnchorLocal;
 
   @override
   void initState() {
@@ -66,8 +118,44 @@ class _SelectionHandlesOverlayState extends State<SelectionHandlesOverlay> {
   }
 
   void _onSelectionChanged() {
-    // Rebuild to update handle positions or show/hide the overlay.
-    if (mounted) setState(() {});
+    if (!mounted) return;
+
+    // If we ourselves just set a character-level selection, don't recurse.
+    if (_overridingSelection) {
+      _overridingSelection = false;
+      setState(() {});
+      return;
+    }
+
+    final hasSelection = widget.terminalController.selection != null;
+    final shouldOverride =
+        _dragTracker.onSelectionChanged(hasSelection: hasSelection);
+
+    if (shouldOverride) {
+      final rt = _getRenderTerminal();
+      if (rt != null && _dragTracker.lastTouchGlobalPos != null) {
+        // Record the anchor on first activation.
+        _longPressAnchorLocal ??=
+            rt.globalToLocal(_dragTracker.lastTouchGlobalPos!);
+
+        final touchLocal =
+            rt.globalToLocal(_dragTracker.lastTouchGlobalPos!);
+        _overridingSelection = true;
+        rt.selectCharacters(_longPressAnchorLocal!, touchLocal);
+        return; // setState will happen on the re-entrant call.
+      }
+    }
+
+    // Record anchor position when long press drag first activates.
+    if (_dragTracker.longPressDragActive && _longPressAnchorLocal == null) {
+      final rt = _getRenderTerminal();
+      if (rt != null && _dragTracker.lastTouchGlobalPos != null) {
+        _longPressAnchorLocal =
+            rt.globalToLocal(_dragTracker.lastTouchGlobalPos!);
+      }
+    }
+
+    setState(() {});
   }
 
   void _onScrollChanged() {
@@ -89,10 +177,12 @@ class _SelectionHandlesOverlayState extends State<SelectionHandlesOverlay> {
   }
 
   void _onHandleDragStart() {
+    _dragTracker.handleDragging = true;
     setState(() => _isDragging = true);
   }
 
   void _onHandleDragEnd() {
+    _dragTracker.handleDragging = false;
     setState(() => _isDragging = false);
   }
 
@@ -133,18 +223,47 @@ class _SelectionHandlesOverlayState extends State<SelectionHandlesOverlay> {
     widget.terminalController.setSelection(newBase, newExtent);
   }
 
+  Widget _buildListenerChild() {
+    return Listener(
+      onPointerDown: (event) {
+        if (event.kind == PointerDeviceKind.touch) {
+          _dragTracker.onPointerDown(event.position);
+          _longPressAnchorLocal = null;
+        }
+      },
+      onPointerMove: (event) {
+        if (event.kind == PointerDeviceKind.touch) {
+          _dragTracker.onPointerMove(event.position);
+        }
+      },
+      onPointerUp: (event) {
+        if (event.kind == PointerDeviceKind.touch) {
+          _dragTracker.onPointerUpOrCancel();
+          _longPressAnchorLocal = null;
+        }
+      },
+      onPointerCancel: (event) {
+        if (event.kind == PointerDeviceKind.touch) {
+          _dragTracker.onPointerUpOrCancel();
+          _longPressAnchorLocal = null;
+        }
+      },
+      child: widget.child,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final selection = widget.terminalController.selection;
     if (selection == null) {
-      return widget.child;
+      return _buildListenerChild();
     }
 
     // Defer coordinate reading to after layout.
     return Stack(
       clipBehavior: Clip.none,
       children: [
-        widget.child,
+        _buildListenerChild(),
         _SelectionHandlesLayer(
           selection: selection,
           getRenderTerminal: _getRenderTerminal,
