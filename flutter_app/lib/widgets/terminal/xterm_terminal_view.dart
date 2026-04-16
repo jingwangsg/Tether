@@ -16,6 +16,39 @@ import 'mobile_key_bar.dart' show applyMobileModifiers;
 import 'selection_handles_overlay.dart';
 import 'terminal_controller.dart';
 
+/// Expanded word separators for terminal output. Includes all xterm defaults
+/// plus common code/terminal delimiters so double-tap / long-press word
+/// selection produces smaller, more useful ranges in dense output.
+const terminalWordSeparators = <int>{
+  0,
+  // xterm defaults
+  0x20, // ' '
+  0x2E, // '.'
+  0x3A, // ':'
+  0x2D, // '-'
+  0x5C, // '\'
+  0x22, // '"'
+  0x2A, // '*'
+  0x2B, // '+'
+  0x2F, // '/'
+  // Additional terminal/code delimiters
+  0x7C, // '|'
+  0x28, // '('
+  0x29, // ')'
+  0x5B, // '['
+  0x5D, // ']'
+  0x7B, // '{'
+  0x7D, // '}'
+  0x3C, // '<'
+  0x3E, // '>'
+  0x3D, // '='
+  0x2C, // ','
+  0x3B, // ';'
+  0x60, // '`'
+  0x27, // "'"
+  0x09, // tab
+};
+
 /// Terminal widget that connects to a server-managed PTY via WebSocket.
 /// Uses xterm.dart for terminal emulation and rendering.
 class XtermTerminalView extends ConsumerStatefulWidget {
@@ -116,7 +149,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     _scrollController = ScrollController();
     _scrollController.addListener(_onScrollChanged);
     _terminalController = xterm.TerminalController();
-    _terminal = xterm.Terminal(maxLines: 10000);
+    _terminal = xterm.Terminal(
+      maxLines: 10000,
+      wordSeparators: terminalWordSeparators,
+    );
     _terminal.onOutput = _onTerminalInput;
     _terminal.onTitleChange = (title) {
       widget.onTitleChanged?.call(title);
@@ -599,7 +635,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
 
       // Build background terminal with all data (prefetched + cached)
       _currentMaxLines += 5000;
-      final bgTerminal = xterm.Terminal(maxLines: _currentMaxLines);
+      final bgTerminal = xterm.Terminal(
+        maxLines: _currentMaxLines,
+        wordSeparators: terminalWordSeparators,
+      );
 
       // Process prefetched (older) bytes through a fresh decoder
       final bgDecoder = StreamController<List<int>>(sync: true);

@@ -1,7 +1,33 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tether/widgets/terminal/selection_handles_overlay.dart';
+import 'package:tether/widgets/terminal/xterm_terminal_view.dart';
 
 void main() {
+  group('terminalWordSeparators', () {
+    test('contains essential terminal delimiters', () {
+      expect(terminalWordSeparators.contains('|'.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains('('.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains(')'.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains('['.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains(']'.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains('='.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains(','.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains(';'.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains('{'.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains('}'.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains('<'.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains('>'.codeUnitAt(0)), isTrue);
+    });
+
+    test('preserves xterm default separators', () {
+      expect(terminalWordSeparators.contains(0), isTrue);
+      expect(terminalWordSeparators.contains(' '.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains('.'.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains(':'.codeUnitAt(0)), isTrue);
+      expect(terminalWordSeparators.contains('-'.codeUnitAt(0)), isTrue);
+    });
+  });
+
   group('LongPressDragTracker', () {
     late LongPressDragTracker tracker;
 
