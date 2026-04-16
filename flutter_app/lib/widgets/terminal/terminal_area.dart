@@ -36,6 +36,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
   // OSC title per session — used for tab display only, NOT persisted to server.
   // The stored session.name stays as session-<hash> unless the user renames it.
   final Map<String, String> _sessionTitles = {};
+  final ValueNotifier<int> _titleRevision = ValueNotifier<int>(0);
 
   @override
   void initState() {
@@ -94,6 +95,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
 
   @override
   void dispose() {
+    _titleRevision.dispose();
     _pasteService.dispose();
     _volumeKeys.dispose();
     super.dispose();
@@ -146,6 +148,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                 openTabs: openTabs,
                 activeId: activeId,
                 sessionTitles: _sessionTitles,
+                titleRevision: _titleRevision,
               ),
             Expanded(
               child: ClipRect(
@@ -201,10 +204,13 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                                     .trim();
                             if (clean.isEmpty) return;
 
-                            // Store locally for tab display when no process is active
-                            setState(() {
+                            // Store locally for tab display when no process is active.
+                            // Update map directly and bump revision to rebuild
+                            // only the tab bar, not the entire TerminalArea.
+                            if (_sessionTitles[tab.sessionId] != clean) {
                               _sessionTitles[tab.sessionId] = clean;
-                            });
+                              _titleRevision.value++;
+                            }
                           },
                           onForegroundChanged:
                               (
@@ -407,19 +413,51 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
   }
 }
 
-class _TerminalTabBar extends ConsumerWidget {
+class _TerminalTabBar extends ConsumerStatefulWidget {
   final List<OpenTab> openTabs;
   final String? activeId;
   final Map<String, String> sessionTitles;
+  final ValueNotifier<int> titleRevision;
 
   const _TerminalTabBar({
     required this.openTabs,
     required this.activeId,
     required this.sessionTitles,
+    required this.titleRevision,
   });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_TerminalTabBar> createState() => _TerminalTabBarState();
+}
+
+class _TerminalTabBarState extends ConsumerState<_TerminalTabBar> {
+  @override
+  void initState() {
+    super.initState();
+    widget.titleRevision.addListener(_onTitleRevision);
+  }
+
+  @override
+  void didUpdateWidget(covariant _TerminalTabBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.titleRevision, widget.titleRevision)) {
+      oldWidget.titleRevision.removeListener(_onTitleRevision);
+      widget.titleRevision.addListener(_onTitleRevision);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.titleRevision.removeListener(_onTitleRevision);
+    super.dispose();
+  }
+
+  void _onTitleRevision() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final sessions = ref.watch(serverProvider.select((s) => s.sessions));
 
     return Container(
@@ -441,10 +479,10 @@ class _TerminalTabBar extends ConsumerWidget {
               child: child,
             );
           },
-          itemCount: openTabs.length,
+          itemCount: widget.openTabs.length,
           itemBuilder: (context, index) {
-            final tab = openTabs[index];
-            final isActive = tab.sessionId == activeId;
+            final tab = widget.openTabs[index];
+            final isActive = tab.sessionId == widget.activeId;
             final session =
                 sessions.where((s) => s.id == tab.sessionId).firstOrNull;
 
@@ -453,7 +491,7 @@ class _TerminalTabBar extends ConsumerWidget {
             }
 
             final display = getDisplayInfo(session, sessions);
-            final oscTitle = sessionTitles[tab.sessionId];
+            final oscTitle = widget.sessionTitles[tab.sessionId];
             final hasProcess = session.foregroundProcess != null;
             // When a process (claude/codex) is active: getDisplayInfo() already shows the right name+icon.
             // When no process: use OSC title (directory) or session-<hash> as fallback.

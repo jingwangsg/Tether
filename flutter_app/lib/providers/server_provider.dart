@@ -192,12 +192,23 @@ class ServerNotifier extends StateNotifier<ServerState> {
             return merged;
           }).toList();
 
+      final newGroups = results[0] as List<Group>;
+      final newSshHosts = results[2] as List<SshHost>;
+
+      // Skip state update if nothing meaningful changed — avoids
+      // unnecessary Riverpod notifications and cascading widget rebuilds.
+      if (_sessionsEffectivelyEqual(refreshed, state.sessions) &&
+          _groupsEqual(newGroups, state.groups) &&
+          _sshHostsEqual(newSshHosts, state.sshHosts)) {
+        return;
+      }
+
       _replaceState(
-        groups: results[0] as List<Group>,
+        groups: newGroups,
         groupsStructureChanged: true,
         sessions: refreshed,
         sessionsStructureChanged: true,
-        sshHosts: results[2] as List<SshHost>,
+        sshHosts: newSshHosts,
       );
       TestEventLogger.instance.log('sessions_refreshed', {
         'group_count': (results[0] as List<Group>).length,
@@ -341,6 +352,22 @@ class ServerNotifier extends StateNotifier<ServerState> {
     int? attentionSeq,
     int? attentionAckSeq,
   }) {
+    // Early return if nothing has actually changed — avoids unnecessary
+    // provider notifications that cascade into widget rebuilds.
+    final current = state.sessions.where((s) => s.id == sessionId).firstOrNull;
+    if (current != null) {
+      final newFg = process;
+      final newOsc = process == null ? null : (oscTitle ?? current.oscTitle);
+      final newAttnSeq = attentionSeq ?? current.attentionSeq;
+      final newAttnAckSeq = attentionAckSeq ?? current.attentionAckSeq;
+      if (current.foregroundProcess == newFg &&
+          current.oscTitle == newOsc &&
+          current.attentionSeq == newAttnSeq &&
+          current.attentionAckSeq == newAttnAckSeq) {
+        return;
+      }
+    }
+
     final sessions =
         state.sessions.map((s) {
           if (s.id == sessionId) {
@@ -506,6 +533,64 @@ final serverProvider = StateNotifierProvider<ServerNotifier, ServerState>((
 ) {
   return ServerNotifier();
 });
+
+/// Compares sessions by fields that affect UI rendering.
+/// Excludes [Session.lastActive] since it updates on every interaction
+/// but is not rendered in the main UI — including it would defeat the
+/// purpose of skipping no-op refreshes.
+bool _sessionsEffectivelyEqual(List<Session> a, List<Session> b) {
+  if (a.length != b.length) return false;
+  for (int i = 0; i < a.length; i++) {
+    final sa = a[i], sb = b[i];
+    if (sa.id != sb.id ||
+        sa.groupId != sb.groupId ||
+        sa.name != sb.name ||
+        sa.shell != sb.shell ||
+        sa.cols != sb.cols ||
+        sa.rows != sb.rows ||
+        sa.cwd != sb.cwd ||
+        sa.isAlive != sb.isAlive ||
+        sa.sortOrder != sb.sortOrder ||
+        sa.foregroundProcess != sb.foregroundProcess ||
+        sa.oscTitle != sb.oscTitle ||
+        sa.attentionSeq != sb.attentionSeq ||
+        sa.attentionAckSeq != sb.attentionAckSeq) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool _groupsEqual(List<Group> a, List<Group> b) {
+  if (a.length != b.length) return false;
+  for (int i = 0; i < a.length; i++) {
+    final ga = a[i], gb = b[i];
+    if (ga.id != gb.id ||
+        ga.name != gb.name ||
+        ga.parentId != gb.parentId ||
+        ga.sortOrder != gb.sortOrder ||
+        ga.defaultCwd != gb.defaultCwd ||
+        ga.sshHost != gb.sshHost) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool _sshHostsEqual(List<SshHost> a, List<SshHost> b) {
+  if (a.length != b.length) return false;
+  for (int i = 0; i < a.length; i++) {
+    final ha = a[i], hb = b[i];
+    if (ha.host != hb.host ||
+        ha.hostname != hb.hostname ||
+        ha.user != hb.user ||
+        ha.port != hb.port ||
+        ha.reachable != hb.reachable) {
+      return false;
+    }
+  }
+  return true;
+}
 
 List<Group> _applyGroupReorder(
   List<Group> groups,

@@ -119,6 +119,10 @@ class _SessionStatusDotState extends State<SessionStatusDot>
       );
     }
 
+    // Isolate animation repaints so they don't propagate up through the
+    // tab bar and TerminalArea render tree.
+    child = RepaintBoundary(child: child);
+
     if (widget.semanticIdentifier == null) {
       return child;
     }

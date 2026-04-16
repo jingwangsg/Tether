@@ -89,6 +89,7 @@ class _SelectionHandlesOverlayState extends State<SelectionHandlesOverlay> {
   final LongPressDragTracker _dragTracker = LongPressDragTracker();
   bool _overridingSelection = false;
   Offset? _longPressAnchorLocal;
+  bool _scrollUpdateScheduled = false;
 
   @override
   void initState() {
@@ -159,10 +160,17 @@ class _SelectionHandlesOverlayState extends State<SelectionHandlesOverlay> {
   }
 
   void _onScrollChanged() {
-    // Reposition handles when the terminal scrolls.
-    if (mounted && widget.terminalController.selection != null) {
-      setState(() {});
-    }
+    // Coalesce rapid scroll events into a single post-frame rebuild
+    // to avoid multiple setStates per frame during fling scrolling.
+    if (!mounted || widget.terminalController.selection == null) return;
+    if (_scrollUpdateScheduled) return;
+    _scrollUpdateScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollUpdateScheduled = false;
+      if (mounted && widget.terminalController.selection != null) {
+        setState(() {});
+      }
+    });
   }
 
   RenderTerminal? _getRenderTerminal() {
