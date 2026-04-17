@@ -123,7 +123,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
   bool _isRebuildingSemanticResize = false;
   bool _needsFollowupSemanticResize = false;
   int _semanticResizeRebuildCount = 0;
-  Size? _lastViewportSize;
+  int? _lastKnownCols;
 
   // Prefetch state
   bool _isPrefetching = false;
@@ -188,10 +188,19 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     }
     terminal.onResize = (width, height, pixelWidth, pixelHeight) {
       _ws?.sendResize(width, height);
-      if (_semanticPromptState.shouldUseResizeRecovery &&
-          !_isRebuildingSemanticResize) {
-        _scheduleSemanticResizeRebuild();
+      final previousCols = _lastKnownCols;
+      _lastKnownCols = width;
+      // Only rebuild when char column count changes. Row-only changes (e.g.
+      // Android soft keyboard show/hide) do not re-wrap content, so skipping
+      // the rebuild avoids a cascade of expensive replays on every keyboard
+      // toggle while Claude Code / Codex are running.
+      if (!_semanticPromptState.shouldUseResizeRecovery ||
+          _isRebuildingSemanticResize ||
+          previousCols == null ||
+          previousCols == width) {
+        return;
       }
+      _scheduleSemanticResizeRebuild();
     };
   }
 
@@ -213,21 +222,6 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     _semanticResizeRebuildTimer?.cancel();
     _semanticResizeRebuildTimer = Timer(const Duration(milliseconds: 16), () {
       unawaited(_rebuildTerminalFromCache());
-    });
-  }
-
-  void _handleViewportSizeChange(Size nextSize) {
-    final previousSize = _lastViewportSize;
-    _lastViewportSize = nextSize;
-    if (previousSize == null ||
-        previousSize == nextSize ||
-        !_semanticPromptState.shouldUseResizeRecovery ||
-        _isRebuildingSemanticResize) {
-      return;
-    }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _scheduleSemanticResizeRebuild();
     });
   }
 
@@ -1233,11 +1227,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
 
     final showTopIndicator = _loadedStartOffset > 0 || _isPrefetching;
 
-    Widget content;
-    if (!_searchOpen && !showTopIndicator) {
-      content = terminalWidget;
-    } else {
-      content = Stack(
+    if (!_searchOpen && !showTopIndicator) return terminalWidget;
+
+    return Stack(
       children: [
         terminalWidget,
         if (_searchOpen) Positioned(top: 8, right: 8, child: _buildSearchBar()),
@@ -1264,16 +1256,6 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
             ),
           ),
       ],
-      );
-    }
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        _handleViewportSizeChange(
-          Size(constraints.maxWidth, constraints.maxHeight),
-        );
-        return content;
-      },
     );
   }
 

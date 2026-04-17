@@ -607,6 +607,64 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets(
+      'height-only viewport change (Android soft keyboard) does not trigger semantic rebuild',
+      (tester) async {
+        final factory = _MockWsFactory();
+        final key = GlobalKey<XtermTerminalViewState>();
+        tester.binding.window.physicalSizeTestValue = const Size(800, 600);
+        tester.binding.window.devicePixelRatioTestValue = 1.0;
+        addTearDown(() {
+          tester.binding.window.clearPhysicalSizeTestValue();
+          tester.binding.window.clearDevicePixelRatioTestValue();
+        });
+
+        await tester.pumpWidget(
+          _buildHarness(
+            sessionId: 'sess-keyboard-height',
+            wsFactory: factory,
+            stateKey: key,
+            width: null,
+            height: null,
+          ),
+        );
+        await tester.pump();
+
+        final ws = factory.lastService!;
+        final state = key.currentState!;
+
+        ws.emit(
+          OutputMessage(
+            _textBytes(
+              '\x1b]133;A\x07'
+              '\$ \x1b]133;B\x07'
+              'KEYBOARD_PROMPT semantic input line that stays visible while keyboard toggles\r\n'
+              '\x1b]133;C\x07'
+              'KEYBOARD_OUTPUT semantic output line that must survive a height-only viewport shrink\r\n',
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        expect(state.semanticPromptSeen, isTrue);
+        expect(state.terminalReflowEnabled, isFalse);
+
+        final baselineRebuildCount = state.semanticResizeRebuildCount;
+
+        // Simulate Android soft keyboard appearing: height shrinks, width
+        // unchanged. xterm char column count does not change, so a semantic
+        // rebuild must NOT fire.
+        tester.binding.window.physicalSizeTestValue = const Size(800, 400);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 200));
+
+        expect(state.semanticResizeRebuildCount, baselineRebuildCount);
+        expect(state.debugTerminalText, contains('KEYBOARD_PROMPT'));
+        expect(state.debugTerminalText, contains('KEYBOARD_OUTPUT'));
+      },
+    );
+
     test('real Codex fixture sanitization preserves the key phrase', () async {
       final fixture = File('test/fixtures/codex_overflow_80x24.typescript');
       const needle = 'requested markdown straight to the terminal';
