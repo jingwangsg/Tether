@@ -241,6 +241,17 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
     return error.toString();
   }
 
+  String _basenameOf(String path) {
+    var trimmed = path.trim();
+    while (trimmed.length > 1 && trimmed.endsWith('/')) {
+      trimmed = trimmed.substring(0, trimmed.length - 1);
+    }
+    if (trimmed.isEmpty) return '';
+    final slash = trimmed.lastIndexOf('/');
+    if (slash < 0) return trimmed;
+    return trimmed.substring(slash + 1);
+  }
+
   String? _remoteCompletionStatus(Object error) {
     if (error is ApiException &&
         error.statusCode == 503 &&
@@ -278,7 +289,11 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
   }
 
   Future<void> _save() async {
-    final name = _nameController.text.trim();
+    final path = _pathController.text.trim();
+    var name = _nameController.text.trim();
+    if (name.isEmpty) {
+      name = _basenameOf(path);
+    }
     if (name.isEmpty) {
       setState(() => _nameError = 'Group name is required');
       return;
@@ -289,7 +304,6 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
       _nameError = null;
     });
 
-    final path = _pathController.text.trim();
     final defaultCwd = path.isEmpty ? '~' : path;
 
     try {
