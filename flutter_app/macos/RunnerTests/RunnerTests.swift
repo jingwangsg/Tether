@@ -49,6 +49,17 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(command.contains("--metadata-path '/tmp/terminal metadata.jsonl'"))
   }
 
+  func testBuildAttachCommandUsesThirtyTwoMiBTailByDefault() {
+    let command = TerminalView.buildAttachCommand(
+      sessionId: "session-123",
+      serverBaseUrl: "http://localhost:7680",
+      authToken: nil,
+      clientPath: "/tmp/tether-client"
+    )
+
+    XCTAssertTrue(command.contains("--tail-bytes 33554432"))
+  }
+
   func testHandleActionPostsSearchNotifications() {
     TerminalApp.shared.setup()
     guard let app = TerminalApp.shared.app else {
@@ -176,6 +187,20 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(result.documentHeight, 1100)
     XCTAssertEqual(result.targetOffsetY, 850)
     XCTAssertEqual(result.lastSentRow, 5)
+  }
+
+  func testScrollSynchronizationResultSuppressesOffsetDuringLiveScroll() {
+    let result = TerminalView.scrollSynchronizationResult(
+      contentHeight: 200,
+      cellHeight: 10,
+      scrollbarState: TerminalScrollbarState(total: 100, offset: 5, len: 10),
+      isLiveScrolling: true,
+      shouldApplyScrollOffset: true
+    )
+
+    XCTAssertEqual(result.documentHeight, 1100)
+    XCTAssertNil(result.targetOffsetY)
+    XCTAssertNil(result.lastSentRow)
   }
 
   func testMouseExitReportingMatchesGhosttyDragBehavior() {
@@ -552,7 +577,7 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(redrawCount, 1)
   }
 
-  func testNativeTerminalLazyLoadingIntegration() throws {
+  func testNativeTerminalUsesSingleLargeInitialReplayWithoutLazyLoading() throws {
     let harness = try TerminalLazyLoadingHarness()
     defer { harness.cleanup() }
 
@@ -586,7 +611,7 @@ class RunnerTests: XCTestCase {
     let primaryAttach = try harness.waitForEvent(named: "attach_started", timeout: 20) {
       ($0["role"] as? String) == "primary"
     }
-    XCTAssertEqual(TerminalLazyLoadingHarness.uint64(primaryAttach, key: "tail_bytes"), 1_048_576)
+    XCTAssertEqual(TerminalLazyLoadingHarness.uint64(primaryAttach, key: "tail_bytes"), 33_554_432)
     XCTAssertNil(primaryAttach["offset"])
 
     let primaryScrollback = try harness.waitForEvent(named: "scrollback_info", timeout: 20) {
@@ -597,38 +622,19 @@ class RunnerTests: XCTestCase {
     )
     XCTAssertGreaterThan(initialLoadedFrom, 0)
 
-    try harness.scroll(
-      terminalView: terminalView,
-      untilEvent: "prefetch_started",
-      targetRatio: 0.92,
-      timeout: 15,
-    )
-    let prefetchAttach = try harness.waitForEvent(named: "attach_started", timeout: 10) {
-      ($0["role"] as? String) == "prefetch"
-    }
-    let prefetchOffset = try XCTUnwrap(
-      TerminalLazyLoadingHarness.uint64(prefetchAttach, key: "offset")
-    )
-    XCTAssertLessThan(prefetchOffset, initialLoadedFrom)
-
-    try harness.scroll(
-      terminalView: terminalView,
-      untilEvent: "swap_completed",
-      targetRatio: 1.0,
-      timeout: 20,
-    )
-
-    let readyEvent = try harness.waitForEvent(named: "prefetch_ready", timeout: 10)
-    let swapEvent = try harness.waitForEvent(named: "swap_completed", timeout: 10)
+    try harness.scrollToRatio(terminalView: terminalView, targetRatio: 1.0)
+    try harness.assertNoEvent(named: "prefetch_started", during: 3.0)
+    try harness.assertNoEvent(named: "prefetch_ready", during: 3.0)
+    try harness.assertNoEvent(named: "swap_completed", during: 3.0)
     XCTAssertEqual(
-      try XCTUnwrap(TerminalLazyLoadingHarness.uint64(readyEvent, key: "loaded_from")),
-      prefetchOffset
+      try harness.eventCount(named: "attach_started"),
+      1
     )
-    XCTAssertLessThan(
-      try XCTUnwrap(TerminalLazyLoadingHarness.uint64(swapEvent, key: "loaded_start_offset")),
-      initialLoadedFrom
+    XCTAssertEqual(
+      try harness.eventCount(named: "attach_started") { ($0["role"] as? String) == "primary" },
+      1
     )
-    XCTAssertLessThan(terminalView.debugLoadedStartOffsetBytes, initialLoadedFrom)
+    XCTAssertEqual(terminalView.debugLoadedStartOffsetBytes, initialLoadedFrom)
   }
 
   func testNativeTerminalResizePreservesSemanticLoadedOffsets() throws {
@@ -668,7 +674,6 @@ class RunnerTests: XCTestCase {
     let initialLoadedFrom = try XCTUnwrap(
       TerminalLazyLoadingHarness.uint64(primaryScrollback, key: "loaded_from")
     )
-    XCTAssertGreaterThan(initialLoadedFrom, 0)
     let initialLoadedStartOffset = terminalView.debugLoadedStartOffsetBytes
     let initialTotalScrollbackBytes = terminalView.debugTotalScrollbackBytes
     XCTAssertEqual(initialLoadedStartOffset, initialLoadedFrom)
@@ -710,7 +715,6 @@ private final class TerminalLazyLoadingHarness {
     setenv("TETHER_CLIENT_PATH", repoRoot.appendingPathComponent("target/debug/tether-client").path, 1)
     setenv("TETHER_TERMINAL_TEST_LOG_PATH", eventLogURL.path, 1)
     setenv("TETHER_TERMINAL_TEST_MODE", "1", 1)
-    setenv("TETHER_TERMINAL_TEST_PREFETCH_DELAY_MS", "300", 1)
     try startServer()
   }
 
@@ -721,19 +725,27 @@ private final class TerminalLazyLoadingHarness {
     unsetenv("TETHER_CLIENT_PATH")
     unsetenv("TETHER_TERMINAL_TEST_LOG_PATH")
     unsetenv("TETHER_TERMINAL_TEST_MODE")
-    unsetenv("TETHER_TERMINAL_TEST_PREFETCH_DELAY_MS")
     try? FileManager.default.removeItem(at: tempRoot)
   }
 
   func provisionSession(named sessionName: String) throws -> String {
     let scriptURL = tempRoot.appendingPathComponent("emit-history.sh")
+    let readyURL = tempRoot.appendingPathComponent("emit-history.ready")
     let script = """
     #!/bin/sh
+    prefix=''
+    j=0
+    while [ "$j" -lt 128 ]; do
+      prefix="${prefix}\\033[31m\\033[32m\\033[33m\\033[34m\\033[35m\\033[36m\\033[0m"
+      j=$((j + 1))
+    done
     i=0
-    while [ "$i" -lt 70000 ]; do
+    while [ "$i" -lt 8192 ]; do
+      printf '%b' "$prefix"
       printf 'lazy-%06d line for mac lazy loading verification................................\\n' "$i"
       i=$((i + 1))
     done
+    touch "\(readyURL.path)"
     while :; do
       sleep 1
     done
@@ -771,6 +783,7 @@ private final class TerminalLazyLoadingHarness {
       if let row = list.first(where: { ($0["id"] as? String) == sessionId }),
          let isAlive = row["is_alive"] as? Bool,
          isAlive {
+        try waitForFile(at: readyURL, timeout: 20, description: "history fixture ready file")
         return sessionId
       }
       RunLoop.current.run(until: Date().addingTimeInterval(0.2))
@@ -782,6 +795,7 @@ private final class TerminalLazyLoadingHarness {
 
   func provisionSemanticPromptSession(named sessionName: String) throws -> String {
     let scriptURL = tempRoot.appendingPathComponent("emit-semantic-history.sh")
+    let readyURL = tempRoot.appendingPathComponent("emit-semantic-history.ready")
     let script = """
     #!/bin/sh
     printf '\\033]133;A;redraw=1\\007'
@@ -796,6 +810,7 @@ private final class TerminalLazyLoadingHarness {
       i=$((i + 1))
     done
     printf '\\033]133;D;0\\007'
+    touch "\(readyURL.path)"
     while :; do
       sleep 1
     done
@@ -833,6 +848,7 @@ private final class TerminalLazyLoadingHarness {
       if let row = list.first(where: { ($0["id"] as? String) == sessionId }),
          let isAlive = row["is_alive"] as? Bool,
          isAlive {
+        try waitForFile(at: readyURL, timeout: 20, description: "semantic fixture ready file")
         return sessionId
       }
       RunLoop.current.run(until: Date().addingTimeInterval(0.2))
@@ -877,6 +893,10 @@ private final class TerminalLazyLoadingHarness {
       )
       if maxOrigin > 0 {
         DispatchQueue.main.sync {
+          NotificationCenter.default.post(
+            name: NSScrollView.willStartLiveScrollNotification,
+            object: scrollView
+          )
           scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxOrigin * targetRatio))
           NotificationCenter.default.post(
             name: NSView.boundsDidChangeNotification,
@@ -886,6 +906,10 @@ private final class TerminalLazyLoadingHarness {
             name: NSScrollView.didLiveScrollNotification,
             object: scrollView
           )
+          NotificationCenter.default.post(
+            name: NSScrollView.didEndLiveScrollNotification,
+            object: scrollView
+          )
         }
       }
       RunLoop.current.run(until: Date().addingTimeInterval(0.2))
@@ -893,6 +917,80 @@ private final class TerminalLazyLoadingHarness {
 
     XCTFail("timed out waiting for \(eventName)")
     throw HarnessFailure("timed out waiting for \(eventName)")
+  }
+
+  func scrollToRatio(
+    terminalView: TerminalView,
+    targetRatio: CGFloat
+  ) throws {
+    let scrollView = terminalView.debugScrollView
+    let maxOrigin = max(
+      0,
+      scrollView.documentView?.frame.height ?? 0 - scrollView.contentView.bounds.height
+    )
+    guard maxOrigin > 0 else {
+      XCTFail("expected scroll view to have scrollback content")
+      throw HarnessFailure("expected scroll view to have scrollback content")
+    }
+
+    DispatchQueue.main.sync {
+      NotificationCenter.default.post(
+        name: NSScrollView.willStartLiveScrollNotification,
+        object: scrollView
+      )
+      scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxOrigin * targetRatio))
+      NotificationCenter.default.post(
+        name: NSView.boundsDidChangeNotification,
+        object: scrollView.contentView
+      )
+      NotificationCenter.default.post(
+        name: NSScrollView.didLiveScrollNotification,
+        object: scrollView
+      )
+      NotificationCenter.default.post(
+        name: NSScrollView.didEndLiveScrollNotification,
+        object: scrollView
+      )
+    }
+  }
+
+  func assertNoEvent(
+    named name: String,
+    during duration: TimeInterval,
+    where predicate: ([String: Any]) -> Bool = { _ in true }
+  ) throws {
+    let deadline = Date().addingTimeInterval(duration)
+    while Date() < deadline {
+      if let event = try latestEvent(named: name, where: predicate) {
+        XCTFail("unexpected event \(name): \(event)")
+        throw HarnessFailure("unexpected event \(name)")
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    }
+  }
+
+  func waitForFile(
+    at url: URL,
+    timeout: TimeInterval,
+    description: String
+  ) throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if FileManager.default.fileExists(atPath: url.path) {
+        return
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    }
+
+    XCTFail("timed out waiting for \(description)")
+    throw HarnessFailure("timed out waiting for \(description)")
+  }
+
+  func eventCount(
+    named name: String,
+    where predicate: ([String: Any]) -> Bool = { _ in true }
+  ) throws -> Int {
+    try readEvents().filter { ($0["event"] as? String) == name && predicate($0) }.count
   }
 
   private func startServer() throws {
@@ -941,7 +1039,7 @@ private final class TerminalLazyLoadingHarness {
     XCTAssertEqual(build.terminationStatus, 0)
   }
 
-  private func latestEvent(
+  func latestEvent(
     named name: String,
     where predicate: ([String: Any]) -> Bool = { _ in true }
   ) throws -> [String: Any]? {

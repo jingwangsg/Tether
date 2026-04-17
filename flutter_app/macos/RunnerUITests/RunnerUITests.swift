@@ -59,7 +59,7 @@ final class RunnerUITests: XCTestCase {
         }
     }
 
-    func testMacTerminalLazyLoadsOlderHistory() throws {
+    func testMacTerminalUsesSingleLargeInitialReplayWithoutLazyLoading() throws {
         if canReachConfiguredExternalServer() {
             try waitForExternalServer()
         } else {
@@ -74,9 +74,6 @@ final class RunnerUITests: XCTestCase {
             repoRoot.appendingPathComponent("target/debug/tether-client").path
         app.launchEnvironment["TETHER_TERMINAL_TEST_LOG_PATH"] = eventLogURL.path
         app.launchEnvironment["TETHER_TERMINAL_TEST_MODE"] = "1"
-        app.launchEnvironment["TETHER_TERMINAL_TEST_PREFETCH_DELAY_MS"] = "4000"
-        app.launchEnvironment["TETHER_TERMINAL_TEST_PREFETCH_TRIGGER_RATIO"] = "0.99"
-        app.launchEnvironment["TETHER_TERMINAL_TEST_TOP_TRIGGER_RATIO"] = "0.98"
         app.launchEnvironment["TETHER_TEST_AUTO_OPEN_SESSION_NAME"] = sessionName
         app.launchEnvironment["TETHER_TEST_SERVER_HOST"] = "127.0.0.1"
         app.launchEnvironment["TETHER_TEST_SERVER_PORT"] = "\(port)"
@@ -92,51 +89,31 @@ final class RunnerUITests: XCTestCase {
         let primaryAttach = try waitForEvent(named: "attach_started", timeout: 20) {
             ($0["role"] as? String) == "primary"
         }
-        XCTAssertEqual(Self.uint64(primaryAttach, key: "tail_bytes"), 1_048_576)
+        XCTAssertEqual(Self.uint64(primaryAttach, key: "tail_bytes"), 33_554_432)
         XCTAssertTrue(Self.isMissingOrNull(primaryAttach["offset"]))
 
         let primaryScrollback = try waitForEvent(named: "scrollback_info", timeout: 20) {
             ($0["role"] as? String) == "primary"
         }
         let initialLoadedFrom = try XCTUnwrap(Self.uint64(primaryScrollback, key: "loaded_from"))
-        XCTAssertGreaterThan(initialLoadedFrom, 0)
+        if externalConfig == nil {
+            XCTAssertGreaterThan(initialLoadedFrom, 0)
+        }
 
         let terminal = terminalScrollView(in: app)
         XCTAssertTrue(terminal.waitForExistence(timeout: 10))
 
-        _ = try scrollUntilEvent(
-            on: terminal,
-            name: "prefetch_started",
-            timeout: 40
-        )
-
-        let prefetchAttach = try waitForEvent(named: "attach_started", timeout: 10) {
-            ($0["role"] as? String) == "prefetch"
-        }
-        let prefetchOffset = try XCTUnwrap(Self.uint64(prefetchAttach, key: "offset"))
-        XCTAssertLessThan(prefetchOffset, initialLoadedFrom)
-        XCTAssertTrue(Self.isMissingOrNull(prefetchAttach["tail_bytes"]))
-
-        _ = try scrollUntilEvent(
-            on: terminal,
-            name: "swap_completed",
-            timeout: 45
-        )
-
-        let readyEvent = try waitForEvent(named: "prefetch_ready", timeout: 10)
-        let swapEvent = try waitForEvent(named: "swap_completed", timeout: 10)
-        XCTAssertEqual(
-            try XCTUnwrap(Self.uint64(readyEvent, key: "loaded_from")),
-            prefetchOffset
-        )
-        XCTAssertLessThan(
-            try XCTUnwrap(Self.uint64(swapEvent, key: "loaded_start_offset")),
-            initialLoadedFrom
-        )
+        try scrollToTop(on: terminal)
+        try assertNoEvent(named: "prefetch_started", timeout: 3)
+        try assertNoEvent(named: "prefetch_ready", timeout: 3)
+        try assertNoEvent(named: "swap_completed", timeout: 3)
+        XCTAssertEqual(try eventCount(named: "attach_started"), 1)
+        XCTAssertEqual(try eventCount(named: "attach_started") { ($0["role"] as? String) == "primary" }, 1)
 
         let debugState = try XCTUnwrap(Self.debugState(from: terminal))
+        XCTAssertEqual(debugState["is_at_top"] as? Bool, true)
         let currentLoaded = try XCTUnwrap(Self.uint64(debugState, key: "loaded_start_offset"))
-        XCTAssertLessThan(currentLoaded, initialLoadedFrom)
+        XCTAssertEqual(currentLoaded, initialLoadedFrom)
     }
 
     func testSidebarAttentionBellAppearsForBackgroundSession() throws {
@@ -316,6 +293,7 @@ final class RunnerUITests: XCTestCase {
 
     private func provisionSession(named sessionName: String) throws -> String {
         let scriptURL = tempRoot.appendingPathComponent("emit-history.sh")
+        let readyURL = tempRoot.appendingPathComponent("emit-history.ready")
         let script = """
         #!/bin/sh
         prefix=''
@@ -325,11 +303,12 @@ final class RunnerUITests: XCTestCase {
           j=$((j + 1))
         done
         i=0
-        while [ "$i" -lt 1024 ]; do
+        while [ "$i" -lt 8192 ]; do
           printf '%b' "$prefix"
           printf 'lazy-%06d line for mac lazy loading verification\\n' "$i"
           i=$((i + 1))
         done
+        touch "\(readyURL.path)"
         while :; do
           sleep 1
         done
@@ -370,6 +349,7 @@ final class RunnerUITests: XCTestCase {
             if let row = sessions.first(where: { ($0["id"] as? String) == sessionId }),
                let isAlive = row["is_alive"] as? Bool,
                isAlive {
+                try waitForFile(at: readyURL, timeout: 20, description: "ui history fixture ready file")
                 return sessionId
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
@@ -435,6 +415,55 @@ final class RunnerUITests: XCTestCase {
         }
 
         throw UITestFailure(description: "timed out waiting for \(name)")
+    }
+
+    private func scrollToTop(on terminal: XCUIElement) throws {
+        for _ in 0..<20 {
+            terminal.swipeDown()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+            if let debugState = Self.debugState(from: terminal),
+               (debugState["is_at_top"] as? Bool) == true {
+                return
+            }
+        }
+        throw UITestFailure(description: "timed out reaching terminal top")
+    }
+
+    private func assertNoEvent(
+        named name: String,
+        timeout: TimeInterval,
+        where predicate: ([String: Any]) -> Bool = { _ in true }
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let event = try latestEvent(named: name, where: predicate) {
+                throw UITestFailure(description: "unexpected event \(name): \(event)")
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+    }
+
+    private func eventCount(
+        named name: String,
+        where predicate: ([String: Any]) -> Bool = { _ in true }
+    ) throws -> Int {
+        try readEvents().filter { ($0["event"] as? String) == name && predicate($0) }.count
+    }
+
+    private func waitForFile(
+        at url: URL,
+        timeout: TimeInterval,
+        description: String
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if FileManager.default.fileExists(atPath: url.path) {
+                return
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+
+        throw UITestFailure(description: "timed out waiting for \(description)")
     }
 
     private func waitForEvent(

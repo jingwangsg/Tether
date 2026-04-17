@@ -124,12 +124,8 @@ final class TerminalView: NSView {
     static let copySelector = #selector(NSText.copy(_:))
     static let pasteSelector = #selector(MainFlutterWindow.paste(_:))
     static let pasteAsPlainTextSelector = #selector(NSTextView.pasteAsPlainText(_:))
-    static let defaultReplayTailBytes: UInt64 = 1024 * 1024
-    static let prefetchTriggerRatio: CGFloat = 0.15
-    static let topTriggerDistance: CGFloat = 1
+    static let defaultReplayTailBytes: UInt64 = 32 * 1024 * 1024
     static let reactivationScrollbarCoalesceDelay: TimeInterval = 0.05
-    static let topIndicatorAccessibilityIdentifier = "terminal-top-indicator"
-    static let loadingOverlayAccessibilityIdentifier = "terminal-loading-overlay"
     static let scrollViewAccessibilityIdentifier = "terminal-scroll-view"
 
     private let sessionId: String
@@ -137,35 +133,18 @@ final class TerminalView: NSView {
     private let authToken: String?
     private let scrollView: NSScrollView
     private let documentView: NSView
-    private let topIndicatorView: NSVisualEffectView
-    private let topIndicatorLabel: NSTextField
-    private let loadingOverlayView: NSVisualEffectView
-    private let loadingIndicator: NSProgressIndicator
-    private let loadingLabel: NSTextField
     private let testLogger: TerminalTestLogger
     private let exposesDebugAccessibilityState: Bool
-    private let prefetchReadyDelay: TimeInterval
-    private let testPrefetchTriggerRatioOverride: CGFloat?
-    private let testTopTriggerRatioOverride: CGFloat?
 
     private var eventSink: FlutterEventSink?
     private var surfaceView: TerminalSurfaceView
-    private var prefetchSurfaceView: TerminalSurfaceView?
 
     private var scrollbarCoordinator = ScrollbarActivationCoordinator()
     private var isLiveScrolling = false
-    private var isSwappingSurface = false
     private var lastSentRow: Int?
     private var reactivationScrollFlushWorkItem: DispatchWorkItem?
-    private var currentScrollbackInfo: ScrollbackInfoState?
-    private var prefetchScrollbackInfo: ScrollbackInfoState?
-    private var prefetchScrollbarState: TerminalScrollbarState?
     private var loadedStartOffsetBytes: UInt64 = 0
     private var totalScrollbackBytes: UInt64 = 0
-    private var isPrefetching = false
-    private var prefetchReady = false
-    private var prefetchTriggeredAtTop = false
-    private var prefetchReadyWorkItem: DispatchWorkItem?
 
     init(
         sessionId: String,
@@ -179,20 +158,9 @@ final class TerminalView: NSView {
         self.eventSink = eventSink
         self.scrollView = NSScrollView()
         self.documentView = NSView(frame: .zero)
-        self.topIndicatorView = NSVisualEffectView()
-        self.topIndicatorLabel = NSTextField(labelWithString: "")
-        self.loadingOverlayView = NSVisualEffectView()
-        self.loadingIndicator = NSProgressIndicator()
-        self.loadingLabel = NSTextField(labelWithString: "Loading more history…")
         self.testLogger = TerminalTestLogger(sessionId: sessionId)
         self.exposesDebugAccessibilityState =
             readProcessEnvironmentValue("TETHER_TERMINAL_TEST_MODE") == "1"
-        self.prefetchReadyDelay =
-            (Double(readProcessEnvironmentValue("TETHER_TERMINAL_TEST_PREFETCH_DELAY_MS") ?? "") ?? 0) / 1000
-        self.testPrefetchTriggerRatioOverride =
-            Self.readCGFloatEnv("TETHER_TERMINAL_TEST_PREFETCH_TRIGGER_RATIO")
-        self.testTopTriggerRatioOverride =
-            Self.readCGFloatEnv("TETHER_TERMINAL_TEST_TOP_TRIGGER_RATIO")
         self.surfaceView = TerminalSurfaceView(
             sessionId: sessionId,
             serverBaseUrl: serverBaseUrl,
@@ -224,7 +192,6 @@ final class TerminalView: NSView {
         scrollView.setAccessibilityIdentifier(Self.scrollViewAccessibilityIdentifier)
         documentView.addSubview(surfaceView)
         addSubview(scrollView)
-        setupOverlayViews()
 
         NotificationCenter.default.addObserver(
             self,
@@ -265,16 +232,13 @@ final class TerminalView: NSView {
         super.layout()
         scrollView.frame = bounds
         surfaceView.frame.size = scrollView.bounds.size
-        prefetchSurfaceView?.frame = bounds
         documentView.frame.size.width = scrollView.bounds.width
-        layoutOverlayViews()
         synchronizeScrollView()
         synchronizeSurfaceView()
     }
 
     @objc private func handleScrollChange(_ notification: Notification) {
         synchronizeSurfaceView()
-        updatePrefetchStateFromVisibleRect()
     }
 
     @objc private func handleWillStartLiveScroll(_ notification: Notification) {
@@ -283,12 +247,10 @@ final class TerminalView: NSView {
 
     @objc private func handleDidEndLiveScroll(_ notification: Notification) {
         isLiveScrolling = false
-        updatePrefetchStateFromVisibleRect()
     }
 
     @objc private func handleDidLiveScroll(_ notification: Notification) {
         handleLiveScroll()
-        updatePrefetchStateFromVisibleRect()
     }
 
     private func synchronizeSurfaceView() {
@@ -330,64 +292,11 @@ final class TerminalView: NSView {
         surfaceView.performAction(action)
     }
 
-    private func setupOverlayViews() {
-        topIndicatorView.material = .sidebar
-        topIndicatorView.blendingMode = .withinWindow
-        topIndicatorView.state = .active
-        topIndicatorView.wantsLayer = true
-        topIndicatorView.layer?.cornerRadius = 10
-        topIndicatorView.setAccessibilityElement(true)
-        topIndicatorView.setAccessibilityIdentifier(Self.topIndicatorAccessibilityIdentifier)
-        topIndicatorLabel.textColor = .secondaryLabelColor
-        topIndicatorLabel.font = .systemFont(ofSize: 11, weight: .medium)
-        topIndicatorView.addSubview(topIndicatorLabel)
-        addSubview(topIndicatorView)
-
-        loadingOverlayView.material = .menu
-        loadingOverlayView.blendingMode = .withinWindow
-        loadingOverlayView.state = .active
-        loadingOverlayView.wantsLayer = true
-        loadingOverlayView.layer?.cornerRadius = 12
-        loadingOverlayView.setAccessibilityElement(true)
-        loadingOverlayView.setAccessibilityIdentifier(Self.loadingOverlayAccessibilityIdentifier)
-        loadingIndicator.style = .spinning
-        loadingIndicator.controlSize = .small
-        loadingIndicator.startAnimation(nil)
-        loadingLabel.textColor = .labelColor
-        loadingLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-        loadingOverlayView.addSubview(loadingIndicator)
-        loadingOverlayView.addSubview(loadingLabel)
-        addSubview(loadingOverlayView)
-        updateIndicators()
-    }
-
-    private func layoutOverlayViews() {
-        let topSize = NSSize(width: 160, height: 24)
-        topIndicatorView.frame = NSRect(
-            x: (bounds.width - topSize.width) / 2,
-            y: bounds.height - topSize.height - 10,
-            width: topSize.width,
-            height: topSize.height
-        )
-        topIndicatorLabel.frame = NSRect(x: 10, y: 4, width: topSize.width - 20, height: 16)
-
-        let overlaySize = NSSize(width: 220, height: 36)
-        loadingOverlayView.frame = NSRect(
-            x: (bounds.width - overlaySize.width) / 2,
-            y: bounds.height - overlaySize.height - 10,
-            width: overlaySize.width,
-            height: overlaySize.height
-        )
-        loadingIndicator.frame = NSRect(x: 12, y: 9, width: 18, height: 18)
-        loadingLabel.frame = NSRect(x: 40, y: 8, width: overlaySize.width - 52, height: 20)
-    }
-
     private func configureCurrentSurface(_ surface: TerminalSurfaceView) {
         surface.setEventSink(eventSink)
         surface.setInteractive(true)
         surface.scrollbackInfoHandler = { [weak self] info in
             guard let self else { return }
-            self.currentScrollbackInfo = info
             self.loadedStartOffsetBytes = info.loadedFrom
             self.totalScrollbackBytes = info.totalBytes
             self.testLogger.write(
@@ -430,245 +339,23 @@ final class TerminalView: NSView {
         }
     }
 
-    private func configurePrefetchSurface(_ surface: TerminalSurfaceView) {
-        surface.setEventSink(nil)
-        surface.setInteractive(false)
-        surface.scrollbackInfoHandler = { [weak self] info in
-            guard let self else { return }
-            self.prefetchScrollbackInfo = info
-            self.totalScrollbackBytes = max(self.totalScrollbackBytes, info.totalBytes)
-            self.testLogger.write(
-                event: "prefetch_scrollback_info",
-                fields: [
-                    "role": "prefetch",
-                    "total_bytes": info.totalBytes,
-                    "loaded_from": info.loadedFrom,
-                ]
-            )
-            self.maybeMarkPrefetchReady()
-        }
-        surface.scrollbarHandler = { [weak self] state in
-            guard let self else { return }
-            self.prefetchScrollbarState = state
-            self.maybeMarkPrefetchReady()
-        }
-    }
-
-    private func updatePrefetchStateFromVisibleRect() {
-        guard !isSwappingSurface else { return }
-        let visibleRect = scrollView.contentView.documentVisibleRect
-        if !isAtTop(visibleRect: visibleRect) {
-            prefetchTriggeredAtTop = false
-        }
-        if isNearTop(visibleRect: visibleRect) {
-            maybeStartPrefetch()
-        }
-        if isAtTop(visibleRect: visibleRect) {
-            prefetchTriggeredAtTop = true
-            if prefetchReady {
-                performSurfaceSwap()
-                return
-            }
-        }
-        updateIndicators()
-    }
-
-    private func maybeStartPrefetch() {
-        guard loadedStartOffsetBytes > 0,
-              !isPrefetching,
-              prefetchSurfaceView == nil else { return }
-
-        let fetchStart = loadedStartOffsetBytes > Self.defaultReplayTailBytes
-            ? loadedStartOffsetBytes - Self.defaultReplayTailBytes
-            : 0
-        isPrefetching = true
-        prefetchReady = false
-        prefetchScrollbackInfo = nil
-        prefetchScrollbarState = nil
-        prefetchReadyWorkItem?.cancel()
-        prefetchReadyWorkItem = nil
-
-        let prefetchSurface = makeSurfaceView(
-            role: "prefetch",
-            offset: fetchStart,
-            tailBytes: nil,
-            interactive: false,
-            eventSink: nil
-        )
-        configurePrefetchSurface(prefetchSurface)
-        prefetchSurface.alphaValue = 0.01
-        prefetchSurface.frame = bounds
-        addSubview(prefetchSurface, positioned: .below, relativeTo: scrollView)
-        prefetchSurface.setActive(scrollbarCoordinator.isActive)
-        prefetchSurfaceView = prefetchSurface
-        testLogger.write(
-            event: "prefetch_started",
-            fields: ["offset": fetchStart, "loaded_start_offset": loadedStartOffsetBytes]
-        )
-        updateIndicators()
-    }
-
-    private func makeSurfaceView(
-        role: String,
-        offset: UInt64?,
-        tailBytes: UInt64?,
-        interactive: Bool,
-        eventSink: FlutterEventSink?
-    ) -> TerminalSurfaceView {
-        TerminalSurfaceView(
-            sessionId: sessionId,
-            serverBaseUrl: serverBaseUrl,
-            authToken: authToken,
-            eventSink: eventSink,
-            attachOptions: TerminalAttachOptions(
-                offset: offset,
-                tailBytes: tailBytes,
-                metadataPath: Self.makeMetadataPath(role: role, sessionId: sessionId),
-                role: role
-            ),
-            interactionEnabled: interactive,
-            testLogger: testLogger
-        )
-    }
-
-    private func maybeMarkPrefetchReady() {
-        guard isPrefetching,
-              !prefetchReady,
-              prefetchScrollbackInfo != nil,
-              prefetchScrollbarState != nil else { return }
-        if prefetchReadyDelay > 0, prefetchReadyWorkItem == nil {
-            let workItem = DispatchWorkItem { [weak self] in
-                self?.prefetchReadyWorkItem = nil
-                self?.completePrefetchReadyIfPossible()
-            }
-            prefetchReadyWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + prefetchReadyDelay, execute: workItem)
-            return
-        }
-        completePrefetchReadyIfPossible()
-    }
-
-    private func completePrefetchReadyIfPossible() {
-        guard isPrefetching,
-              !prefetchReady,
-              prefetchScrollbackInfo != nil,
-              prefetchScrollbarState != nil else { return }
-        prefetchReady = true
-        if let info = prefetchScrollbackInfo {
-            testLogger.write(
-                event: "prefetch_ready",
-                fields: [
-                    "loaded_from": info.loadedFrom,
-                    "total_bytes": info.totalBytes,
-                ]
-            )
-        }
-        updateIndicators()
-        if prefetchTriggeredAtTop {
-            performSurfaceSwap()
-        }
-    }
-
-    private func performSurfaceSwap() {
-        guard !isSwappingSurface,
-              let newSurface = prefetchSurfaceView,
-              let currentState = scrollbarCoordinator.latestState,
-              let newState = prefetchScrollbarState else { return }
-
-        isSwappingSurface = true
-        let oldSurface = surfaceView
-        let prependedRows = Int(newState.total > currentState.total ? newState.total - currentState.total : 0)
-        let targetRow = Int(currentState.offset) + prependedRows
-
-        prefetchSurfaceView = nil
-        prefetchScrollbackInfo = nil
-        prefetchScrollbarState = nil
-        prefetchReady = false
-        isPrefetching = false
-        prefetchTriggeredAtTop = false
-        prefetchReadyWorkItem?.cancel()
-        prefetchReadyWorkItem = nil
-
-        oldSurface.setInteractive(false)
-        oldSurface.setEventSink(nil)
-        oldSurface.removeFromSuperview()
-
-        surfaceView = newSurface
-        surfaceView.alphaValue = 1.0
-        surfaceView.frame = NSRect(origin: scrollView.contentView.documentVisibleRect.origin, size: scrollView.contentSize)
-        documentView.addSubview(surfaceView)
-        configureCurrentSurface(surfaceView)
-
-        currentScrollbackInfo = surfaceView.latestScrollbackInfo
-        if let info = currentScrollbackInfo {
-            loadedStartOffsetBytes = info.loadedFrom
-            totalScrollbackBytes = info.totalBytes
-        }
-
-        scrollbarCoordinator.replaceLatestState(newState)
-        documentView.frame.size.height = Self.documentHeight(
-            contentHeight: scrollView.contentSize.height,
-            cellHeight: surfaceView.cellHeight,
-            scrollbarState: newState
-        )
-        lastSentRow = targetRow
-        surfaceView.performAction("scroll_to_row:\(targetRow)")
-        testLogger.write(
-            event: "swap_completed",
-            fields: [
-                "target_row": targetRow,
-                "prepended_rows": prependedRows,
-                "loaded_start_offset": loadedStartOffsetBytes,
-            ]
-        )
-        isSwappingSurface = false
-        updateIndicators()
-    }
-
     private func updateIndicators() {
-        let hasMoreHistory = loadedStartOffsetBytes > 0
-        topIndicatorView.isHidden = !hasMoreHistory || isPrefetching
-        topIndicatorLabel.stringValue = hasMoreHistory ? "Scroll up for more" : ""
-
-        let showLoading = isPrefetching && prefetchTriggeredAtTop && !prefetchReady
-        loadingOverlayView.isHidden = !showLoading
-
+        let scrollbarState = scrollbarCoordinator.latestState
         if exposesDebugAccessibilityState,
            let data = try? JSONSerialization.data(
                withJSONObject: [
                    "loaded_start_offset": loadedStartOffsetBytes,
-                    "total_scrollback_bytes": totalScrollbackBytes,
-                    "is_prefetching": isPrefetching,
-                    "prefetch_ready": prefetchReady,
-                    "prefetch_triggered_at_top": prefetchTriggeredAtTop,
-                    "test_prefetch_trigger_ratio": testPrefetchTriggerRatioOverride as Any,
-                    "test_top_trigger_ratio": testTopTriggerRatioOverride as Any,
+                   "total_scrollback_bytes": totalScrollbackBytes,
+                   "scrollbar_total_rows": scrollbarState?.total as Any,
+                   "scrollbar_offset_rows": scrollbarState?.offset as Any,
+                   "scrollbar_visible_rows": scrollbarState?.len as Any,
+                   "is_at_top": scrollbarState?.offset == 0,
                 ],
                 options: [.sortedKeys]
            ),
            let json = String(data: data, encoding: .utf8) {
             scrollView.setAccessibilityValue(json)
         }
-    }
-
-    private func isNearTop(visibleRect: NSRect) -> Bool {
-        let maxExtent = max(documentView.frame.height - visibleRect.height, 1)
-        let ratio = distanceFromTop(visibleRect: visibleRect) / maxExtent
-        let triggerRatio = testPrefetchTriggerRatioOverride ?? Self.prefetchTriggerRatio
-        return ratio < triggerRatio
-    }
-
-    private func isAtTop(visibleRect: NSRect) -> Bool {
-        let maxExtent = max(documentView.frame.height - visibleRect.height, 1)
-        let ratio = distanceFromTop(visibleRect: visibleRect) / maxExtent
-        if let triggerRatio = testTopTriggerRatioOverride {
-            return ratio < triggerRatio
-        }
-        return distanceFromTop(visibleRect: visibleRect) <= Self.topTriggerDistance
-    }
-
-    private func distanceFromTop(visibleRect: NSRect) -> CGFloat {
-        max(0, documentView.frame.height - visibleRect.origin.y - visibleRect.height)
     }
 
     private func scheduleDeferredScrollbarFlushIfNeeded() {
@@ -709,26 +396,15 @@ final class TerminalView: NSView {
             synchronizeSurfaceView()
             scheduleDeferredScrollbarFlushIfNeeded()
             surfaceView.setActive(true)
-            prefetchSurfaceView?.setActive(true)
             return
         case .deferred:
             break
         }
         surfaceView.setActive(active)
-        prefetchSurfaceView?.setActive(active)
     }
 
     func setImagePasteBridgeEnabled(_ enabled: Bool) {
         surfaceView.setImagePasteBridgeEnabled(enabled)
-        prefetchSurfaceView?.setImagePasteBridgeEnabled(enabled)
-    }
-
-    private static func readCGFloatEnv(_ key: String) -> CGFloat? {
-        guard let raw = readProcessEnvironmentValue(key),
-              let value = Double(raw) else {
-            return nil
-        }
-        return CGFloat(value)
     }
 
     func setEventSink(_ sink: FlutterEventSink?) {
