@@ -577,6 +577,82 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(redrawCount, 1)
   }
 
+  func testTerminalAppReactivationLogsAppFocusTransitions() throws {
+    let tempRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("tether-runner-focus-\(UUID().uuidString)", isDirectory: true)
+    let eventLogURL = tempRoot.appendingPathComponent("terminal-events.jsonl")
+    try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+    setenv("TETHER_TERMINAL_TEST_LOG_PATH", eventLogURL.path, 1)
+    defer {
+      unsetenv("TETHER_TERMINAL_TEST_LOG_PATH")
+      try? FileManager.default.removeItem(at: tempRoot)
+    }
+
+    TerminalApp.shared.setup()
+
+    NotificationCenter.default.post(
+      name: NSApplication.didResignActiveNotification,
+      object: NSApp
+    )
+    NotificationCenter.default.post(
+      name: NSApplication.didBecomeActiveNotification,
+      object: NSApp
+    )
+
+    let events = try waitForLoggedEvents(
+      at: eventLogURL,
+      named: "app_focus_changed",
+      minimumCount: 2
+    )
+    XCTAssertEqual(events.count, 2)
+    XCTAssertEqual(events[0]["focused"] as? Bool, false)
+    XCTAssertEqual(events[1]["focused"] as? Bool, true)
+  }
+
+  func testTerminalSurfaceFocusLoggingTracksFirstResponderTransitions() throws {
+    let tempRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("tether-surface-focus-\(UUID().uuidString)", isDirectory: true)
+    let eventLogURL = tempRoot.appendingPathComponent("terminal-events.jsonl")
+    try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+    setenv("TETHER_TERMINAL_TEST_LOG_PATH", eventLogURL.path, 1)
+    defer {
+      unsetenv("TETHER_TERMINAL_TEST_LOG_PATH")
+      try? FileManager.default.removeItem(at: tempRoot)
+    }
+
+    TerminalApp.shared.setup()
+    let logger = TerminalTestLogger(sessionId: "surface-focus-test")
+    let attachOptions = TerminalAttachOptions(
+      offset: nil,
+      tailBytes: nil,
+      metadataPath: nil,
+      role: "primary"
+    )
+    let surfaceView = TerminalSurfaceView(
+      sessionId: "surface-focus-session",
+      serverBaseUrl: nil,
+      authToken: nil,
+      eventSink: nil,
+      attachOptions: attachOptions,
+      interactionEnabled: true,
+      testLogger: logger
+    )
+
+    surfaceView.debugSetFocusForTesting(true)
+    surfaceView.debugSetFocusForTesting(false)
+
+    let events = try waitForLoggedEvents(
+      at: eventLogURL,
+      named: "surface_focus_changed",
+      minimumCount: 2
+    )
+    XCTAssertEqual(events.count, 2)
+    XCTAssertEqual(events[0]["focused"] as? Bool, true)
+    XCTAssertEqual(events[1]["focused"] as? Bool, false)
+    XCTAssertEqual(events[0]["role"] as? String, "primary")
+    XCTAssertEqual(events[1]["role"] as? String, "primary")
+  }
+
   func testNativeTerminalUsesSingleLargeInitialReplayWithoutLazyLoading() throws {
     let harness = try TerminalLazyLoadingHarness()
     defer { harness.cleanup() }
@@ -695,6 +771,39 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(terminalView.debugTotalScrollbackBytes, initialTotalScrollbackBytes)
   }
 
+}
+
+private func waitForLoggedEvents(
+  at url: URL,
+  named name: String,
+  minimumCount: Int,
+  timeout: TimeInterval = 2
+) throws -> [[String: Any]] {
+  let deadline = Date().addingTimeInterval(timeout)
+  while Date() < deadline {
+    let matches = try readLoggedEvents(at: url).filter { ($0["event"] as? String) == name }
+    if matches.count >= minimumCount {
+      return matches
+    }
+    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+  }
+
+  XCTFail("timed out waiting for \(minimumCount) \(name) events")
+  throw HarnessFailure("timed out waiting for \(minimumCount) \(name) events")
+}
+
+private func readLoggedEvents(at url: URL) throws -> [[String: Any]] {
+  guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+  let contents = try String(contentsOf: url, encoding: .utf8)
+  return contents
+    .split(separator: "\n")
+    .compactMap { line in
+      guard let data = String(line).data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        return nil
+      }
+      return json
+    }
 }
 
 private final class TerminalLazyLoadingHarness {

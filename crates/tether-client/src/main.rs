@@ -94,10 +94,12 @@ async fn run_attach(args: AttachArgs) -> Result<i32> {
     let stdin_fd = io::stdin().as_raw_fd();
     let stdout_fd = io::stdout().as_raw_fd();
     let _raw_mode = RawModeGuard::new(stdin_fd).context("failed to enable raw mode")?;
+    let metadata_logger = MetadataLogger::new(args.metadata_path.clone())?;
 
     let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<ClientMessage>();
     let input_tx_reader = input_tx.clone();
-    std::thread::spawn(move || stdin_reader_loop(input_tx_reader));
+    let metadata_logger_reader = metadata_logger.clone();
+    std::thread::spawn(move || stdin_reader_loop(input_tx_reader, metadata_logger_reader));
 
     #[cfg(unix)]
     let signal_task = {
@@ -142,7 +144,6 @@ async fn run_attach(args: AttachArgs) -> Result<i32> {
     let mut saw_exit = false;
     let mut acked_offset = args.offset.unwrap_or_default();
     let mut reconnect_attempts = 0u32;
-    let metadata_logger = MetadataLogger::new(args.metadata_path.clone())?;
 
     loop {
         let ws_url = build_session_ws_url(
@@ -205,6 +206,9 @@ async fn run_attach(args: AttachArgs) -> Result<i32> {
                             }
                         }
                         Ok(Message::Binary(bytes)) => {
+                            if let Some(logger) = metadata_logger.as_ref() {
+                                logger.write_protocol_trace("ws_to_stdout", &bytes)?;
+                            }
                             stdout
                                 .write_all(&bytes)
                                 .await
@@ -297,6 +301,9 @@ async fn handle_server_message<W: AsyncWrite + Unpin>(
             let data = base64::engine::general_purpose::STANDARD
                 .decode(encoded)
                 .context("failed to decode output payload")?;
+            if let Some(logger) = metadata_logger {
+                logger.write_protocol_trace("ws_to_stdout", &data)?;
+            }
             stdout
                 .write_all(&data)
                 .await
@@ -345,9 +352,15 @@ impl MetadataLogger {
         let Some(path) = path else {
             return Ok(None);
         };
-        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
             std::fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create metadata parent directory {}", parent.display())
+                format!(
+                    "failed to create metadata parent directory {}",
+                    parent.display()
+                )
             })?;
         }
         let file = std::fs::OpenOptions::new()
@@ -380,9 +393,92 @@ impl MetadataLogger {
         file.flush().context("failed to flush metadata log")?;
         Ok(())
     }
+
+    fn write_protocol_trace(&self, dir: &str, data: &[u8]) -> Result<()> {
+        if !protocol_trace_enabled() {
+            return Ok(());
+        }
+
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| anyhow::anyhow!("metadata log mutex poisoned"))?;
+        serde_json::to_writer(
+            &mut *file,
+            &json!({
+                "type": "protocol_trace",
+                "timestamp_ms": protocol_trace_timestamp_ms(),
+                "dir": dir,
+                "len": data.len(),
+                "data_b64": base64::engine::general_purpose::STANDARD.encode(data),
+                "contains_xtgettcap": contains_xtgettcap(data),
+                "contains_focus_seq": contains_focus_seq(data),
+                "contains_da_query": contains_da_query(data),
+            }),
+        )
+        .context("failed to serialize metadata event")?;
+        use std::io::Write as _;
+        file.write_all(b"\n")
+            .context("failed to terminate metadata event")?;
+        file.flush().context("failed to flush metadata log")?;
+        Ok(())
+    }
 }
 
-fn stdin_reader_loop(sender: tokio::sync::mpsc::UnboundedSender<ClientMessage>) {
+fn protocol_trace_enabled() -> bool {
+    std::env::var_os("TETHER_PROTOCOL_TRACE").is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+fn protocol_trace_timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn contains_xtgettcap(data: &[u8]) -> bool {
+    let lower = ascii_lowercase_bytes(data);
+    lower
+        .windows(b"\x1bp1+r".len())
+        .any(|window| window == b"\x1bp1+r")
+        || lower
+            .windows(b"\x1bp1$r".len())
+            .any(|window| window == b"\x1bp1$r")
+        || lower.windows(b"1+r".len()).any(|window| window == b"1+r")
+        || lower
+            .windows(b"696e646e".len())
+            .any(|window| window == b"696e646e")
+}
+
+fn contains_focus_seq(data: &[u8]) -> bool {
+    let lower = ascii_lowercase_bytes(data);
+    lower
+        .windows(b"\x1b[?1004h".len())
+        .any(|window| window == b"\x1b[?1004h")
+        || lower
+            .windows(b"\x1b[?1004l".len())
+            .any(|window| window == b"\x1b[?1004l")
+}
+
+fn contains_da_query(data: &[u8]) -> bool {
+    data.windows(b"\x1b[c".len())
+        .any(|window| window == b"\x1b[c")
+        || data
+            .windows(b"\x1b[>0c".len())
+            .any(|window| window == b"\x1b[>0c")
+        || data
+            .windows(b"\x1b[>c".len())
+            .any(|window| window == b"\x1b[>c")
+}
+
+fn ascii_lowercase_bytes(data: &[u8]) -> Vec<u8> {
+    data.iter().map(|byte| byte.to_ascii_lowercase()).collect()
+}
+
+fn stdin_reader_loop(
+    sender: tokio::sync::mpsc::UnboundedSender<ClientMessage>,
+    metadata_logger: Option<MetadataLogger>,
+) {
     let mut stdin = io::stdin();
     let mut buf = [0u8; 4096];
 
@@ -390,10 +486,7 @@ fn stdin_reader_loop(sender: tokio::sync::mpsc::UnboundedSender<ClientMessage>) 
         match stdin.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                if sender
-                    .send(ClientMessage::Input(buf[..n].to_vec()))
-                    .is_err()
-                {
+                if forward_stdin_chunk(&sender, &buf[..n], metadata_logger.as_ref()).is_err() {
                     break;
                 }
             }
@@ -401,6 +494,20 @@ fn stdin_reader_loop(sender: tokio::sync::mpsc::UnboundedSender<ClientMessage>) 
             Err(_) => break,
         }
     }
+}
+
+fn forward_stdin_chunk(
+    sender: &tokio::sync::mpsc::UnboundedSender<ClientMessage>,
+    data: &[u8],
+    metadata_logger: Option<&MetadataLogger>,
+) -> Result<()> {
+    if let Some(logger) = metadata_logger {
+        logger.write_protocol_trace("stdin_to_ws", data)?;
+    }
+    sender
+        .send(ClientMessage::Input(data.to_vec()))
+        .map_err(|_| anyhow::anyhow!("failed to forward stdin chunk"))?;
+    Ok(())
 }
 
 fn build_session_ws_url(
@@ -540,7 +647,11 @@ fn current_winsize(fd: i32) -> Option<(u16, u16)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_session_ws_url, handle_server_message, MetadataLogger};
+    use super::{
+        build_session_ws_url, forward_stdin_chunk, handle_server_message, ClientMessage,
+        MetadataLogger,
+    };
+    use base64::Engine;
     use tokio::io::BufWriter;
     use uuid::Uuid;
 
@@ -651,10 +762,8 @@ mod tests {
 
     #[tokio::test]
     async fn scrollback_info_is_written_to_metadata_log() {
-        let metadata_path = std::env::temp_dir().join(format!(
-            "tether-client-metadata-{}.jsonl",
-            Uuid::new_v4()
-        ));
+        let metadata_path =
+            std::env::temp_dir().join(format!("tether-client-metadata-{}.jsonl", Uuid::new_v4()));
         let logger = MetadataLogger::new(Some(metadata_path.clone())).unwrap();
         let mut stdout = BufWriter::new(tokio::io::sink());
         let mut exit_code = 1;
@@ -679,6 +788,93 @@ mod tests {
         assert_eq!(value["type"], "scrollback_info");
         assert_eq!(value["total_bytes"], 1000);
         assert_eq!(value["loaded_from"], 500);
+        std::fs::remove_file(metadata_path).ok();
+    }
+
+    #[tokio::test]
+    async fn output_protocol_trace_is_written_to_metadata_log_when_enabled() {
+        let metadata_path = std::env::temp_dir().join(format!(
+            "tether-client-protocol-trace-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let logger = MetadataLogger::new(Some(metadata_path.clone())).unwrap();
+        let mut stdout = BufWriter::new(tokio::io::sink());
+        let mut exit_code = 1;
+        let mut saw_exit = false;
+        let mut acked_offset = 0u64;
+        let original_trace = std::env::var_os("TETHER_PROTOCOL_TRACE");
+        std::env::set_var("TETHER_PROTOCOL_TRACE", "1");
+
+        let payload = base64::engine::general_purpose::STANDARD
+            .encode(b"\x1bP1+r696E646E=5C455B257031256453\x1b\\");
+        let raw = format!(r#"{{"type":"output","data":"{payload}"}}"#);
+        let should_exit = handle_server_message(
+            &raw,
+            &mut stdout,
+            &mut exit_code,
+            &mut saw_exit,
+            &mut acked_offset,
+            logger.as_ref(),
+        )
+        .await
+        .unwrap();
+
+        let contents = std::fs::read_to_string(&metadata_path).unwrap();
+        let protocol_line = contents
+            .lines()
+            .find(|line| line.contains(r#""type":"protocol_trace""#))
+            .expect("expected protocol_trace event");
+        let value: serde_json::Value = serde_json::from_str(protocol_line).unwrap();
+        assert!(!should_exit);
+        assert_eq!(value["dir"], "ws_to_stdout");
+        assert_eq!(value["contains_xtgettcap"], true);
+        assert_eq!(value["contains_focus_seq"], false);
+        assert_eq!(value["contains_da_query"], false);
+
+        if let Some(value) = original_trace {
+            std::env::set_var("TETHER_PROTOCOL_TRACE", value);
+        } else {
+            std::env::remove_var("TETHER_PROTOCOL_TRACE");
+        }
+        std::fs::remove_file(metadata_path).ok();
+    }
+
+    #[test]
+    fn stdin_protocol_trace_is_written_to_metadata_log_when_enabled() {
+        let metadata_path = std::env::temp_dir().join(format!(
+            "tether-client-stdin-trace-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let logger = MetadataLogger::new(Some(metadata_path.clone())).unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let original_trace = std::env::var_os("TETHER_PROTOCOL_TRACE");
+        std::env::set_var("TETHER_PROTOCOL_TRACE", "1");
+
+        forward_stdin_chunk(&sender, b"P1+r696E646E=5C455B257031256453", logger.as_ref()).unwrap();
+
+        let message = receiver.try_recv().expect("expected forwarded input");
+        match message {
+            ClientMessage::Input(data) => {
+                assert_eq!(data, b"P1+r696E646E=5C455B257031256453");
+            }
+            other => panic!("expected input message, got {other:?}"),
+        }
+
+        let contents = std::fs::read_to_string(&metadata_path).unwrap();
+        let protocol_line = contents
+            .lines()
+            .find(|line| line.contains(r#""type":"protocol_trace""#))
+            .expect("expected protocol_trace event");
+        let value: serde_json::Value = serde_json::from_str(protocol_line).unwrap();
+        assert_eq!(value["dir"], "stdin_to_ws");
+        assert_eq!(value["contains_xtgettcap"], true);
+        assert_eq!(value["len"], 31);
+
+        if let Some(value) = original_trace {
+            std::env::set_var("TETHER_PROTOCOL_TRACE", value);
+        } else {
+            std::env::remove_var("TETHER_PROTOCOL_TRACE");
+        }
         std::fs::remove_file(metadata_path).ok();
     }
 

@@ -99,7 +99,7 @@ final class TerminalTestLogger {
 
     func write(event: String, fields: [String: Any] = [:]) {
         guard let fileURL else { return }
-        queue.async { [sessionId] in
+        queue.sync { [sessionId] in
             var payload = fields
             payload["event"] = event
             payload["session_id"] = sessionId
@@ -592,7 +592,7 @@ extension TerminalView {
 protocol TerminalShortcutFocusable {}
 
 /// NSView embedding a Ghostty surface whose child process is `tether-client attach`.
-private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
+final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     private let sessionId: String
     private let serverBaseUrl: String?
     private let authToken: String?
@@ -868,6 +868,32 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     }
 
     private func observeNotifications() {
+        if let window {
+            observers.append(NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.testLogger.write(
+                    event: "window_key_changed",
+                    fields: ["role": self.attachOptions.role, "is_key": true]
+                )
+            })
+
+            observers.append(NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.testLogger.write(
+                    event: "window_key_changed",
+                    fields: ["role": self.attachOptions.role, "is_key": false]
+                )
+            })
+        }
+
         observers.append(NotificationCenter.default.addObserver(
             forName: .terminalTitleChanged, object: nil, queue: .main
         ) { [weak self] note in
@@ -1020,9 +1046,17 @@ private final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     private func focusDidChange(_ newValue: Bool) {
         guard focused != newValue else { return }
         focused = newValue
+        testLogger.write(
+            event: "surface_focus_changed",
+            fields: ["role": attachOptions.role, "focused": newValue]
+        )
         if let surface {
             ghostty_surface_set_focus(surface, newValue)
         }
+    }
+
+    func debugSetFocusForTesting(_ newValue: Bool) {
+        focusDidChange(newValue)
     }
 
     private func localEventHandler(_ event: NSEvent) -> NSEvent? {

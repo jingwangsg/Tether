@@ -133,6 +133,10 @@ class TerminalApp {
         ghostty_surface_draw(surface)
     }
 
+    private func writeTestLog(event: String, fields: [String: Any]) {
+        TerminalTestLogger(sessionId: "__app__").write(event: event, fields: fields)
+    }
+
     private func redrawDrawableSurfaces() {
         surfaceLock.lock()
         let surfaces = Array(drawableSurfaces)
@@ -262,11 +266,13 @@ class TerminalApp {
 
     @objc private func applicationDidBecomeActive(notification: NSNotification) {
         setAppFocus(true)
+        writeTestLog(event: "app_focus_changed", fields: ["focused": true])
         redrawDrawableSurfaces()
     }
 
     @objc private func applicationDidResignActive(notification: NSNotification) {
         setAppFocus(false)
+        writeTestLog(event: "app_focus_changed", fields: ["focused": false])
     }
 
     func handleAction(app: ghostty_app_t, target: ghostty_target_s, action: ghostty_action_s) {
