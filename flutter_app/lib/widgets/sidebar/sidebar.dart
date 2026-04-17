@@ -36,7 +36,9 @@ bool _sameGroupScope(Group first, Group second) {
 }
 
 class Sidebar extends ConsumerWidget {
-  const Sidebar({super.key});
+  final double? width;
+
+  const Sidebar({super.key, this.width});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -44,7 +46,8 @@ class Sidebar extends ConsumerWidget {
     final uiState = ref.watch(uiProvider);
     final screenWidth = MediaQuery.of(context).size.width;
     final sidebarWidth =
-        uiState.isMobile ? min(280.0, screenWidth * 0.85) : 280.0;
+        width ??
+        (uiState.isMobile ? min(280.0, screenWidth * 0.85) : 280.0);
     final safeTop = uiState.isMobile ? MediaQuery.of(context).padding.top : 0.0;
 
     return Container(

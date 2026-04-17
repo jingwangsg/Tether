@@ -5,9 +5,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/server_provider.dart';
 import '../providers/session_provider.dart';
+import '../providers/sidebar_width_provider.dart';
 import '../providers/ui_provider.dart';
 import '../platform/terminal_backend.dart';
 import '../widgets/sidebar/sidebar.dart';
+import '../widgets/sidebar/sidebar_resizer.dart';
 import '../widgets/terminal/terminal_area.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -103,6 +105,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         }
         if (event.logicalKey == LogicalKeyboardKey.keyF) {
           _terminalAreaKey.currentState?.showSearchForActiveSession();
+          return true;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.keyB &&
+            Platform.isMacOS) {
+          ref.read(uiProvider.notifier).toggleSidebar();
           return true;
         }
       }
@@ -215,8 +222,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               children: [
                 Row(
                   children: [
-                    if (!uiState.isMobile && uiState.sidebarOpen)
-                      const Sidebar(),
+                    if (!uiState.isMobile && uiState.sidebarOpen) ...[
+                      Sidebar(width: ref.watch(sidebarWidthProvider)),
+                      const SidebarResizer(),
+                    ],
                     Expanded(
                       child: TerminalArea(
                         key: _terminalAreaKey,
