@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../models/group.dart';
 import '../../models/ssh_host.dart';
+import '../../providers/recent_paths_provider.dart';
 import '../../providers/server_provider.dart';
 import '../../services/api_service.dart';
 
@@ -270,6 +271,60 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
     _fetchCompletions(path);
   }
 
+  Widget _buildRecentlyUsed(List<String> paths) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(left: 2, bottom: 4),
+            child: Text(
+              'Recently used',
+              style: TextStyle(color: Colors.white54, fontSize: 11),
+            ),
+          ),
+          Container(
+            key: const ValueKey('group-dialog-recent-paths'),
+            constraints: const BoxConstraints(
+              maxHeight: _completionPopupMaxHeight,
+            ),
+            decoration: BoxDecoration(
+              color: const Color(0xFF2D2D2D),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: Colors.white24),
+            ),
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: paths.length,
+              itemBuilder: (context, index) {
+                final path = paths[index];
+                return InkWell(
+                  onTap: () => _applyCompletion(path),
+                  child: Container(
+                    color: Colors.transparent,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 6,
+                    ),
+                    child: Text(
+                      path,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Map<ShortcutActivator, VoidCallback> get _completionShortcuts {
     if (!_completionShortcutsEnabled) {
       return const <ShortcutActivator, VoidCallback>{};
@@ -320,6 +375,12 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
               sshHost: _selectedSshHost,
             );
       }
+      await ref
+          .read(recentPathsProvider.notifier)
+          .record(
+            localityKey: Group.localityKeyFor(_selectedSshHost),
+            path: defaultCwd,
+          );
       if (mounted) Navigator.pop(context);
     } catch (e) {
       if (mounted) {
@@ -340,6 +401,11 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
     final serverState = ref.watch(groupDialogServerStateProvider);
     final sshHosts = _hostOptions(serverState);
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    final recentPaths =
+        ref.watch(recentPathsProvider)[Group.localityKeyFor(
+              _selectedSshHost,
+            )] ??
+            const <String>[];
 
     return AlertDialog(
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -474,6 +540,7 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
                     },
                   ),
                 ),
+              if (recentPaths.isNotEmpty) _buildRecentlyUsed(recentPaths),
               if (bottomInset > 0) SizedBox(height: bottomInset),
             ],
           ),

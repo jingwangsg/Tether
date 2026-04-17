@@ -34,7 +34,13 @@ class Group {
 
   bool get isRemote => normalizedSshHost != null;
 
-  String get localityKey => isRemote ? 'ssh:$normalizedSshHost' : 'local';
+  String get localityKey => localityKeyFor(sshHost);
+
+  static String localityKeyFor(String? sshHost) {
+    final trimmed = sshHost?.trim();
+    if (trimmed == null || trimmed.isEmpty) return 'local';
+    return 'ssh:$trimmed';
+  }
 
   Group copyWith({
     String? name,
