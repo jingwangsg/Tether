@@ -1,4 +1,5 @@
 use crate::persistence::scrollback::ScrollbackBuffer;
+use crate::pty::anti_flicker::{self, OutputSender};
 use crate::pty::osc_parser::OscParser;
 use crate::pty::semantic_prompt_parser::{SemanticPromptKind, SemanticPromptParser};
 use bytes::Bytes;
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
 /// Transient foreground process info (not persisted).
@@ -135,6 +136,7 @@ impl PtySession {
         scrollback_disk_max_mb: usize,
         terminal_env: PtyTerminalEnv,
         semantic_event_tx: tokio::sync::mpsc::Sender<Uuid>,
+        anti_flicker: bool,
     ) -> anyhow::Result<Arc<Self>> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
@@ -206,11 +208,22 @@ impl PtySession {
             semantic_event_tx,
         });
 
+        // Build the output sender. When anti-flicker is enabled, raw PTY
+        // chunks flow through a coalescing batcher that DEC-2026-wraps each
+        // flush before broadcasting. Otherwise we send raw chunks directly,
+        // preserving the original behaviour for debugging.
+        let output_sender = if anti_flicker {
+            let (raw_tx, raw_rx) = mpsc::unbounded_channel();
+            tokio::spawn(anti_flicker::batcher_loop(raw_rx, output_tx.clone()));
+            OutputSender::Batcher(raw_tx)
+        } else {
+            OutputSender::Direct(output_tx.clone())
+        };
+
         // Spawn reader task
         let session_clone = session.clone();
-        let tx = output_tx.clone();
         tokio::task::spawn_blocking(move || {
-            Self::reader_loop(master_reader, tx, session_clone);
+            Self::reader_loop(master_reader, output_sender, session_clone);
         });
 
         Ok(session)
@@ -218,7 +231,7 @@ impl PtySession {
 
     fn reader_loop(
         mut reader: Box<dyn Read + Send>,
-        tx: broadcast::Sender<Bytes>,
+        tx: OutputSender,
         session: Arc<PtySession>,
     ) {
         let mut buf = [0u8; 4096];
@@ -265,7 +278,7 @@ impl PtySession {
                     if had_semantic_event || had_title_change {
                         let _ = session.semantic_event_tx.try_send(session.id);
                     }
-                    let _ = tx.send(data);
+                    tx.send(data);
                 }
                 Err(_) => break,
             }
@@ -645,6 +658,7 @@ mod tests {
             1,
             super::PtyTerminalEnv::default(),
             tx,
+            false,
         );
         assert!(result.is_err(), "spawn with invalid shell should fail");
 

@@ -15,6 +15,7 @@ import '../../utils/session_interaction.dart';
 import '../../utils/session_status.dart';
 import 'session_status_dot.dart';
 import 'terminal_controller.dart';
+import 'terminal_bottom_insets.dart';
 import 'terminal_image_paste.dart';
 import 'mobile_key_bar.dart';
 
@@ -111,6 +112,13 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     final groups = ref.watch(serverProvider.select((s) => s.groups));
     final sessions = ref.watch(serverProvider.select((s) => s.sessions));
     final serverConfig = ref.watch(serverProvider.select((s) => s.config));
+    final media = MediaQuery.of(context);
+    final bottomInset = media.viewInsets.bottom;
+    final bottomPadding = mobileKeyBarBottomPaddingForMediaQuery(media);
+    final bottomObstruction = terminalBottomObstructionForMediaQuery(
+      media,
+      showKeyBar: uiState.showKeyBar,
+    );
 
     // Prune maps for sessions that are no longer open to prevent unbounded growth.
     final openIds = openTabs.map((t) => t.sessionId).toSet();
@@ -236,14 +244,26 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                         ),
                       );
                     }),
+                    // Reserve space at the bottom for the MobileKeyBar
+                    // overlay (and the soft keyboard when it's up) so the
+                    // draggable floating nav pad's default position never
+                    // lands beneath the keybar / keyboard — its taps would
+                    // otherwise be intercepted by the overlay.
                     if (uiState.showKeyBar && openTabs.isNotEmpty)
-                      MobileFloatingNavPad(
-                        onKeyPress: (data) {
-                          final id = ref.read(sessionProvider).activeSessionId;
-                          if (id != null) {
-                            _terminalControllers[id]?.sendText(data);
-                          }
-                        },
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        top: 0,
+                        bottom: bottomObstruction,
+                        child: MobileFloatingNavPad(
+                          onKeyPress: (data) {
+                            final id =
+                                ref.read(sessionProvider).activeSessionId;
+                            if (id != null) {
+                              _terminalControllers[id]?.sendText(data);
+                            }
+                          },
+                        ),
                       ),
                   ],
                 ),
@@ -265,27 +285,35 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       },
       child: Focus(
         autofocus: true,
-        child: Column(
+        child: Stack(
+          fit: StackFit.expand,
           children: [
-            content,
+            Positioned.fill(
+              child: Column(children: [content]),
+            ),
             if (uiState.showKeyBar)
-              Container(
-                color: const Color(0xFF1E1E1E),
-                padding: EdgeInsets.only(
-                  bottom: MediaQuery.of(context).padding.bottom,
-                ),
-                child: MobileKeyBar(
-                  onKeyPress: (data) {
-                    final id = ref.read(sessionProvider).activeSessionId;
-                    if (id != null) {
-                      _terminalControllers[id]?.sendText(data);
-                    }
-                  },
-                  onCopy: () {
-                    final id = ref.read(sessionProvider).activeSessionId;
-                    if (id != null) _terminalControllers[id]?.copy();
-                  },
-                  onPaste: () => _pasteToActiveTerminal(),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: bottomInset,
+                child: Container(
+                  color: const Color(0xFF1E1E1E),
+                  padding: EdgeInsets.only(
+                    bottom: bottomInset > 0 ? 0 : bottomPadding,
+                  ),
+                  child: MobileKeyBar(
+                    onKeyPress: (data) {
+                      final id = ref.read(sessionProvider).activeSessionId;
+                      if (id != null) {
+                        _terminalControllers[id]?.sendText(data);
+                      }
+                    },
+                    onCopy: () {
+                      final id = ref.read(sessionProvider).activeSessionId;
+                      if (id != null) _terminalControllers[id]?.copy();
+                    },
+                    onPaste: () => _pasteToActiveTerminal(),
+                  ),
                 ),
               ),
           ],

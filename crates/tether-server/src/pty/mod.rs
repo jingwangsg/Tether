@@ -1,3 +1,4 @@
+pub mod anti_flicker;
 pub mod manager;
 pub mod osc_parser;
 pub mod process_monitor;

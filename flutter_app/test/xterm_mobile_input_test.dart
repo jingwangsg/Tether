@@ -64,6 +64,8 @@ class _TestUiNotifier extends UiNotifier {
 Widget _buildHarness({
   required _MockWsFactory wsFactory,
   required UiState uiState,
+  MediaQueryData? mediaQueryData,
+  Size terminalSize = const Size(800, 600),
 }) {
   SharedPreferences.setMockInitialValues({});
   return ProviderScope(
@@ -79,15 +81,19 @@ Widget _buildHarness({
       uiProvider.overrideWith((_) => _TestUiNotifier(uiState)),
     ],
     child: MaterialApp(
-      home: Scaffold(
-        body: SizedBox(
-          width: 800,
-          height: 600,
-          child: XtermTerminalView(
-            sessionId: 'sess-mobile-input',
-            controller: TerminalController(),
-            isActive: true,
-            wsFactory: wsFactory.call,
+      home: MediaQuery(
+        data: mediaQueryData ?? MediaQueryData(size: terminalSize),
+        child: Scaffold(
+          resizeToAvoidBottomInset: false,
+          body: SizedBox(
+            width: terminalSize.width,
+            height: terminalSize.height,
+            child: XtermTerminalView(
+              sessionId: 'sess-mobile-input',
+              controller: TerminalController(),
+              isActive: true,
+              wsFactory: wsFactory.call,
+            ),
           ),
         ),
       ),
@@ -151,4 +157,63 @@ void main() {
     );
     expect(terminalView.hardwareKeyboardOnly, isTrue);
   });
+
+  testWidgets(
+    'terminal reserves key bar and safe area when keyboard is hidden',
+    (tester) async {
+      final factory = _MockWsFactory();
+
+      await tester.pumpWidget(
+        _buildHarness(
+          wsFactory: factory,
+          uiState: const UiState(
+            isMobile: true,
+            showKeyBar: true,
+            sidebarOpen: false,
+          ),
+          terminalSize: const Size(390, 844),
+          mediaQueryData: const MediaQueryData(
+            size: Size(390, 844),
+            padding: EdgeInsets.only(bottom: 20),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final terminalView = tester.widget<xterm.TerminalView>(
+        find.byType(xterm.TerminalView),
+      );
+      expect(terminalView.padding, const EdgeInsets.only(bottom: 124));
+    },
+  );
+
+  testWidgets(
+    'terminal reserves keyboard height without double counting safe area',
+    (tester) async {
+      final factory = _MockWsFactory();
+
+      await tester.pumpWidget(
+        _buildHarness(
+          wsFactory: factory,
+          uiState: const UiState(
+            isMobile: true,
+            showKeyBar: true,
+            sidebarOpen: false,
+          ),
+          terminalSize: const Size(390, 844),
+          mediaQueryData: const MediaQueryData(
+            size: Size(390, 844),
+            padding: EdgeInsets.only(bottom: 20),
+            viewInsets: EdgeInsets.only(bottom: 300),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final terminalView = tester.widget<xterm.TerminalView>(
+        find.byType(xterm.TerminalView),
+      );
+      expect(terminalView.padding, const EdgeInsets.only(bottom: 404));
+    },
+  );
 }

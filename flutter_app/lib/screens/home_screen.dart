@@ -176,6 +176,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF121212),
+        // TerminalArea manages keyboard and bottom-safe-area insets manually
+        // so the terminal, floating nav pad, and MobileKeyBar all agree on
+        // the same bottom obstruction.
+        resizeToAvoidBottomInset: false,
         body: GestureDetector(
           behavior: HitTestBehavior.translucent,
           onHorizontalDragStart:

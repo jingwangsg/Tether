@@ -159,6 +159,7 @@ impl AppState {
             inner.config.terminal.scrollback_disk_max_mb,
             terminal_env,
             inner.semantic_event_tx.clone(),
+            inner.config.terminal.anti_flicker,
         )?;
 
         // Persist to DB

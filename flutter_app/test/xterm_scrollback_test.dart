@@ -368,6 +368,9 @@ void main() {
       await tester.pump();
 
       final ws = factory.lastService!;
+      // sendResize is debounced (~120ms) to coalesce IME-jitter bursts, so
+      // let the timer fire before asserting.
+      await tester.pump(const Duration(milliseconds: 150));
       expect(ws.resizeCalls, isNotEmpty);
 
       final initialResizeCount = ws.resizeCalls.length;
@@ -379,7 +382,7 @@ void main() {
 
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pump();
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 150));
 
       expect(ws.resumeCalls, 1);
       expect(ws.resizeCalls.length, greaterThan(initialResizeCount));

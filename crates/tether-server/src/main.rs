@@ -49,6 +49,12 @@ struct Cli {
     /// Kill remote tether-server processes and delete ~/.tether on all SSH hosts before starting
     #[arg(long)]
     restart_remote: bool,
+
+    /// Disable the anti-flicker pipeline (adaptive PTY output batching + DEC
+    /// Mode 2026 synchronized-update wrapping). By default anti-flicker is on;
+    /// use this flag only for debugging raw output.
+    #[arg(long)]
+    no_anti_flicker: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -62,6 +68,9 @@ fn main() -> anyhow::Result<()> {
     }
     if let Some(port) = cli.port {
         config.server.port = port;
+    }
+    if cli.no_anti_flicker {
+        config.terminal.anti_flicker = false;
     }
 
     let data_dir = config.data_dir();

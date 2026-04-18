@@ -115,6 +115,12 @@ pub struct TerminalSection {
     pub scrollback_memory_kb: usize,
     #[serde(default = "default_scrollback_disk_max_mb")]
     pub scrollback_disk_max_mb: usize,
+    /// Anti-flicker pipeline: coalesce rapid PTY chunks and wrap each flush
+    /// in DEC Mode 2026 synchronized-update markers so Ink-based TUIs
+    /// (Codex, Claude Code) render atomically on the client. Default: on.
+    /// Disable only for debugging raw output.
+    #[serde(default = "default_anti_flicker_enabled")]
+    pub anti_flicker: bool,
 }
 
 fn default_bind() -> String {
@@ -131,6 +137,9 @@ fn default_scrollback_memory_kb() -> usize {
 }
 fn default_scrollback_disk_max_mb() -> usize {
     50
+}
+fn default_anti_flicker_enabled() -> bool {
+    true
 }
 
 impl Default for ServerSection {
@@ -157,6 +166,7 @@ impl Default for TerminalSection {
             default_shell: String::new(),
             scrollback_memory_kb: default_scrollback_memory_kb(),
             scrollback_disk_max_mb: default_scrollback_disk_max_mb(),
+            anti_flicker: default_anti_flicker_enabled(),
         }
     }
 }

@@ -15,6 +15,8 @@ import '../../services/websocket_service.dart';
 import 'mobile_key_bar.dart' show applyMobileModifiers;
 import 'semantic_prompt_state.dart';
 import 'selection_handles_overlay.dart';
+import 'sync_block_parser.dart';
+import 'terminal_bottom_insets.dart';
 import 'terminal_controller.dart';
 
 /// Expanded word separators for terminal output. Includes all xterm defaults
@@ -107,6 +109,12 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
   final List<Uint8List> _replayBuffer = [];
   Timer? _replayFlushTimer;
 
+  // Anti-flicker: strips DEC Mode 2026 markers from live output so xterm.dart
+  // writes each coalesced Ink redraw atomically (see sync_block_parser.dart
+  // and crates/tether-server/src/pty/anti_flicker.rs). Scrollback bytes are
+  // never wrapped on the server, so they bypass this parser.
+  late final SyncBlockParser _syncParser;
+
   // Scrollback lazy loading state
   int _loadedStartOffset = 0;
   @visibleForTesting
@@ -124,6 +132,13 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
   bool _needsFollowupSemanticResize = false;
   int _semanticResizeRebuildCount = 0;
   int? _lastKnownCols;
+
+  // PTY resize debounce — coalesces bursts of onResize (e.g. residual
+  // viewport jitter during IME animation, window-drag ticks) into a single
+  // WS frame so the remote PTY gets one SIGWINCH per real dimension change.
+  Timer? _resizeDebounce;
+  int? _pendingResizeCols;
+  int? _pendingResizeRows;
 
   // Prefetch state
   bool _isPrefetching = false;
@@ -153,6 +168,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
   void initState() {
     super.initState();
     _xtermViewKey = GlobalKey<xterm.TerminalViewState>();
+    _syncParser = SyncBlockParser(onSegment: _onSyncSegment);
     final lifecycleState = WidgetsBinding.instance.lifecycleState;
     _appLifecycleActive =
         lifecycleState == null || lifecycleState == AppLifecycleState.resumed;
@@ -187,7 +203,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
       terminal.reflowEnabled = false;
     }
     terminal.onResize = (width, height, pixelWidth, pixelHeight) {
-      _ws?.sendResize(width, height);
+      _scheduleResizeSend(width, height);
       final previousCols = _lastKnownCols;
       _lastKnownCols = width;
       // Only rebuild when char column count changes. Row-only changes (e.g.
@@ -212,6 +228,22 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     final changed = _semanticPromptState.handlePrivateOsc(code, args);
     if (!changed) return;
     terminal.reflowEnabled = !_semanticPromptState.shouldUseResizeRecovery;
+  }
+
+  void _scheduleResizeSend(int cols, int rows) {
+    _pendingResizeCols = cols;
+    _pendingResizeRows = rows;
+    _resizeDebounce?.cancel();
+    _resizeDebounce = Timer(const Duration(milliseconds: 120), () {
+      final pendingCols = _pendingResizeCols;
+      final pendingRows = _pendingResizeRows;
+      _pendingResizeCols = null;
+      _pendingResizeRows = null;
+      _resizeDebounce = null;
+      if (pendingCols != null && pendingRows != null) {
+        _ws?.sendResize(pendingCols, pendingRows);
+      }
+    });
   }
 
   void _scheduleSemanticResizeRebuild() {
@@ -595,9 +627,11 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
       switch (msg) {
         case OutputMessage():
           if (_isReplaying) _flushReplayBuffer();
-          _ackedOffset += msg.data.length;
-          _cacheRawBytes(msg.data);
-          _writeToTerminal(msg.data);
+          // Live output may be DEC 2026-wrapped by the server's anti-flicker
+          // pipeline. The parser emits unwrapped segments via _onSyncSegment,
+          // which advances _ackedOffset by the unwrapped length so scrollback
+          // offsets stay aligned with raw bytes stored on the server.
+          _syncParser.feed(msg.data);
         case ScrollbackMessage():
           _ackedOffset += msg.data.length;
           _cacheRawBytes(msg.data);
@@ -1005,6 +1039,17 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     });
   }
 
+  /// Handler for unwrapped segments from [_syncParser]. Called once per
+  /// DEC 2026-wrapped block (or once per chunk if the block is absent); the
+  /// emitted bytes are the same raw bytes the server persisted to scrollback,
+  /// so offset accounting stays consistent with `/api/sessions/{id}/scrollback`.
+  void _onSyncSegment(Uint8List segment) {
+    if (segment.isEmpty) return;
+    _ackedOffset += segment.length;
+    _cacheRawBytes(segment);
+    _writeToTerminal(segment);
+  }
+
   void _cacheRawBytes(Uint8List data) {
     _rawBytesCache.add(data);
     _rawBytesCacheSize += data.length;
@@ -1181,6 +1226,8 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     _foregroundDebounce?.cancel();
     _replayFlushTimer?.cancel();
     _semanticResizeRebuildTimer?.cancel();
+    _resizeDebounce?.cancel();
+    _syncParser.reset();
     _msgSub?.cancel();
     _ws?.dispose();
     _decoderSub?.cancel();
@@ -1194,12 +1241,21 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     final uiState = ref.watch(uiProvider);
+    final media = MediaQuery.of(context);
+    final shouldApplyMobileBottomInset = Platform.isAndroid || uiState.showKeyBar;
+    final terminalBottomInset =
+        shouldApplyMobileBottomInset
+            ? terminalBottomObstructionForMediaQuery(
+              media,
+              showKeyBar: uiState.showKeyBar,
+            )
+            : 0.0;
     final terminalView = xterm.TerminalView(
       key: _xtermViewKey,
       _terminal,
       controller: _terminalController,
       scrollController: _scrollController,
-      padding: EdgeInsets.zero,
+      padding: EdgeInsets.only(bottom: terminalBottomInset),
       deleteDetection: true,
       keyboardType: TextInputType.visiblePassword,
       hardwareKeyboardOnly: uiState.softKeyboardLocked,
@@ -1227,36 +1283,55 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
 
     final showTopIndicator = _loadedStartOffset > 0 || _isPrefetching;
 
-    if (!_searchOpen && !showTopIndicator) return terminalWidget;
-
-    return Stack(
-      children: [
-        terminalWidget,
-        if (_searchOpen) Positioned(top: 8, right: 8, child: _buildSearchBar()),
-        if (showTopIndicator)
-          Positioned(
-            top: 4,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 4,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xCC1E1E1E),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  _isPrefetching ? 'Loading...' : 'Scroll up for more',
-                  style: const TextStyle(color: Colors.white54, fontSize: 11),
+    Widget result;
+    if (!_searchOpen && !showTopIndicator) {
+      result = terminalWidget;
+    } else {
+      result = Stack(
+        children: [
+          terminalWidget,
+          if (_searchOpen)
+            Positioned(top: 8, right: 8, child: _buildSearchBar()),
+          if (showTopIndicator)
+            Positioned(
+              top: 4,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xCC1E1E1E),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    _isPrefetching ? 'Loading...' : 'Scroll up for more',
+                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+                  ),
                 ),
               ),
             ),
-          ),
-      ],
-    );
+        ],
+      );
+    }
+
+    // xterm.dart already consumes MediaQuery.padding inside RenderTerminal.
+    // Clear the bottom safe-area padding in the subtree so the explicit
+    // terminalBottomInset above is the single source of bottom obstruction.
+    // Keep viewInsets intact so Android keyboard visibility still propagates.
+    if (shouldApplyMobileBottomInset) {
+      result = MediaQuery(
+        data: media.copyWith(
+          viewPadding: media.viewPadding.copyWith(bottom: 0),
+          padding: media.padding.copyWith(bottom: 0),
+        ),
+        child: result,
+      );
+    }
+    return result;
   }
 
   Widget _buildSearchBar() {

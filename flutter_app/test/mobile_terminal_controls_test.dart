@@ -49,11 +49,17 @@ Future<void> _pumpWithContainer(
   WidgetTester tester,
   ProviderContainer container,
   Widget child,
+  {MediaQueryData? mediaQueryData}
 ) async {
   await tester.pumpWidget(
     UncontrolledProviderScope(
       container: container,
-      child: MaterialApp(home: Scaffold(body: child)),
+      child: MaterialApp(
+        home:
+            mediaQueryData == null
+                ? Scaffold(body: child)
+                : MediaQuery(data: mediaQueryData, child: Scaffold(body: child)),
+      ),
     ),
   );
   await tester.pumpAndSettle();
@@ -293,6 +299,54 @@ void main() {
 
     expect(backend.sentText, ['/', '\x1b[C']);
   });
+
+  testWidgets(
+    'floating nav pad stays above key bar safe area when keyboard is hidden',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(390, 844);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final group = _group('local');
+      final session = _session('session-safe-area', groupId: group.id);
+      final backend = _FakeTerminalBackend();
+      final container = _container(
+        serverState: ServerState(
+          isConnected: true,
+          groups: [group],
+          sessions: [session],
+        ),
+        uiState: const UiState(
+          isMobile: true,
+          showKeyBar: true,
+          sidebarOpen: false,
+          mobileKeys: defaultMobileToolbarKeys,
+        ),
+      );
+      addTearDown(container.dispose);
+
+      container.read(sessionProvider.notifier).openTab(session.id);
+
+      await _pumpWithContainer(
+        tester,
+        container,
+        TerminalArea(backend: backend),
+        mediaQueryData: const MediaQueryData(
+          size: Size(390, 844),
+          padding: EdgeInsets.only(bottom: 20),
+        ),
+      );
+
+      final padFinder = find.byKey(const ValueKey('mobile-floating-nav-pad'));
+      final keyBarFinder = find.byKey(const ValueKey('mobile-key-bar'));
+
+      expect(
+        tester.getBottomLeft(padFinder).dy,
+        lessThanOrEqualTo(tester.getTopLeft(keyBarFinder).dy),
+      );
+    },
+  );
 }
 
 class _TestServerNotifier extends ServerNotifier {
