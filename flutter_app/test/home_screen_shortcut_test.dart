@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -281,6 +279,84 @@ void main() {
 
     expect(container.read(uiProvider).sidebarOpen, isFalse);
   });
+
+  testWidgets('mobile drag from left half but not edge does not open sidebar', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final container = _container(const ServerState());
+    addTearDown(container.dispose);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'xterm'),
+    );
+    await tester.pump();
+
+    expect(container.read(uiProvider).sidebarOpen, isFalse);
+
+    await tester.dragFrom(const Offset(96, 300), const Offset(140, 0));
+    await tester.pumpAndSettle();
+
+    expect(container.read(uiProvider).sidebarOpen, isFalse);
+  });
+
+  testWidgets('mobile drag from left edge still opens sidebar', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final container = _container(const ServerState());
+    addTearDown(container.dispose);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'xterm'),
+    );
+    await tester.pump();
+
+    expect(container.read(uiProvider).sidebarOpen, isFalse);
+
+    await tester.dragFrom(const Offset(8, 300), const Offset(140, 0));
+    await tester.pumpAndSettle();
+
+    expect(container.read(uiProvider).sidebarOpen, isTrue);
+  });
+
+  testWidgets(
+    'mobile left-edge drag does not open sidebar during selection gesture',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(390, 844);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final container = _container(const ServerState());
+      addTearDown(container.dispose);
+
+      await _pumpHomeScreen(
+        tester,
+        container,
+        const _FakeTerminalBackend(platformId: 'xterm'),
+      );
+      await tester.pump();
+
+      container.read(uiProvider.notifier).setSelectionGestureActive(true);
+      await tester.pump();
+
+      await tester.dragFrom(const Offset(8, 300), const Offset(140, 0));
+      await tester.pumpAndSettle();
+
+      expect(container.read(uiProvider).sidebarOpen, isFalse);
+    },
+  );
 }
 
 class _TestServerNotifier extends ServerNotifier {

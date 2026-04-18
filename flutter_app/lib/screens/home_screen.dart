@@ -27,8 +27,7 @@ class HomeScreen extends ConsumerStatefulWidget {
         key == LogicalKeyboardKey.numpadSubtract) {
       return 'decrease_font_size:1';
     }
-    if (key == LogicalKeyboardKey.digit0 ||
-        key == LogicalKeyboardKey.numpad0) {
+    if (key == LogicalKeyboardKey.digit0 || key == LogicalKeyboardKey.numpad0) {
       return 'reset_font_size';
     }
     return null;
@@ -41,6 +40,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   static const _windowChannel = MethodChannel('dev.tether/window');
+  static const _sidebarOpenEdgeWidth = 24.0;
   final _terminalAreaKey = GlobalKey<TerminalAreaState>();
   bool _edgeDragActive = false;
   double _dragDistance = 0;
@@ -107,8 +107,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           _terminalAreaKey.currentState?.showSearchForActiveSession();
           return true;
         }
-        if (event.logicalKey == LogicalKeyboardKey.keyB &&
-            Platform.isMacOS) {
+        if (event.logicalKey == LogicalKeyboardKey.keyB && Platform.isMacOS) {
           ref.read(uiProvider.notifier).toggleSidebar();
           return true;
         }
@@ -185,12 +184,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           onHorizontalDragStart:
               uiState.isMobile
                   ? (details) {
+                    final currentUiState = ref.read(uiProvider);
+                    if (currentUiState.selectionGestureActive) {
+                      _edgeDragActive = false;
+                      _dragDistance = 0;
+                      return;
+                    }
                     final dx = details.globalPosition.dx;
-                    final screenWidth = MediaQuery.of(context).size.width;
-                    if (!uiState.sidebarOpen && dx < screenWidth / 2) {
+                    if (!currentUiState.sidebarOpen &&
+                        dx <= _sidebarOpenEdgeWidth) {
                       _edgeDragActive = true;
                       _dragDistance = 0;
-                    } else if (uiState.sidebarOpen) {
+                    } else if (currentUiState.sidebarOpen) {
                       _edgeDragActive = true;
                       _dragDistance = 0;
                     } else {
@@ -202,6 +207,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               uiState.isMobile
                   ? (details) {
                     if (!_edgeDragActive) return;
+                    if (ref.read(uiProvider).selectionGestureActive) {
+                      _edgeDragActive = false;
+                      _dragDistance = 0;
+                      return;
+                    }
                     _dragDistance += details.delta.dx;
                   }
                   : null,
@@ -209,12 +219,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               uiState.isMobile
                   ? (details) {
                     if (!_edgeDragActive) return;
+                    final currentUiState = ref.read(uiProvider);
                     _edgeDragActive = false;
-                    if (!uiState.sidebarOpen && _dragDistance > 80) {
+                    if (currentUiState.selectionGestureActive) {
+                      _dragDistance = 0;
+                      return;
+                    }
+                    if (!currentUiState.sidebarOpen && _dragDistance > 80) {
                       ref.read(uiProvider.notifier).setSidebarOpen(true);
-                    } else if (uiState.sidebarOpen && _dragDistance < -80) {
+                    } else if (currentUiState.sidebarOpen &&
+                        _dragDistance < -80) {
                       ref.read(uiProvider.notifier).setSidebarOpen(false);
                     }
+                    _dragDistance = 0;
                   }
                   : null,
           child: Padding(

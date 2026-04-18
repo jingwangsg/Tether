@@ -9,6 +9,7 @@ class UiState {
   final bool isMobile;
   final bool showKeyBar;
   final bool sidebarOpen;
+  final bool selectionGestureActive;
   final bool softKeyboardLocked;
   final ModifierMode ctrlMode;
   final ModifierMode altMode;
@@ -19,6 +20,7 @@ class UiState {
     this.isMobile = false,
     this.showKeyBar = false,
     this.sidebarOpen = true,
+    this.selectionGestureActive = false,
     this.softKeyboardLocked = false,
     this.ctrlMode = ModifierMode.inactive,
     this.altMode = ModifierMode.inactive,
@@ -33,6 +35,7 @@ class UiState {
     bool? isMobile,
     bool? showKeyBar,
     bool? sidebarOpen,
+    bool? selectionGestureActive,
     bool? softKeyboardLocked,
     ModifierMode? ctrlMode,
     ModifierMode? altMode,
@@ -44,6 +47,8 @@ class UiState {
       isMobile: isMobile ?? this.isMobile,
       showKeyBar: showKeyBar ?? this.showKeyBar,
       sidebarOpen: sidebarOpen ?? this.sidebarOpen,
+      selectionGestureActive:
+          selectionGestureActive ?? this.selectionGestureActive,
       softKeyboardLocked: softKeyboardLocked ?? this.softKeyboardLocked,
       ctrlMode: ctrlMode ?? this.ctrlMode,
       altMode: altMode ?? this.altMode,
@@ -84,6 +89,11 @@ class UiNotifier extends StateNotifier<UiState> {
 
   void setSidebarOpen(bool open) {
     state = state.copyWith(sidebarOpen: open);
+  }
+
+  void setSelectionGestureActive(bool active) {
+    if (state.selectionGestureActive == active) return;
+    state = state.copyWith(selectionGestureActive: active);
   }
 
   void toggleSoftKeyboardLock() {

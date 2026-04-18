@@ -263,7 +263,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     }
 
     if (widget.scrollbackFetcher != null) {
-      final data = await widget.scrollbackFetcher!(_loadedStartOffset, _ackedOffset);
+      final data = await widget.scrollbackFetcher!(
+        _loadedStartOffset,
+        _ackedOffset,
+      );
       return data == null ? null : <Uint8List>[data];
     }
 
@@ -1161,18 +1164,18 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
   void _performAction(String action) {
     if (action == 'increase_font_size:1') {
       final current = ref.read(settingsProvider).fontSize;
-      ref.read(settingsProvider.notifier).setFontSize(
-        (current + 1).clamp(10, 24),
-      );
+      ref
+          .read(settingsProvider.notifier)
+          .setFontSize((current + 1).clamp(10, 24));
     } else if (action == 'decrease_font_size:1') {
       final current = ref.read(settingsProvider).fontSize;
-      ref.read(settingsProvider.notifier).setFontSize(
-        (current - 1).clamp(10, 24),
-      );
+      ref
+          .read(settingsProvider.notifier)
+          .setFontSize((current - 1).clamp(10, 24));
     } else if (action == 'reset_font_size') {
-      ref.read(settingsProvider.notifier).setFontSize(
-        TerminalSettings.defaultFontSize,
-      );
+      ref
+          .read(settingsProvider.notifier)
+          .setFontSize(TerminalSettings.defaultFontSize);
     }
   }
 
@@ -1242,7 +1245,8 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     final settings = ref.watch(settingsProvider);
     final uiState = ref.watch(uiProvider);
     final media = MediaQuery.of(context);
-    final shouldApplyMobileBottomInset = Platform.isAndroid || uiState.showKeyBar;
+    final shouldApplyMobileBottomInset =
+        Platform.isAndroid || uiState.showKeyBar;
     final terminalBottomInset =
         shouldApplyMobileBottomInset
             ? terminalBottomObstructionForMediaQuery(
@@ -1273,10 +1277,8 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
       terminalWidget = SelectionHandlesOverlay(
         terminalController: _terminalController,
         xtermViewKey: _xtermViewKey!,
-        terminal: _terminal,
-        onCopy: copySelection,
-        onPaste: pasteFromClipboard,
-        scrollController: _scrollController,
+        onSelectionGestureActiveChanged:
+            ref.read(uiProvider.notifier).setSelectionGestureActive,
         child: terminalView,
       );
     }
