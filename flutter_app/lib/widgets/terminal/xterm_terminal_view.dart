@@ -409,6 +409,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
       replayDecoder.close();
 
       _terminal = rebuiltTerminal;
+      _wasAltScreen = false;
+      _lastSentCols = null;
+      _lastSentRows = null;
       _bindDecoderPipeline();
       if (mounted) {
         setState(() {});
@@ -727,6 +730,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
             // Re-send terminal dimensions now that the WebSocket is confirmed.
             // The initial resize from xterm.dart's performLayout may fire before
             // the channel is ready; this ensures the server always has the size.
+            _wasAltScreen = false;
             final w = _terminal.viewWidth;
             final h = _terminal.viewHeight;
             if (w > 0 && h > 0) {
@@ -1030,6 +1034,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     // 6. Swap terminal
     _terminal = newTerminal;
     _configureTerminal(_terminal);
+    _wasAltScreen = false;
+    _lastSentCols = null;
+    _lastSentRows = null;
 
     // 7. Bind decoder to new terminal
     _bindDecoderPipeline();
@@ -1138,6 +1145,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     }
   }
 
+  /// Sends current terminal dimensions directly, bypassing [_scheduleResizeSend]
+  /// and its alt-screen guard intentionally. Called when the tab just became
+  /// visible (resume) — the server needs the current size regardless of
+  /// alt-screen state to render correctly after a pause.
   void _sendCurrentSize() {
     final width = _terminal.viewWidth;
     final height = _terminal.viewHeight;
