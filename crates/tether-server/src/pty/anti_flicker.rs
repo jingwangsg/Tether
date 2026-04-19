@@ -66,6 +66,7 @@ pub async fn batcher_loop(
     let mut buffer = BytesMut::new();
     let mut last_event: Option<Instant> = None;
     let mut flush_deadline: Option<Instant> = None;
+    let mut batch_start: Option<Instant> = None;
 
     loop {
         // Capture the deadline by value so the future doesn't hold a borrow
@@ -91,16 +92,25 @@ pub async fn batcher_loop(
                     last_event = Some(now);
                     buffer.extend_from_slice(&chunk);
 
+                    if batch_start.is_none() {
+                        batch_start = Some(now);
+                    }
+
                     if buffer.len() >= FLUSH_THRESHOLD_BYTES {
                         flush_wrapped(&mut buffer, &output_tx);
                         flush_deadline = None;
+                        batch_start = None;
                         continue;
                     }
 
                     // Resetting the deadline on each chunk means rapid bursts
                     // keep pushing the flush further out, matching codeman's
-                    // `setTimeout(clearTimeout(...))` pattern.
-                    flush_deadline = Some(now + pick_window(gap));
+                    // `setTimeout(clearTimeout(...))` pattern. Cap at 80 ms
+                    // from batch start so continuous output still flushes
+                    // at ~12 fps instead of waiting for the size threshold.
+                    let chunk_deadline = now + pick_window(gap);
+                    let cap = batch_start.unwrap() + Duration::from_millis(80);
+                    flush_deadline = Some(chunk_deadline.min(cap));
                 }
             },
             _ = &mut sleep_fut, if flush_deadline.is_some() => {
@@ -108,6 +118,7 @@ pub async fn batcher_loop(
                     flush_wrapped(&mut buffer, &output_tx);
                 }
                 flush_deadline = None;
+                batch_start = None;
             }
         }
     }
