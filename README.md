@@ -65,13 +65,25 @@ brew install zig flutter rust
 # 2. Start the server
 cargo run -p tether-server -- --port 7680
 
-# 3. Run the app
+# 3. Run the macOS app
 cd flutter_app && flutter pub get
 cd macos && pod install && cd ..
 flutter run -d macos
 ```
 
----
+## Android Build
+
+Requires a working Flutter Android toolchain. `flutter doctor` should show the
+Android toolchain as available before you run the build script.
+
+```bash
+./scripts/build-android.sh
+```
+
+This produces `build/tether-<version>-android.apk`.
+
+The current Android Gradle `release` build still uses the debug keystore, so
+this APK is for local installs and internal testing, not Play Store upload.
 
 ## Architecture
 

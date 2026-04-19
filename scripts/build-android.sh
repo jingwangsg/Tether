@@ -23,6 +23,15 @@ read_version() {
   grep '^version:' "$FLUTTER_APP_DIR/pubspec.yaml" | sed 's/version: *//; s/+.*//'
 }
 
+require_file() {
+  local path="$1"
+
+  if [[ ! -f "$path" ]]; then
+    echo "Missing Android build artifact: $path" >&2
+    return 1
+  fi
+}
+
 main() {
   local version
   local apk_source
@@ -38,11 +47,13 @@ main() {
   apk_source="$FLUTTER_APP_DIR/build/app/outputs/flutter-apk/app-release.apk"
   apk_output="$BUILD_DIR/tether-${version}-android.apk"
 
+  require_file "$apk_source"
   mkdir -p "$BUILD_DIR"
   cp "$apk_source" "$apk_output"
 
   echo ""
   echo "=== Build complete ==="
+  echo "Version: $version"
   echo "APK: $apk_output"
   ls -lh "$apk_output"
 }
