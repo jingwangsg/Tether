@@ -140,6 +140,14 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
   int? _pendingResizeCols;
   int? _pendingResizeRows;
 
+  // Alt-screen resize suppression — when the terminal is in alternate screen
+  // mode (e.g. Codex/Claude Code) and only the row count changed (keyboard
+  // toggle), suppress the WS resize to avoid SIGWINCH causing a re-render at
+  // wrong dimensions. The deferred resize is sent when alt-screen exits.
+  int? _lastSentCols;
+  int? _lastSentRows;
+  bool _wasAltScreen = false;
+
   // Prefetch state
   bool _isPrefetching = false;
   xterm.Terminal? _prefetchedTerminal;
@@ -231,6 +239,22 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
   }
 
   void _scheduleResizeSend(int cols, int rows) {
+    // When the terminal is in alt-screen mode and only the row count changed
+    // (typical of Android soft keyboard show/hide), suppress the WS resize
+    // message. This prevents SIGWINCH from triggering a re-render at wrong
+    // dimensions while Codex/Claude Code are running. The deferred resize is
+    // sent when alt-screen exits (see _checkAltScreenTransition).
+    if (_terminal.isUsingAltBuffer &&
+        _lastSentCols != null &&
+        cols == _lastSentCols &&
+        rows != _lastSentRows) {
+      _resizeDebounce?.cancel();
+      _resizeDebounce = null;
+      _pendingResizeCols = null;
+      _pendingResizeRows = null;
+      return;
+    }
+
     _pendingResizeCols = cols;
     _pendingResizeRows = rows;
     _resizeDebounce?.cancel();
@@ -242,8 +266,30 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
       _resizeDebounce = null;
       if (pendingCols != null && pendingRows != null) {
         _ws?.sendResize(pendingCols, pendingRows);
+        _lastSentCols = pendingCols;
+        _lastSentRows = pendingRows;
       }
     });
+  }
+
+  /// Detects when the terminal exits alt-screen mode and sends any suppressed
+  /// resize so the shell gets the correct dimensions after Codex/Claude Code
+  /// exits. Called after terminal.write() in the decoder pipeline.
+  void _checkAltScreenTransition() {
+    final isAlt = _terminal.isUsingAltBuffer;
+    if (_wasAltScreen && !isAlt) {
+      // Alt-screen just exited — send current dimensions so the shell gets
+      // a SIGWINCH with the correct size (which may have changed while the
+      // keyboard toggled during alt-screen).
+      final w = _terminal.viewWidth;
+      final h = _terminal.viewHeight;
+      if (w > 0 && h > 0 && (w != _lastSentCols || h != _lastSentRows)) {
+        _ws?.sendResize(w, h);
+        _lastSentCols = w;
+        _lastSentRows = h;
+      }
+    }
+    _wasAltScreen = isAlt;
   }
 
   void _scheduleSemanticResizeRebuild() {
@@ -363,6 +409,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
       replayDecoder.close();
 
       _terminal = rebuiltTerminal;
+      _wasAltScreen = false;
+      _lastSentCols = null;
+      _lastSentRows = null;
       _bindDecoderPipeline();
       if (mounted) {
         setState(() {});
@@ -681,13 +730,17 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
             // Re-send terminal dimensions now that the WebSocket is confirmed.
             // The initial resize from xterm.dart's performLayout may fire before
             // the channel is ready; this ensures the server always has the size.
+            _wasAltScreen = false;
             final w = _terminal.viewWidth;
             final h = _terminal.viewHeight;
             if (w > 0 && h > 0) {
               _ws?.sendResize(w, h);
+              _lastSentCols = w;
+              _lastSentRows = h;
             }
           } else if (!_sessionExited) {
             if (_isReplaying) _flushReplayBuffer();
+            _syncParser.reset();
             _isReplaying = true; // Reset for next reconnect
             _writeToTerminal(
               utf8.encode('\r\n\x1b[33m[reconnecting...]\x1b[0m\r\n'),
@@ -773,7 +826,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     _decoderSub?.cancel();
     _decoderSub = _bytesInput.stream
         .transform(const Utf8Decoder(allowMalformed: true))
-        .listen((text) => _terminal.write(text));
+        .listen((text) {
+      _terminal.write(text);
+      _checkAltScreenTransition();
+    });
   }
 
   void _resetReplayFlushTimer() {
@@ -979,6 +1035,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     // 6. Swap terminal
     _terminal = newTerminal;
     _configureTerminal(_terminal);
+    _wasAltScreen = false;
+    _lastSentCols = null;
+    _lastSentRows = null;
 
     // 7. Bind decoder to new terminal
     _bindDecoderPipeline();
@@ -1087,11 +1146,17 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     }
   }
 
+  /// Sends current terminal dimensions directly, bypassing [_scheduleResizeSend]
+  /// and its alt-screen guard intentionally. Called when the tab just became
+  /// visible (resume) — the server needs the current size regardless of
+  /// alt-screen state to render correctly after a pause.
   void _sendCurrentSize() {
     final width = _terminal.viewWidth;
     final height = _terminal.viewHeight;
     if (width > 0 && height > 0) {
       _ws?.sendResize(width, height);
+      _lastSentCols = width;
+      _lastSentRows = height;
     }
   }
 

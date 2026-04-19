@@ -21,7 +21,7 @@ import 'dart:typed_data';
 class SyncBlockParser {
   SyncBlockParser({
     required this.onSegment,
-    this.safetyWindow = const Duration(milliseconds: 50),
+    this.safetyWindow = const Duration(milliseconds: 500),
   });
 
   /// DEC Mode 2026 begin-synchronized-update marker.
