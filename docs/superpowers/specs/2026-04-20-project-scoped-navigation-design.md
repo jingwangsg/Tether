@@ -15,7 +15,7 @@ The result should feel like a navigation-shell redesign, not a terminal/backend 
 - `Project`: the UI term for what is currently stored as a `Group`
 - `Session`: the existing terminal session model, unchanged in backend semantics
 - `Current project`: the selected project shown in the sidebar
-- `Project-scoped tabs`: the set of open session tabs that belongs to exactly one project
+- `Session tabs`: all sessions that belong to the currently selected project, rendered in the top bar
 
 ## User-Facing Behavior
 
@@ -29,9 +29,9 @@ The result should feel like a navigation-shell redesign, not a terminal/backend 
 ### Top Bar
 
 - The top bar is always visible.
-- The top bar shows only the sessions that are open inside the current project.
+- The top bar shows all sessions that belong to the current project.
 - Reordering session tabs remains available inside the current project.
-- Closing a session tab removes it from the current project's open-tab set.
+- Session rename/delete actions move to the top bar context menu and no longer depend on a separate open-tab concept.
 - The old "Show Tab Bar" setting is removed from the UI and ignored at runtime.
 
 ### Creation and Rename Flows
@@ -83,23 +83,24 @@ This keeps the scope focused on shell layout and client state management.
 
 ### Client State
 
-The current global session-tab state is replaced with project-scoped session-tab state.
+The current shell state is reduced to project selection plus per-project active session memory.
 
 The client keeps:
 
 - `selectedProjectId`
-- `projectId -> openSessionIds`
 - `projectId -> activeSessionId`
 
-This state is local UI/navigation state. It does not redefine backend persistence semantics. Existing persistence behavior should remain logically unchanged; only the presentation and in-memory organization are updated so that open sessions are tracked per project rather than globally.
+The top bar is derived directly from `ServerState.sessions` filtered by `groupId == selectedProjectId`, ordered by `sort_order`.
+
+This state is local UI/navigation state. It does not redefine backend persistence semantics. Existing persistence behavior should remain logically unchanged; only the presentation changes so that the top bar becomes the visible list of project sessions.
 
 ### Terminal Ownership
 
-`TerminalArea` only renders the open sessions for the current project.
+`TerminalArea` only renders the active session for the current project.
 
 - terminal controllers remain keyed by session id
-- offstage preservation still applies for open sessions in the current project
-- switching projects swaps which session set is active in the shell
+- switching projects swaps which active session is shown in the shell
+- already-created controllers may still be cached by session id for fast revisits, but they are not the source of truth for tab visibility
 
 No PTY, websocket, scrollback, or replay behavior changes are part of this work.
 
@@ -110,9 +111,10 @@ No PTY, websocket, scrollback, or replay behavior changes are part of this work.
 When the user selects a project:
 
 - `selectedProjectId` updates
-- the top bar updates to that project's open sessions
-- the terminal area activates that project's current session
-- if the project has no open sessions, the terminal area shows a project-specific empty state
+- the top bar updates to that project's sessions
+- the terminal area activates that project's remembered active session if it still exists
+- if no remembered active session exists, the first session in project sort order becomes active
+- if the project has no sessions, the terminal area shows a project-specific empty state
 
 ### Creating a Project
 
@@ -121,7 +123,7 @@ When the user creates a project:
 1. create project
 2. create first session inside that project
 3. mark that project as selected
-4. mark the new session as open and active for that project
+4. mark the new session as active for that project
 
 This applies to explicit project creation and the `Cmd+N` shortcut.
 
@@ -130,16 +132,18 @@ This applies to explicit project creation and the `Cmd+N` shortcut.
 When the user creates a session:
 
 - the session is created inside the current project
-- it is appended to that project's open session tabs
 - it becomes the active session for that project
+- it appears in the top bar automatically because the top bar is derived from project sessions
 
 If no project exists, the app creates one first and then creates the session.
 
-### Closing a Session Tab
+### Session Actions in the Top Bar
 
-Closing a session tab updates only the current project's local open-tab state. It does not introduce new delete semantics.
+The top bar represents real sessions, not temporary open tabs.
 
-Existing delete actions remain explicit delete actions. Closing and deleting remain separate concerns unless already coupled in the current code path.
+- primary click selects the session
+- secondary click / overflow menu exposes rename and delete
+- no non-destructive "close tab" action is preserved in this redesign
 
 ### Removing Cross-Project Session Moves
 
@@ -250,8 +254,8 @@ This redesign does not:
 The implementation should be treated as a shell refactor with focused state changes:
 
 1. flatten sidebar project rendering
-2. introduce selected-project state
-3. make session tabs project-scoped
+2. introduce selected-project and per-project active-session state
+3. make the top bar derive from current-project sessions
 4. make top bar mandatory
 5. reroute shortcuts and rename actions
 6. remove obsolete nested-group and tab-bar-toggle paths
