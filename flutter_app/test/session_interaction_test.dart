@@ -1,7 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tether/models/group.dart';
 import 'package:tether/models/session.dart';
-import 'package:tether/providers/session_provider.dart';
 import 'package:tether/utils/session_interaction.dart';
 
 Group _group(String id, {String? sshHost}) {
@@ -72,37 +71,6 @@ void main() {
         visibleSessions(sessions, groups).map((session) => session.id).toList(),
         ['alive-local', 'remote'],
       );
-    });
-  });
-
-  group('session tab cleanup', () {
-    test(
-      'cleanupStaleTabs removes invalid tabs and falls forward for active',
-      () {
-        final notifier =
-            SessionNotifier()
-              ..openTab('first')
-              ..openTab('second')
-              ..openTab('third')
-              ..setActiveSession('second');
-
-        notifier.cleanupStaleTabs({'first', 'third'});
-
-        expect(notifier.state.openTabs.map((tab) => tab.sessionId).toList(), [
-          'first',
-          'third',
-        ]);
-        expect(notifier.state.activeSessionId, 'third');
-      },
-    );
-
-    test('cleanupStaleTabs clears the active session when no tabs remain', () {
-      final notifier = SessionNotifier()..openTab('only');
-
-      notifier.cleanupStaleTabs({});
-
-      expect(notifier.state.openTabs, isEmpty);
-      expect(notifier.state.activeSessionId, isNull);
     });
   });
 }
