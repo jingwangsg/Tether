@@ -740,6 +740,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
             }
           } else if (!_sessionExited) {
             if (_isReplaying) _flushReplayBuffer();
+            _syncParser.reset();
             _isReplaying = true; // Reset for next reconnect
             _writeToTerminal(
               utf8.encode('\r\n\x1b[33m[reconnecting...]\x1b[0m\r\n'),
