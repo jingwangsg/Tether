@@ -99,6 +99,10 @@ pub struct PtySession {
     output_detected_tool: Mutex<Option<String>>,
     /// Whether the terminal is currently in alternate screen mode.
     in_alternate_screen: std::sync::atomic::AtomicBool,
+    /// Deferred row count: when a row-only resize arrives during alt-screen,
+    /// we store the desired rows here instead of applying immediately.
+    /// 0 means no deferred resize pending.
+    pub deferred_rows: std::sync::atomic::AtomicU16,
     /// Persists the last successfully detected tool while in alternate screen.
     /// Serves as a stable fallback while the terminal is in alternate screen mode.
     /// Cleared only when confirmed outside alt screen with no tool detected.
@@ -200,6 +204,7 @@ impl PtySession {
             sticky_osc_tool: Mutex::new(None),
             output_detected_tool: Mutex::new(None),
             in_alternate_screen: std::sync::atomic::AtomicBool::new(false),
+            deferred_rows: std::sync::atomic::AtomicU16::new(0),
             last_detected_alt_screen_tool: Mutex::new(None),
             last_alt_screen_exit_time: Mutex::new(None),
             command_phase: Mutex::new(None),
@@ -549,6 +554,14 @@ impl PtySession {
                 if let Ok(mut t) = session.last_alt_screen_exit_time.lock() {
                     *t = Some(std::time::Instant::now());
                 }
+                // Apply deferred row resize that was suppressed during alt-screen
+                let deferred = session
+                    .deferred_rows
+                    .swap(0, std::sync::atomic::Ordering::Relaxed);
+                if deferred > 0 {
+                    let cols = session.cols.load(std::sync::atomic::Ordering::Relaxed);
+                    let _ = session.resize(cols, deferred);
+                }
             }
             (Some(_), None) => {
                 session
@@ -564,6 +577,14 @@ impl PtySession {
                 }
                 if let Ok(mut t) = session.last_alt_screen_exit_time.lock() {
                     *t = Some(std::time::Instant::now());
+                }
+                // Apply deferred row resize that was suppressed during alt-screen
+                let deferred = session
+                    .deferred_rows
+                    .swap(0, std::sync::atomic::Ordering::Relaxed);
+                if deferred > 0 {
+                    let cols = session.cols.load(std::sync::atomic::Ordering::Relaxed);
+                    let _ = session.resize(cols, deferred);
                 }
             }
             (None, None) => {}

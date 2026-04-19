@@ -297,12 +297,29 @@ async fn handle_socket(
                             }
                         }
                         ClientMessage::Resize { cols, rows } => {
-                            session_for_input.resize(cols, rows).ok();
-                            state
-                                .inner
-                                .db
-                                .update_session_size(&session_id.to_string(), cols, rows)
-                                .ok();
+                            let current_cols = session_for_input
+                                .cols
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            let current_rows = session_for_input
+                                .rows
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            let in_alt = session_for_input.is_in_alternate_screen();
+                            if in_alt && cols == current_cols && rows != current_rows {
+                                tracing::debug!(
+                                    "suppressing row-only resize {}x{} -> {}x{} during alt-screen for session {}",
+                                    current_cols, current_rows, cols, rows, session_id
+                                );
+                                session_for_input
+                                    .deferred_rows
+                                    .store(rows, std::sync::atomic::Ordering::Relaxed);
+                            } else {
+                                session_for_input.resize(cols, rows).ok();
+                                state
+                                    .inner
+                                    .db
+                                    .update_session_size(&session_id.to_string(), cols, rows)
+                                    .ok();
+                            }
                         }
                         ClientMessage::Ping => {
                             if let Ok(json) = serde_json::to_string(&ServerMessage::Pong) {
