@@ -8,6 +8,7 @@ import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_interaction.dart';
 import '../../utils/session_status.dart';
+import '../../utils/shell_dialogs.dart';
 import '../terminal/session_status_dot.dart';
 import 'group_dialog.dart';
 import 'settings_dialog.dart';
@@ -288,101 +289,35 @@ class Sidebar extends ConsumerWidget {
   }
 
   void _showCreateGroupDialog(BuildContext context, WidgetRef ref) {
-    showDialog(context: context, builder: (_) => const GroupDialog());
+    showCreateProjectDialog(context);
   }
 
   void _showCreateSessionDialog(BuildContext context, WidgetRef ref) async {
     final state = ref.read(serverProvider);
-    final groups = state.groups;
-    String groupId;
-    if (groups.isEmpty) {
-      final group = await ref
-          .read(serverProvider.notifier)
-          .createGroup(name: 'Default');
-      groupId = group.id;
-    } else {
-      groupId = groups.first.id;
-    }
-    if (!context.mounted) return;
-    _showCreateSessionInGroup(context, ref, groupId);
-  }
+    final projects = state.groups.where((g) => g.parentId == null).toList();
+    final selectedProjectId = ref.read(sessionProvider).selectedProjectId;
+    final project = projects.where((p) => p.id == selectedProjectId).firstOrNull ??
+        projects.firstOrNull;
 
-  void _showCreateSessionInGroup(
-    BuildContext context,
-    WidgetRef ref,
-    String groupId,
-  ) {
-    final nameController = TextEditingController();
-    final commandController = TextEditingController();
-    final cwdController = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (ctx) {
-        Future<void> doCreate() async {
-          final session = await ref
-              .read(serverProvider.notifier)
-              .createSession(
-                groupId: groupId,
-                name:
-                    nameController.text.trim().isEmpty
-                        ? null
-                        : nameController.text.trim(),
-                command:
-                    commandController.text.trim().isEmpty
-                        ? null
-                        : commandController.text.trim(),
-                cwd:
-                    cwdController.text.trim().isEmpty
-                        ? null
-                        : cwdController.text.trim(),
-              );
-          if (ctx.mounted) Navigator.pop(ctx);
-          ref.read(sessionProvider.notifier).setActiveSession(
-            projectId: groupId,
-            sessionId: session.id,
+    if (project == null) {
+      // No projects exist — create one first via the project dialog.
+      final newProject = await showCreateProjectDialog(context);
+      if (newProject == null || !context.mounted) return;
+      final session = await ref.read(serverProvider.notifier).createSession(
+            groupId: newProject.id,
+            cwd: newProject.defaultCwd,
           );
-        }
+      ref.read(sessionProvider.notifier)
+        ..selectProject(newProject.id)
+        ..setActiveSession(projectId: newProject.id, sessionId: session.id);
+      return;
+    }
 
-        return AlertDialog(
-          title: const Text('New Session'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Session Name (optional)',
-                ),
-                onSubmitted: (_) => doCreate(),
-              ),
-              TextField(
-                controller: commandController,
-                decoration: const InputDecoration(
-                  labelText: 'Command (optional)',
-                  hintText: 'e.g., ssh myserver',
-                ),
-                onSubmitted: (_) => doCreate(),
-              ),
-              TextField(
-                controller: cwdController,
-                decoration: const InputDecoration(
-                  labelText: 'Working Directory (optional)',
-                  hintText: 'e.g., ~/projects',
-                ),
-                onSubmitted: (_) => doCreate(),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(onPressed: doCreate, child: const Text('Create')),
-          ],
-        );
-      },
-    );
+    if (!context.mounted) return;
+    final session = await showCreateSessionDialog(context, ref, project: project);
+    if (session == null) return;
+    ref.read(sessionProvider.notifier)
+      ..selectProject(project.id)
+      ..setActiveSession(projectId: project.id, sessionId: session.id);
   }
 }

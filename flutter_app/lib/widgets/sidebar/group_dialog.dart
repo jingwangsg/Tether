@@ -362,12 +362,13 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
     final defaultCwd = path.isEmpty ? '~' : path;
 
     try {
+      Group? project;
       if (_isEdit) {
         await ref
             .read(serverProvider.notifier)
             .updateGroup(widget.group!.id, name: name, defaultCwd: defaultCwd);
       } else {
-        await ref
+        project = await ref
             .read(serverProvider.notifier)
             .createGroup(
               name: name,
@@ -381,7 +382,7 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
             localityKey: Group.localityKeyFor(_selectedSshHost),
             path: defaultCwd,
           );
-      if (mounted) Navigator.pop(context);
+      if (mounted) Navigator.pop(context, project);
     } catch (e) {
       if (mounted) {
         setState(() => _isSaving = false);

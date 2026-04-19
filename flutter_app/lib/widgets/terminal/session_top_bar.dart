@@ -5,6 +5,7 @@ import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
 import '../../utils/session_display.dart';
 import '../../utils/session_status.dart';
+import '../../utils/shell_dialogs.dart';
 import 'session_status_dot.dart';
 
 class SessionTopBar extends ConsumerStatefulWidget {
@@ -52,6 +53,37 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
   void _onTitleRevision() {
     if (mounted) {
       setState(() {});
+    }
+  }
+
+  Future<void> _handleSessionAction(Session session, String action) async {
+    switch (action) {
+      case 'rename':
+        await showRenameSessionDialog(context, ref, session);
+        return;
+      case 'delete':
+        final selectedProjectId = ref.read(sessionProvider).selectedProjectId;
+        final activeSessionId = ref.read(sessionProvider).activeSessionId;
+        try {
+          await ref.read(serverProvider.notifier).deleteSession(session.id);
+          await ref.read(serverProvider.notifier).refresh();
+          if (selectedProjectId != null && activeSessionId == session.id) {
+            final remaining = ref
+                .read(serverProvider)
+                .sessions
+                .where((s) => s.groupId == selectedProjectId)
+                .where((s) => s.id != session.id)
+                .toList()
+              ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+            if (remaining.isNotEmpty) {
+              ref.read(sessionProvider.notifier).setActiveSession(
+                    projectId: selectedProjectId,
+                    sessionId: remaining.first.id,
+                  );
+            }
+          }
+        } catch (_) {}
+        return;
     }
   }
 
@@ -130,6 +162,21 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
                           semanticIdentifier: 'session-tab-status-${session.id}',
                         ),
                       ],
+                      const SizedBox(width: 4),
+                      PopupMenuButton<String>(
+                        padding: EdgeInsets.zero,
+                        iconSize: 14,
+                        icon: Icon(
+                          Icons.more_vert,
+                          size: 14,
+                          color: isActive ? Colors.white54 : Colors.white24,
+                        ),
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(value: 'rename', child: Text('Rename Session')),
+                          PopupMenuItem(value: 'delete', child: Text('Delete Session')),
+                        ],
+                        onSelected: (value) => _handleSessionAction(session, value),
+                      ),
                     ],
                   ),
                 ),

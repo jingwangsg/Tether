@@ -30,19 +30,6 @@ class _SettingsDialog extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             SwitchListTile(
-              title: const Text('Show Tab Bar', style: TextStyle(fontSize: 13)),
-              subtitle: const Text(
-                'Session tabs above terminal',
-                style: TextStyle(fontSize: 11, color: Colors.white38),
-              ),
-              value: settings.showTabBar,
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              onChanged: (value) {
-                ref.read(settingsProvider.notifier).setShowTabBar(value);
-              },
-            ),
-            SwitchListTile(
               title: const Text(
                 'Scroll to Bottom on Output',
                 style: TextStyle(fontSize: 13),

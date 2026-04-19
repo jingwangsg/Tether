@@ -9,6 +9,7 @@ import '../providers/session_provider.dart';
 import '../providers/sidebar_width_provider.dart';
 import '../providers/ui_provider.dart';
 import '../platform/terminal_backend.dart';
+import '../utils/shell_dialogs.dart';
 import '../widgets/sidebar/sidebar.dart';
 import '../widgets/sidebar/sidebar_resizer.dart';
 import '../widgets/terminal/terminal_area.dart';
@@ -87,7 +88,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   Future<dynamic> _handleWindowMethodCall(MethodCall call) async {
     switch (call.method) {
       case 'renameActiveSession':
-        _renameActiveSession();
+        _performShellAction('renameCurrentSession');
+        return null;
+      case 'performShellAction':
+        final args =
+            Map<String, dynamic>.from(call.arguments as Map? ?? const {});
+        await _performShellAction(
+          args['action'] as String,
+          index: args['index'] as int?,
+        );
         return null;
       default:
         return null;
@@ -95,13 +104,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   bool _handleGlobalKey(KeyEvent event) {
-    if ((event is KeyDownEvent || event is KeyRepeatEvent) &&
-        HardwareKeyboard.instance.isMetaPressed) {
-      // Non-repeatable shortcuts: only on initial key down
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
+
+    if (HardwareKeyboard.instance.isMetaPressed) {
       if (event is KeyDownEvent) {
+        if (event.logicalKey == LogicalKeyboardKey.keyN) {
+          _performShellAction('newProject');
+          return true;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.keyT) {
+          _performShellAction('newSession');
+          return true;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.keyR &&
+            HardwareKeyboard.instance.isShiftPressed) {
+          _performShellAction('renameCurrentSession');
+          return true;
+        }
         if (event.logicalKey == LogicalKeyboardKey.keyR &&
             !_usesNativeRenameShortcut) {
-          _renameActiveSession();
+          _performShellAction('renameCurrentProject');
           return true;
         }
         if (event.logicalKey == LogicalKeyboardKey.keyF) {
@@ -112,15 +134,44 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ref.read(uiProvider.notifier).toggleSidebar();
           return true;
         }
+        final projectIndex = _digitIndex(event.logicalKey);
+        if (projectIndex != null) {
+          _performShellAction('selectProjectByNumber', index: projectIndex);
+          return true;
+        }
       }
-      // Font zoom: supports key repeat (hold to keep zooming)
+      // Font zoom: supports key repeat
       final fontAction = HomeScreen.fontZoomAction(event.logicalKey);
       if (fontAction != null) {
         _terminalAreaKey.currentState?.performActionOnActiveSession(fontAction);
         return true;
       }
     }
+
+    if (event is KeyDownEvent && HardwareKeyboard.instance.isControlPressed) {
+      final sessionIndex = _digitIndex(event.logicalKey);
+      if (sessionIndex != null) {
+        _performShellAction('selectSessionByNumber', index: sessionIndex);
+        return true;
+      }
+    }
+
     return false;
+  }
+
+  int? _digitIndex(LogicalKeyboardKey key) {
+    final digits = {
+      LogicalKeyboardKey.digit1: 0,
+      LogicalKeyboardKey.digit2: 1,
+      LogicalKeyboardKey.digit3: 2,
+      LogicalKeyboardKey.digit4: 3,
+      LogicalKeyboardKey.digit5: 4,
+      LogicalKeyboardKey.digit6: 5,
+      LogicalKeyboardKey.digit7: 6,
+      LogicalKeyboardKey.digit8: 7,
+      LogicalKeyboardKey.digit9: 8,
+    };
+    return digits[key];
   }
 
   @override
@@ -289,51 +340,75 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  void _renameActiveSession() {
-    final activeId = ref.read(sessionProvider).activeSessionId;
-    if (activeId == null) return;
-    final session =
-        ref
-            .read(serverProvider)
-            .sessions
-            .where((s) => s.id == activeId)
-            .firstOrNull;
-    if (session == null) return;
+  Future<void> _performShellAction(String action, {int? index}) async {
+    final serverState = ref.read(serverProvider);
+    final projects = serverState.groups
+        .where((g) => g.parentId == null)
+        .toList()
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    final selectedProjectId = ref.read(sessionProvider).selectedProjectId;
+    final selectedProject =
+        projects.where((p) => p.id == selectedProjectId).firstOrNull;
+    final activeSessionId = ref.read(sessionProvider).activeSessionId;
+    final activeSession = serverState.sessions
+        .where((s) => s.id == activeSessionId)
+        .firstOrNull;
 
-    final nav = Navigator.of(context);
-    nav.popUntil((route) => route is! PopupRoute);
-
-    final controller = TextEditingController(text: session.name);
-    showDialog(
-      context: context,
-      builder: (ctx) {
-        void doRename() {
-          final name = controller.text.trim();
-          if (name.isNotEmpty) {
-            ref
-                .read(serverProvider.notifier)
-                .updateSession(session.id, name: name);
-            Navigator.pop(ctx);
-          }
+    switch (action) {
+      case 'newProject':
+        final project = await showCreateProjectDialog(context);
+        if (project == null || !mounted) return;
+        final session = await ref.read(serverProvider.notifier).createSession(
+              groupId: project.id,
+              cwd: project.defaultCwd,
+            );
+        ref.read(sessionProvider.notifier)
+          ..selectProject(project.id)
+          ..setActiveSession(
+              projectId: project.id, sessionId: session.id);
+        return;
+      case 'newSession':
+        if (selectedProject == null) {
+          await _performShellAction('newProject');
+          return;
         }
-
-        return AlertDialog(
-          title: const Text('Rename Session'),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            onSubmitted: (_) => doRename(),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(onPressed: doRename, child: const Text('Rename')),
-          ],
-        );
-      },
-    );
+        final session = await showCreateSessionDialog(context, ref,
+            project: selectedProject);
+        if (session == null) return;
+        ref.read(sessionProvider.notifier).setActiveSession(
+              projectId: selectedProject.id,
+              sessionId: session.id,
+            );
+        return;
+      case 'renameCurrentProject':
+        if (selectedProject != null) {
+          await showRenameProjectDialog(context, ref, selectedProject);
+        }
+        return;
+      case 'renameCurrentSession':
+        if (activeSession != null) {
+          await showRenameSessionDialog(context, ref, activeSession);
+        }
+        return;
+      case 'selectProjectByNumber':
+        if (index != null && index >= 0 && index < projects.length) {
+          ref.read(sessionProvider.notifier).selectProject(projects[index].id);
+        }
+        return;
+      case 'selectSessionByNumber':
+        if (selectedProject == null) return;
+        final sessions = serverState.sessions
+            .where((s) => s.groupId == selectedProject.id)
+            .toList()
+          ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+        if (index != null && index >= 0 && index < sessions.length) {
+          ref.read(sessionProvider.notifier).setActiveSession(
+                projectId: selectedProject.id,
+                sessionId: sessions[index].id,
+              );
+        }
+        return;
+    }
   }
 
   void _maybeAutoOpenTestSession(
