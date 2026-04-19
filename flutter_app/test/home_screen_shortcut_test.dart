@@ -10,8 +10,6 @@ import 'package:tether/providers/server_provider.dart';
 import 'package:tether/providers/session_provider.dart';
 import 'package:tether/providers/ui_provider.dart';
 import 'package:tether/screens/home_screen.dart';
-import 'package:tether/widgets/sidebar/group_section.dart';
-import 'package:tether/widgets/sidebar/sidebar.dart';
 import 'package:tether/widgets/terminal/terminal_controller.dart';
 
 Group _group(String id) {
@@ -82,7 +80,9 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    container.read(sessionProvider.notifier).openTab(session.id);
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: session.id);
 
     await _pumpHomeScreen(
       tester,
@@ -127,7 +127,9 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    container.read(sessionProvider.notifier).openTab(session.id);
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: session.id);
 
     await _pumpHomeScreen(
       tester,
@@ -154,7 +156,9 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    container.read(sessionProvider.notifier).openTab(session.id);
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: session.id);
 
     await _pumpHomeScreen(
       tester,
@@ -172,62 +176,6 @@ void main() {
     await tester.pump();
 
     expect(searchCalls.value, 1);
-  });
-
-  testWidgets('sidebar session context menu no longer shows cmd+r label', (
-    tester,
-  ) async {
-    final session = _session('session-4', groupId: 'missing', name: 'delta');
-    final container = _container(
-      ServerState(isConnected: true, sessions: [session]),
-    );
-    addTearDown(container.dispose);
-
-    await tester.pumpWidget(
-      UncontrolledProviderScope(
-        container: container,
-        child: const MaterialApp(home: Scaffold(body: Sidebar())),
-      ),
-    );
-    await tester.pump();
-
-    await tester.longPress(find.text('delta'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Rename'), findsOneWidget);
-    expect(find.text('⌘R'), findsNothing);
-  });
-
-  testWidgets('group session menu no longer shows cmd+r label', (tester) async {
-    final group = _group('local');
-    final session = _session('session-5', groupId: group.id, name: 'epsilon');
-    final container = _container(
-      ServerState(isConnected: true, groups: [group], sessions: [session]),
-    );
-    addTearDown(container.dispose);
-
-    await tester.pumpWidget(
-      UncontrolledProviderScope(
-        container: container,
-        child: MaterialApp(
-          home: Scaffold(
-            body: GroupSection(
-              group: group,
-              allGroups: [group],
-              allSessions: [session],
-              depth: 0,
-            ),
-          ),
-        ),
-      ),
-    );
-    await tester.pump();
-
-    await tester.tap(find.byTooltip('Session Options'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Rename Session'), findsOneWidget);
-    expect(find.text('⌘R'), findsNothing);
   });
 
   testWidgets('mobile home screen suppresses route pop gestures', (

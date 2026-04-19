@@ -3,6 +3,7 @@ import 'dart:math' show min;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models/session.dart';
 import '../providers/server_provider.dart';
 import '../providers/session_provider.dart';
 import '../providers/sidebar_width_provider.dart';
@@ -347,14 +348,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     if (targetName == null || targetName.isEmpty) {
       return;
     }
-    String? targetSessionId;
+    Session? targetSession;
     for (final session in serverState.sessions) {
       if (session.name == targetName) {
-        targetSessionId = session.id;
+        targetSession = session;
         break;
       }
     }
-    if (targetSessionId == null) {
+    if (targetSession == null) {
       return;
     }
     _autoOpenedTestSession = true;
@@ -362,7 +363,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       if (!mounted) {
         return;
       }
-      ref.read(sessionProvider.notifier).openTab(targetSessionId!);
+      ref.read(sessionProvider.notifier)
+        ..selectProject(targetSession!.groupId)
+        ..setActiveSession(
+          projectId: targetSession!.groupId,
+          sessionId: targetSession!.id,
+        );
     });
   }
 }
