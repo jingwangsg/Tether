@@ -20,6 +20,40 @@ class MainFlutterWindow: NSWindow {
         responder is TerminalShortcutFocusable
     }
 
+    struct ShellShortcutHintState {
+        let showProjectHints: Bool
+        let showSessionHints: Bool
+
+        var arguments: [String: Any] {
+            [
+                "showProjectHints": showProjectHints,
+                "showSessionHints": showSessionHints,
+            ]
+        }
+    }
+
+    static func shellShortcutHintState(
+        modifierFlags: NSEvent.ModifierFlags,
+        firstResponderIsTerminal: Bool
+    ) -> ShellShortcutHintState {
+        let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard firstResponderIsTerminal else {
+            return ShellShortcutHintState(showProjectHints: false, showSessionHints: false)
+        }
+        return ShellShortcutHintState(
+            showProjectHints: flags.contains(.command),
+            showSessionHints: flags.contains(.control)
+        )
+    }
+
+    private func pushShellShortcutHints(modifierFlags: NSEvent.ModifierFlags) {
+        let hintState = Self.shellShortcutHintState(
+            modifierFlags: modifierFlags,
+            firstResponderIsTerminal: Self.isTerminalFocusedResponder(firstResponder)
+        )
+        windowChannel?.invokeMethod("setShellShortcutHints", arguments: hintState.arguments)
+    }
+
     struct ShellShortcutPayload {
         let action: String
         let index: Int?
@@ -117,6 +151,10 @@ class MainFlutterWindow: NSWindow {
             firstResponderIsTerminal: Self.isTerminalFocusedResponder(firstResponder)
         ) {
             windowChannel?.invokeMethod("performShellAction", arguments: payload.arguments)
+            windowChannel?.invokeMethod(
+                "setShellShortcutHints",
+                arguments: ["showProjectHints": false, "showSessionHints": false]
+            )
             return true
         }
         if Self.shouldUsePasteChannelFallback(
@@ -131,6 +169,19 @@ class MainFlutterWindow: NSWindow {
             }
         }
         return superHandled
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        pushShellShortcutHints(modifierFlags: event.modifierFlags)
+        super.flagsChanged(with: event)
+    }
+
+    override func resignKey() {
+        windowChannel?.invokeMethod(
+            "setShellShortcutHints",
+            arguments: ["showProjectHints": false, "showSessionHints": false]
+        )
+        super.resignKey()
     }
 
     @objc func paste(_ sender: Any?) {

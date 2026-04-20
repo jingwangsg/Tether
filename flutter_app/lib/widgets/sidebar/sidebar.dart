@@ -12,6 +12,7 @@ import '../../utils/project_status_summary.dart';
 import '../../utils/session_interaction.dart';
 import '../../utils/session_status.dart';
 import '../../utils/shell_dialogs.dart';
+import '../shell_shortcut_hint_badge.dart';
 import '../terminal/session_status_dot.dart';
 import 'group_dialog.dart';
 import 'settings_dialog.dart';
@@ -142,13 +143,14 @@ class Sidebar extends ConsumerWidget {
           ),
           const Divider(height: 1, color: Colors.white12),
         ],
-        for (final project in projects)
+        for (var index = 0; index < projects.length; index++)
           _buildProjectTile(
             context,
             ref,
-            project,
-            isSelected: navState.selectedProjectId == project.id,
-            status: projectStatuses[project.id],
+            projects[index],
+            isSelected: navState.selectedProjectId == projects[index].id,
+            status: projectStatuses[projects[index].id],
+            shortcutIndex: index,
           ),
       ],
     );
@@ -160,7 +162,9 @@ class Sidebar extends ConsumerWidget {
     Group project, {
     required bool isSelected,
     required SessionIndicatorStatus? status,
+    required int shortcutIndex,
   }) {
+    final uiState = ref.watch(uiProvider);
     return Semantics(
       identifier: 'project-tile-${project.id}',
       label: project.name,
@@ -190,6 +194,13 @@ class Sidebar extends ConsumerWidget {
                   ),
                 ),
               ),
+              if (uiState.showProjectShortcutHints && shortcutIndex < 9) ...[
+                const SizedBox(width: 8),
+                ShellShortcutHintBadge(
+                  key: ValueKey('project-shortcut-hint-${project.id}'),
+                  label: '${shortcutIndex + 1}',
+                ),
+              ],
               if (status != null)
                 SessionStatusDot(
                   key: ValueKey('project-status-${project.id}'),

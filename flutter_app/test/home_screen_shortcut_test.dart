@@ -67,12 +67,17 @@ Future<void> _pumpHomeScreen(
   await tester.pump();
 }
 
-Future<void> _dispatchWindowCommand(String method) async {
+Future<void> _dispatchWindowCommand(
+  String method, [
+  Map<String, dynamic>? arguments,
+]) async {
   final messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   await messenger.handlePlatformMessage(
     'dev.tether/window',
-    const StandardMethodCodec().encodeMethodCall(MethodCall(method)),
+    const StandardMethodCodec().encodeMethodCall(
+      MethodCall(method, arguments),
+    ),
     (_) {},
   );
 }
@@ -133,38 +138,49 @@ void main() {
     expect(find.text('Rename Session'), findsNothing);
   });
 
-  testWidgets(
-    'native backend ignores flutter-delivered cmd+r (rename project reserved for native)',
-    (tester) async {
-      final group = _group('local');
-      final session = _session('session-6', groupId: group.id, name: 'zeta');
-      final container = _container(
-        ServerState(isConnected: true, groups: [group], sessions: [session]),
-      );
-      addTearDown(container.dispose);
+  testWidgets('native backend ignores flutter-delivered shell shortcuts reserved for the window channel', (
+    tester,
+  ) async {
+    final group = _group('native-project');
+    final sessionA = _session('native-a', groupId: group.id, name: 'alpha');
+    final sessionB = _session('native-b', groupId: group.id, name: 'beta');
+    final container = _container(
+      ServerState(
+        isConnected: true,
+        groups: [group],
+        sessions: [sessionA, sessionB],
+      ),
+    );
+    addTearDown(container.dispose);
 
-      container.read(sessionProvider.notifier)
-        ..selectProject(group.id)
-        ..setActiveSession(projectId: group.id, sessionId: session.id);
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: sessionB.id);
 
-      await _pumpHomeScreen(
-        tester,
-        container,
-        const _FakeTerminalBackend(platformId: 'native'),
-      );
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'native'),
+    );
 
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyR);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyR);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
-      await tester.pumpAndSettle();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyN);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyN);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pumpAndSettle();
 
-      // Native backend uses the window channel for cmd+r, so flutter key handler
-      // skips it. Neither rename project nor rename session dialog should appear.
-      expect(find.text('Rename Project'), findsNothing);
-      expect(find.text('Rename Session'), findsNothing);
-    },
-  );
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.digit1);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.digit1);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+
+    final notifier =
+        container.read(serverProvider.notifier) as _TestServerNotifier;
+    expect(find.text('New Group'), findsNothing);
+    expect(notifier.createSessionCalls, isEmpty);
+    expect(container.read(sessionProvider).activeSessionId, sessionB.id);
+  });
 
   testWidgets('cmd+f still triggers terminal search shortcut', (tester) async {
     final group = _group('local');
@@ -633,6 +649,135 @@ void main() {
     expect(find.text('New Session in ${beta.name}'), findsNothing);
     expect(container.read(sessionProvider).selectedProjectId, beta.id);
     expect(container.read(sessionProvider).activeSessionId, 'created-1');
+  });
+
+  testWidgets('native performShellAction payload creates and selects a new session', (
+    tester,
+  ) async {
+    final group = _group('native-group');
+    final session = _session('seed', groupId: group.id, name: 'seed');
+    final container = _container(
+      ServerState(isConnected: true, groups: [group], sessions: [session]),
+    );
+    addTearDown(container.dispose);
+
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: session.id);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'native'),
+    );
+
+    await _dispatchWindowCommand('performShellAction', {
+      'action': 'newSession',
+    });
+    await tester.pumpAndSettle();
+
+    final notifier =
+        container.read(serverProvider.notifier) as _TestServerNotifier;
+    expect(notifier.createSessionCalls, hasLength(1));
+    expect(notifier.createSessionCalls.single.groupId, group.id);
+    expect(container.read(sessionProvider).activeSessionId, 'created-1');
+  });
+
+  testWidgets('native performShellAction payload selects projects and sessions by index', (
+    tester,
+  ) async {
+    final alpha = Group(id: 'alpha', name: 'Alpha', sortOrder: 0);
+    final beta = Group(id: 'beta', name: 'Beta', sortOrder: 1);
+    final alphaSession = _session('alpha-1', groupId: alpha.id, name: 'alpha-1');
+    final betaSessionA = _session('beta-1', groupId: beta.id, name: 'beta-1');
+    final betaSessionB = Session(
+      id: 'beta-2',
+      groupId: beta.id,
+      name: 'beta-2',
+      shell: 'bash',
+      cols: 80,
+      rows: 24,
+      cwd: '/tmp/beta-2',
+      isAlive: true,
+      createdAt: '',
+      lastActive: '',
+      sortOrder: 1,
+    );
+    final container = _container(
+      ServerState(
+        isConnected: true,
+        groups: [alpha, beta],
+        sessions: [alphaSession, betaSessionA, betaSessionB],
+      ),
+    );
+    addTearDown(container.dispose);
+
+    container.read(sessionProvider.notifier)
+      ..selectProject(beta.id)
+      ..setActiveSession(projectId: beta.id, sessionId: betaSessionB.id);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'native'),
+    );
+
+    await _dispatchWindowCommand('performShellAction', {
+      'action': 'selectProjectByNumber',
+      'index': 0,
+    });
+    await tester.pump();
+    expect(container.read(sessionProvider).selectedProjectId, alpha.id);
+
+    container.read(sessionProvider.notifier)
+      ..selectProject(beta.id)
+      ..setActiveSession(projectId: beta.id, sessionId: betaSessionB.id);
+
+    await _dispatchWindowCommand('performShellAction', {
+      'action': 'selectSessionByNumber',
+      'index': 0,
+    });
+    await tester.pump();
+    expect(container.read(sessionProvider).activeSessionId, betaSessionA.id);
+  });
+
+  testWidgets('native shell hint messages toggle desktop hint visibility', (
+    tester,
+  ) async {
+    final group = _group('hint-project');
+    final session = _session('hint-session', groupId: group.id, name: 'hint-session');
+    final container = _container(
+      ServerState(isConnected: true, groups: [group], sessions: [session]),
+    );
+    addTearDown(container.dispose);
+
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: session.id);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'native'),
+    );
+
+    await _dispatchWindowCommand('setShellShortcutHints', {
+      'showProjectHints': true,
+      'showSessionHints': true,
+    });
+    await tester.pump();
+
+    expect(container.read(uiProvider).showProjectShortcutHints, isTrue);
+    expect(container.read(uiProvider).showSessionShortcutHints, isTrue);
+
+    await _dispatchWindowCommand('setShellShortcutHints', {
+      'showProjectHints': false,
+      'showSessionHints': false,
+    });
+    await tester.pump();
+
+    expect(container.read(uiProvider).showProjectShortcutHints, isFalse);
+    expect(container.read(uiProvider).showSessionShortcutHints, isFalse);
   });
 }
 
