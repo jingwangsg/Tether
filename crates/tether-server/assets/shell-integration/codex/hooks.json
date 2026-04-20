@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${TETHER_AGENT_NOTIFY_BIN:-tether-agent-notify}\" codex-running",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${TETHER_AGENT_NOTIFY_BIN:-tether-agent-notify}\" codex-running",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${TETHER_AGENT_NOTIFY_BIN:-tether-agent-notify}\" codex-waiting",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}

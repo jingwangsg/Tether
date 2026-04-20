@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec "${TETHER_AGENT_NOTIFY_BIN:-tether-agent-notify}" terminal-notifier "$@"

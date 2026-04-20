@@ -11,6 +11,12 @@ const GHOSTTY_TERM_PROGRAM: &str = "ghostty";
 const GHOSTTY_SHELL_FEATURES: &str = "path,title";
 const SHELL_WRAPPER_ZSH: &str = include_str!("../assets/shell-integration/bin/tether-zsh");
 const SHELL_WRAPPER_BASH: &str = include_str!("../assets/shell-integration/bin/tether-bash");
+const AGENT_NOTIFY_SCRIPT: &str =
+    include_str!("../assets/shell-integration/bin/tether-agent-notify");
+const CLAUDE_WRAPPER_SCRIPT: &str = include_str!("../assets/shell-integration/bin/claude");
+const TERMINAL_NOTIFIER_SHIM: &str =
+    include_str!("../assets/shell-integration/bin/terminal-notifier");
+const NESTED_SSH_WRAPPER: &str = include_str!("../assets/shell-integration/bin/tether-ssh");
 const SHELL_INTEGRATION_ZSH_RC: &str = include_str!("../assets/shell-integration/zsh/.zshrc");
 const SHELL_INTEGRATION_ZSH_SCRIPT: &str =
     include_str!("../assets/shell-integration/zsh/tether-integration.zsh");
@@ -18,6 +24,9 @@ const SHELL_INTEGRATION_BASH_RC: &str =
     include_str!("../assets/shell-integration/bash/tether.bashrc");
 const SHELL_INTEGRATION_BASH_SCRIPT: &str =
     include_str!("../assets/shell-integration/bash/tether-integration.bash");
+const CODEX_HOOKS_JSON: &str = include_str!("../assets/shell-integration/codex/hooks.json");
+const CODEX_CONFIG_TOML: &str =
+    include_str!("../assets/shell-integration/codex/config.toml");
 
 pub(crate) fn ghostty_terminfo_asset() -> (&'static str, &'static str, &'static str) {
     (
@@ -230,6 +239,14 @@ impl ServerConfig {
         self.terminal_runtime_dir().join("bin")
     }
 
+    pub fn agent_runtime_dir(&self) -> PathBuf {
+        self.terminal_runtime_dir().join("agent")
+    }
+
+    pub fn agent_bin_dir(&self) -> PathBuf {
+        self.agent_runtime_dir().join("bin")
+    }
+
     fn user_terminfo_entry_path(&self) -> Option<PathBuf> {
         let home = std::env::var_os("HOME")?;
         if home.is_empty() {
@@ -249,6 +266,26 @@ impl ServerConfig {
 
     pub fn bash_wrapper_path(&self) -> PathBuf {
         self.shell_wrapper_dir().join("tether-bash")
+    }
+
+    pub fn agent_notify_path(&self) -> PathBuf {
+        self.agent_bin_dir().join("tether-agent-notify")
+    }
+
+    pub fn claude_wrapper_path(&self) -> PathBuf {
+        self.agent_bin_dir().join("claude")
+    }
+
+    pub fn terminal_notifier_shim_path(&self) -> PathBuf {
+        self.agent_bin_dir().join("terminal-notifier")
+    }
+
+    pub fn nested_ssh_wrapper_path(&self) -> PathBuf {
+        self.agent_bin_dir().join("tether-ssh")
+    }
+
+    pub fn shadow_codex_home_dir(&self) -> PathBuf {
+        self.agent_runtime_dir().join("codex-home")
     }
 
     pub fn materialize_terminal_runtime(&self) -> anyhow::Result<()> {
@@ -274,6 +311,28 @@ impl ServerConfig {
         let shell_dir = self.shell_integration_dir();
         write_runtime_text(&self.zsh_wrapper_path(), SHELL_WRAPPER_ZSH, true)?;
         write_runtime_text(&self.bash_wrapper_path(), SHELL_WRAPPER_BASH, true)?;
+        write_runtime_text(&self.agent_notify_path(), AGENT_NOTIFY_SCRIPT, true)?;
+        write_runtime_text(&self.claude_wrapper_path(), CLAUDE_WRAPPER_SCRIPT, true)?;
+        write_runtime_text(
+            &self.terminal_notifier_shim_path(),
+            TERMINAL_NOTIFIER_SHIM,
+            true,
+        )?;
+        write_runtime_text(
+            &self.nested_ssh_wrapper_path(),
+            NESTED_SSH_WRAPPER,
+            true,
+        )?;
+        write_runtime_text(
+            &self.shadow_codex_home_dir().join("hooks.json"),
+            CODEX_HOOKS_JSON,
+            false,
+        )?;
+        write_runtime_text(
+            &self.shadow_codex_home_dir().join("config.toml"),
+            CODEX_CONFIG_TOML,
+            false,
+        )?;
         write_runtime_text(
             &shell_dir.join("zsh").join(".zshrc"),
             SHELL_INTEGRATION_ZSH_RC,

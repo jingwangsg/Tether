@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+_tether_find_real_claude() {
+  local self_dir
+  self_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+  local IFS=:
+  for dir in $PATH; do
+    [[ "$dir" == "$self_dir" ]] && continue
+    [[ -x "$dir/claude" ]] && printf '%s' "$dir/claude" && return 0
+  done
+  return 1
+}
+
+REAL_CLAUDE="$(_tether_find_real_claude)" || {
+  echo "tether: real claude not found in PATH" >&2
+  exit 127
+}
+
+HELPER="${TETHER_AGENT_NOTIFY_BIN:-tether-agent-notify}"
+HOOKS_JSON='{"hooks":{"Notification":[{"matcher":"","hooks":[{"type":"command","command":"\"'${HELPER}'\" claude-waiting","timeout":10}]}],"PreToolUse":[{"matcher":"","hooks":[{"type":"command","command":"\"'${HELPER}'\" claude-running","timeout":10}]}],"Stop":[{"matcher":"","hooks":[{"type":"command","command":"\"'${HELPER}'\" claude-waiting","timeout":10}]}],"SessionEnd":[{"matcher":"","hooks":[{"type":"command","command":"true","timeout":5}]}]}}'
+
+exec "$REAL_CLAUDE" --settings "$HOOKS_JSON" "$@"

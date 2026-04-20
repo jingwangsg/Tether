@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAL_SSH="${TETHER_REAL_SSH:-$(command -v ssh)}"
+exec "$REAL_SSH" "$@"

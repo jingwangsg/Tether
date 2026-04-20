@@ -79,6 +79,26 @@ fn scrollback_snapshot(session: &Arc<PtySession>) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+#[test]
+fn materialize_terminal_runtime_writes_agent_bundle_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = ServerConfig {
+        persistence: PersistenceSection {
+            data_dir: temp.path().display().to_string(),
+        },
+        ..ServerConfig::default()
+    };
+
+    config.materialize_terminal_runtime().unwrap();
+
+    assert!(config.agent_notify_path().exists());
+    assert!(config.claude_wrapper_path().exists());
+    assert!(config.terminal_notifier_shim_path().exists());
+    assert!(config.nested_ssh_wrapper_path().exists());
+    assert!(config.shadow_codex_home_dir().join("hooks.json").exists());
+    assert!(config.shadow_codex_home_dir().join("config.toml").exists());
+}
+
 #[tokio::test]
 async fn local_session_reports_ghostty_terminal_identity() {
     let _guard = ENV_MUTEX.lock().unwrap();
