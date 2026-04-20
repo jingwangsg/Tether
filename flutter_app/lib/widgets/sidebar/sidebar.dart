@@ -6,6 +6,7 @@ import '../../models/session.dart';
 import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
+import '../../utils/session_creation.dart';
 import '../../utils/session_interaction.dart';
 import '../../utils/session_status.dart';
 import '../../utils/shell_dialogs.dart';
@@ -24,16 +25,19 @@ SessionIndicatorStatus? _projectStatus(
   required String? selectedProjectId,
   required String? activeSessionId,
 }) {
-  final statuses = sessions
-      .where((session) => session.groupId == project.id)
-      .map(
-        (session) => deriveSessionIndicatorStatus(
-          session,
-          isActive: selectedProjectId == project.id && activeSessionId == session.id,
-        ),
-      )
-      .whereType<SessionIndicatorStatus>()
-      .toList();
+  final statuses =
+      sessions
+          .where((session) => session.groupId == project.id)
+          .map(
+            (session) => deriveSessionIndicatorStatus(
+              session,
+              isActive:
+                  selectedProjectId == project.id &&
+                  activeSessionId == session.id,
+            ),
+          )
+          .whereType<SessionIndicatorStatus>()
+          .toList();
 
   if (statuses.contains(SessionIndicatorStatus.attention)) {
     return SessionIndicatorStatus.attention;
@@ -58,8 +62,7 @@ class Sidebar extends ConsumerWidget {
     final uiState = ref.watch(uiProvider);
     final screenWidth = MediaQuery.of(context).size.width;
     final sidebarWidth =
-        width ??
-        (uiState.isMobile ? min(280.0, screenWidth * 0.85) : 280.0);
+        width ?? (uiState.isMobile ? min(280.0, screenWidth * 0.85) : 280.0);
     final safeTop = uiState.isMobile ? MediaQuery.of(context).padding.top : 0.0;
 
     return Container(
@@ -120,7 +123,7 @@ class Sidebar extends ConsumerWidget {
               icon: const Icon(Icons.add, size: 18),
               color: Colors.white54,
               tooltip: 'New Session',
-              onPressed: () => _showCreateSessionDialog(context, ref),
+              onPressed: () => _createSession(context, ref),
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
             ),
@@ -142,7 +145,8 @@ class Sidebar extends ConsumerWidget {
           ),
           const Divider(height: 1, color: Colors.white12),
         ],
-        for (final project in projects) _buildProjectTile(context, ref, project, sessions),
+        for (final project in projects)
+          _buildProjectTile(context, ref, project, sessions),
       ],
     );
   }
@@ -175,7 +179,11 @@ class Sidebar extends ConsumerWidget {
           color: isSelected ? Colors.white.withValues(alpha: 0.08) : null,
           child: Row(
             children: [
-              const Icon(Icons.folder_outlined, size: 16, color: Colors.white54),
+              const Icon(
+                Icons.folder_outlined,
+                size: 16,
+                color: Colors.white54,
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -292,32 +300,7 @@ class Sidebar extends ConsumerWidget {
     showCreateProjectDialog(context);
   }
 
-  void _showCreateSessionDialog(BuildContext context, WidgetRef ref) async {
-    final state = ref.read(serverProvider);
-    final projects = state.groups.where((g) => g.parentId == null).toList();
-    final selectedProjectId = ref.read(sessionProvider).selectedProjectId;
-    final project = projects.where((p) => p.id == selectedProjectId).firstOrNull ??
-        projects.firstOrNull;
-
-    if (project == null) {
-      // No projects exist — create one first via the project dialog.
-      final newProject = await showCreateProjectDialog(context);
-      if (newProject == null || !context.mounted) return;
-      final session = await ref.read(serverProvider.notifier).createSession(
-            groupId: newProject.id,
-            cwd: newProject.defaultCwd,
-          );
-      ref.read(sessionProvider.notifier)
-        ..selectProject(newProject.id)
-        ..setActiveSession(projectId: newProject.id, sessionId: session.id);
-      return;
-    }
-
-    if (!context.mounted) return;
-    final session = await showCreateSessionDialog(context, ref, project: project);
-    if (session == null) return;
-    ref.read(sessionProvider.notifier)
-      ..selectProject(project.id)
-      ..setActiveSession(projectId: project.id, sessionId: session.id);
+  void _createSession(BuildContext context, WidgetRef ref) async {
+    await createSessionInCurrentProject(context, ref);
   }
 }

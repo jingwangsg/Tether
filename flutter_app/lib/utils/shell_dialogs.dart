@@ -49,66 +49,6 @@ Future<void> showRenameProjectDialog(
   );
 }
 
-Future<Session?> showCreateSessionDialog(
-  BuildContext context,
-  WidgetRef ref, {
-  required Group project,
-}) {
-  final nameController = TextEditingController();
-  final commandController = TextEditingController();
-  final cwdController = TextEditingController(text: project.defaultCwd ?? '');
-  return showDialog<Session>(
-    context: context,
-    builder: (ctx) {
-      Future<void> submit() async {
-        final session = await ref.read(serverProvider.notifier).createSession(
-              groupId: project.id,
-              name: nameController.text.trim().isEmpty
-                  ? null
-                  : nameController.text.trim(),
-              command: commandController.text.trim().isEmpty
-                  ? null
-                  : commandController.text.trim(),
-              cwd: cwdController.text.trim().isEmpty
-                  ? null
-                  : cwdController.text.trim(),
-            );
-        if (ctx.mounted) Navigator.pop(ctx, session);
-      }
-
-      return AlertDialog(
-        title: Text('New Session in ${project.name}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration:
-                  const InputDecoration(labelText: 'Session Name'),
-            ),
-            TextField(
-              controller: commandController,
-              decoration: const InputDecoration(labelText: 'Command'),
-            ),
-            TextField(
-              controller: cwdController,
-              decoration:
-                  const InputDecoration(labelText: 'Working Directory'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(onPressed: submit, child: const Text('Create')),
-        ],
-      );
-    },
-  );
-}
-
 Future<void> showRenameSessionDialog(
   BuildContext context,
   WidgetRef ref,

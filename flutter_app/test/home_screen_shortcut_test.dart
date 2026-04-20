@@ -12,6 +12,20 @@ import 'package:tether/providers/ui_provider.dart';
 import 'package:tether/screens/home_screen.dart';
 import 'package:tether/widgets/terminal/terminal_controller.dart';
 
+class _CreateSessionCall {
+  const _CreateSessionCall({
+    required this.groupId,
+    this.name,
+    this.command,
+    this.cwd,
+  });
+
+  final String groupId;
+  final String? name;
+  final String? command;
+  final String? cwd;
+}
+
 Group _group(String id) {
   return Group(id: id, name: id);
 }
@@ -119,35 +133,38 @@ void main() {
     expect(find.text('Rename Session'), findsNothing);
   });
 
-  testWidgets('native backend ignores flutter-delivered cmd+r (rename project reserved for native)', (tester) async {
-    final group = _group('local');
-    final session = _session('session-6', groupId: group.id, name: 'zeta');
-    final container = _container(
-      ServerState(isConnected: true, groups: [group], sessions: [session]),
-    );
-    addTearDown(container.dispose);
+  testWidgets(
+    'native backend ignores flutter-delivered cmd+r (rename project reserved for native)',
+    (tester) async {
+      final group = _group('local');
+      final session = _session('session-6', groupId: group.id, name: 'zeta');
+      final container = _container(
+        ServerState(isConnected: true, groups: [group], sessions: [session]),
+      );
+      addTearDown(container.dispose);
 
-    container.read(sessionProvider.notifier)
-      ..selectProject(group.id)
-      ..setActiveSession(projectId: group.id, sessionId: session.id);
+      container.read(sessionProvider.notifier)
+        ..selectProject(group.id)
+        ..setActiveSession(projectId: group.id, sessionId: session.id);
 
-    await _pumpHomeScreen(
-      tester,
-      container,
-      const _FakeTerminalBackend(platformId: 'native'),
-    );
+      await _pumpHomeScreen(
+        tester,
+        container,
+        const _FakeTerminalBackend(platformId: 'native'),
+      );
 
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyR);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyR);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
-    await tester.pumpAndSettle();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyR);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyR);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pumpAndSettle();
 
-    // Native backend uses the window channel for cmd+r, so flutter key handler
-    // skips it. Neither rename project nor rename session dialog should appear.
-    expect(find.text('Rename Project'), findsNothing);
-    expect(find.text('Rename Session'), findsNothing);
-  });
+      // Native backend uses the window channel for cmd+r, so flutter key handler
+      // skips it. Neither rename project nor rename session dialog should appear.
+      expect(find.text('Rename Project'), findsNothing);
+      expect(find.text('Rename Session'), findsNothing);
+    },
+  );
 
   testWidgets('cmd+f still triggers terminal search shortcut', (tester) async {
     final group = _group('local');
@@ -309,7 +326,9 @@ void main() {
     },
   );
 
-  testWidgets('cmd+r opens Rename Project dialog on xterm backend', (tester) async {
+  testWidgets('cmd+r opens Rename Project dialog on xterm backend', (
+    tester,
+  ) async {
     final group = _group('proj-1');
     final session = _session('s1', groupId: group.id, name: 'shell');
     final container = _container(
@@ -366,13 +385,121 @@ void main() {
     expect(find.widgetWithText(TextField, 'my-session'), findsOneWidget);
   });
 
+  testWidgets('cmd+t creates a session directly in the selected project', (
+    tester,
+  ) async {
+    final group = _group('proj-direct');
+    final existing = _session('existing', groupId: group.id, name: 'shell');
+    final container = _container(
+      ServerState(isConnected: true, groups: [group], sessions: [existing]),
+    );
+    addTearDown(container.dispose);
+
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: existing.id);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'xterm'),
+    );
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyT);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyT);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pumpAndSettle();
+
+    final notifier =
+        container.read(serverProvider.notifier) as _TestServerNotifier;
+    expect(notifier.createSessionCalls, hasLength(1));
+    expect(notifier.createSessionCalls.single.groupId, group.id);
+    expect(notifier.createSessionCalls.single.command, isNull);
+    expect(notifier.createSessionCalls.single.cwd, isNull);
+    expect(find.text('New Session in ${group.name}'), findsNothing);
+    expect(container.read(sessionProvider).activeSessionId, 'created-1');
+    expect(
+      container.read(serverProvider).sessions.map((session) => session.id),
+      contains('created-1'),
+    );
+  });
+
+  testWidgets('cmd+t falls back to the first top-level project', (
+    tester,
+  ) async {
+    final child = Group(
+      id: 'child',
+      name: 'Child',
+      parentId: 'alpha',
+      sortOrder: 0,
+    );
+    final beta = Group(id: 'beta', name: 'Beta', sortOrder: 1);
+    final alpha = Group(id: 'alpha', name: 'Alpha', sortOrder: 0);
+    final container = _container(
+      ServerState(
+        isConnected: true,
+        groups: [child, beta, alpha],
+        sessions: const [],
+      ),
+    );
+    addTearDown(container.dispose);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'xterm'),
+    );
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyT);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyT);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pumpAndSettle();
+
+    final notifier =
+        container.read(serverProvider.notifier) as _TestServerNotifier;
+    expect(notifier.createSessionCalls, hasLength(1));
+    expect(notifier.createSessionCalls.single.groupId, alpha.id);
+    expect(container.read(sessionProvider).selectedProjectId, alpha.id);
+    expect(container.read(sessionProvider).activeSessionId, 'created-1');
+  });
+
+  testWidgets('cmd+t without any project still opens New Group dialog', (
+    tester,
+  ) async {
+    final container = _container(const ServerState(isConnected: true));
+    addTearDown(container.dispose);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'xterm'),
+    );
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyT);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyT);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pumpAndSettle();
+
+    expect(find.text('New Group'), findsOneWidget);
+    final notifier =
+        container.read(serverProvider.notifier) as _TestServerNotifier;
+    expect(notifier.createSessionCalls, isEmpty);
+  });
+
   testWidgets('cmd+1 selects the first project', (tester) async {
     final groupA = Group(id: 'a', name: 'Alpha', sortOrder: 0);
     final groupB = Group(id: 'b', name: 'Beta', sortOrder: 1);
     final sA = _session('sA', groupId: groupA.id, name: 'sA');
     final sB = _session('sB', groupId: groupB.id, name: 'sB');
     final container = _container(
-      ServerState(isConnected: true, groups: [groupA, groupB], sessions: [sA, sB]),
+      ServerState(
+        isConnected: true,
+        groups: [groupA, groupB],
+        sessions: [sA, sB],
+      ),
     );
     addTearDown(container.dispose);
 
@@ -394,16 +521,34 @@ void main() {
     expect(container.read(sessionProvider).selectedProjectId, 'a');
   });
 
-  testWidgets('ctrl+1 selects the first session in current project', (tester) async {
+  testWidgets('ctrl+1 selects the first session in current project', (
+    tester,
+  ) async {
     final group = _group('proj-3');
     final s1 = Session(
-      id: 's1', groupId: group.id, name: 'first', shell: 'bash',
-      cols: 80, rows: 24, cwd: '/tmp', isAlive: true, createdAt: '', lastActive: '',
+      id: 's1',
+      groupId: group.id,
+      name: 'first',
+      shell: 'bash',
+      cols: 80,
+      rows: 24,
+      cwd: '/tmp',
+      isAlive: true,
+      createdAt: '',
+      lastActive: '',
       sortOrder: 0,
     );
     final s2 = Session(
-      id: 's2', groupId: group.id, name: 'second', shell: 'bash',
-      cols: 80, rows: 24, cwd: '/tmp', isAlive: true, createdAt: '', lastActive: '',
+      id: 's2',
+      groupId: group.id,
+      name: 'second',
+      shell: 'bash',
+      cols: 80,
+      rows: 24,
+      cwd: '/tmp',
+      isAlive: true,
+      createdAt: '',
+      lastActive: '',
       sortOrder: 1,
     );
     final container = _container(
@@ -450,10 +595,82 @@ void main() {
     // The GroupDialog title for create mode is 'New Group'.
     expect(find.text('New Group'), findsOneWidget);
   });
+
+  testWidgets('sidebar New Session creates directly in the selected project', (
+    tester,
+  ) async {
+    final alpha = Group(id: 'alpha', name: 'Alpha', sortOrder: 0);
+    final beta = Group(id: 'beta', name: 'Beta', sortOrder: 1);
+    final existing = _session('existing', groupId: beta.id, name: 'shell');
+    final container = _container(
+      ServerState(
+        isConnected: true,
+        groups: [alpha, beta],
+        sessions: [existing],
+      ),
+    );
+    addTearDown(container.dispose);
+
+    container.read(sessionProvider.notifier)
+      ..selectProject(beta.id)
+      ..setActiveSession(projectId: beta.id, sessionId: existing.id);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'xterm'),
+    );
+
+    await tester.tap(find.byTooltip('New Session'));
+    await tester.pumpAndSettle();
+
+    final notifier =
+        container.read(serverProvider.notifier) as _TestServerNotifier;
+    expect(notifier.createSessionCalls, hasLength(1));
+    expect(notifier.createSessionCalls.single.groupId, beta.id);
+    expect(notifier.createSessionCalls.single.command, isNull);
+    expect(notifier.createSessionCalls.single.cwd, isNull);
+    expect(find.text('New Session in ${beta.name}'), findsNothing);
+    expect(container.read(sessionProvider).selectedProjectId, beta.id);
+    expect(container.read(sessionProvider).activeSessionId, 'created-1');
+  });
 }
 
 class _TestServerNotifier extends ServerNotifier {
   _TestServerNotifier(super.state) : super.test();
+
+  final List<_CreateSessionCall> createSessionCalls = [];
+
+  @override
+  Future<Session> createSession({
+    required String groupId,
+    String? name,
+    String? command,
+    String? cwd,
+  }) async {
+    createSessionCalls.add(
+      _CreateSessionCall(
+        groupId: groupId,
+        name: name,
+        command: command,
+        cwd: cwd,
+      ),
+    );
+    final session = Session(
+      id: 'created-${createSessionCalls.length}',
+      groupId: groupId,
+      name: name ?? 'session-${createSessionCalls.length}',
+      shell: command ?? 'bash',
+      cols: 80,
+      rows: 24,
+      cwd: cwd ?? '/default/$groupId',
+      isAlive: true,
+      createdAt: '',
+      lastActive: '',
+    );
+    state = state.copyWith(sessions: [...state.sessions, session]);
+    return session;
+  }
 
   @override
   Future<void> updateSession(

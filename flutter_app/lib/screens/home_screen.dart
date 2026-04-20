@@ -9,6 +9,7 @@ import '../providers/session_provider.dart';
 import '../providers/sidebar_width_provider.dart';
 import '../providers/ui_provider.dart';
 import '../platform/terminal_backend.dart';
+import '../utils/session_creation.dart';
 import '../utils/shell_dialogs.dart';
 import '../widgets/sidebar/sidebar.dart';
 import '../widgets/sidebar/sidebar_resizer.dart';
@@ -91,8 +92,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         _performShellAction('renameCurrentSession');
         return null;
       case 'performShellAction':
-        final args =
-            Map<String, dynamic>.from(call.arguments as Map? ?? const {});
+        final args = Map<String, dynamic>.from(
+          call.arguments as Map? ?? const {},
+        );
         await _performShellAction(
           args['action'] as String,
           index: args['index'] as int?,
@@ -342,43 +344,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   Future<void> _performShellAction(String action, {int? index}) async {
     final serverState = ref.read(serverProvider);
-    final projects = serverState.groups
-        .where((g) => g.parentId == null)
-        .toList()
-      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    final projects =
+        serverState.groups.where((g) => g.parentId == null).toList()
+          ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
     final selectedProjectId = ref.read(sessionProvider).selectedProjectId;
     final selectedProject =
         projects.where((p) => p.id == selectedProjectId).firstOrNull;
     final activeSessionId = ref.read(sessionProvider).activeSessionId;
-    final activeSession = serverState.sessions
-        .where((s) => s.id == activeSessionId)
-        .firstOrNull;
+    final activeSession =
+        serverState.sessions.where((s) => s.id == activeSessionId).firstOrNull;
 
     switch (action) {
       case 'newProject':
         final project = await showCreateProjectDialog(context);
         if (project == null || !mounted) return;
-        final session = await ref.read(serverProvider.notifier).createSession(
-              groupId: project.id,
-              cwd: project.defaultCwd,
-            );
-        ref.read(sessionProvider.notifier)
-          ..selectProject(project.id)
-          ..setActiveSession(
-              projectId: project.id, sessionId: session.id);
+        await createSessionInCurrentProject(
+          context,
+          ref,
+          preferredProject: project,
+        );
         return;
       case 'newSession':
-        if (selectedProject == null) {
-          await _performShellAction('newProject');
-          return;
-        }
-        final session = await showCreateSessionDialog(context, ref,
-            project: selectedProject);
-        if (session == null) return;
-        ref.read(sessionProvider.notifier).setActiveSession(
-              projectId: selectedProject.id,
-              sessionId: session.id,
-            );
+        await createSessionInCurrentProject(context, ref);
         return;
       case 'renameCurrentProject':
         if (selectedProject != null) {
@@ -397,12 +384,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         return;
       case 'selectSessionByNumber':
         if (selectedProject == null) return;
-        final sessions = serverState.sessions
-            .where((s) => s.groupId == selectedProject.id)
-            .toList()
-          ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+        final sessions =
+            serverState.sessions
+                .where((s) => s.groupId == selectedProject.id)
+                .toList()
+              ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
         if (index != null && index >= 0 && index < sessions.length) {
-          ref.read(sessionProvider.notifier).setActiveSession(
+          ref
+              .read(sessionProvider.notifier)
+              .setActiveSession(
                 projectId: selectedProject.id,
                 sessionId: sessions[index].id,
               );
