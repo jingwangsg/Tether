@@ -51,6 +51,17 @@ When the terminal is focused on macOS:
 
 These shortcuts must behave the same as the existing Flutter shell actions. No new shell semantics are introduced in this design.
 
+### Shortcut Hint Overlays
+
+Shortcut-target digits should become visible while the relevant modifier is held.
+
+- Holding `Cmd` shows transient `1` through `9` badges on the first nine visible sidebar projects.
+- Holding `Ctrl` shows transient `1` through `9` badges on the first nine visible session tabs for the current project.
+- Holding both modifiers at the same time shows both overlay sets simultaneously.
+- The overlays are visual hints only. They do not add new tap targets or change selection order.
+- The overlays disappear immediately when the relevant modifier is released.
+- Projects or sessions beyond index 9 do not receive numeric overlays.
+
 ### Focus Boundaries
 
 Shell shortcuts are only forwarded through the native window bridge when the first responder is the terminal surface.
