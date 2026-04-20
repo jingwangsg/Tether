@@ -31,6 +31,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
   final PasteService _pasteService = PasteService();
   Set<String>? _pendingInteractiveSessionIds;
   bool _interactiveTabSyncScheduled = false;
+  String? _warmSessionId;
   // OSC title per session — used for tab display only, NOT persisted to server.
   // The stored session.name stays as session-<hash> unless the user renames it.
   final Map<String, String> _sessionTitles = {};
@@ -85,6 +86,9 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       previous,
       next,
     ) {
+      if (previous != null && previous != next) {
+        _warmSessionId = previous;
+      }
       if (next != null) {
         _ackAttentionIfNeeded(next);
       }
@@ -144,6 +148,16 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     final projectIds = projectSessions.map((s) => s.id).toSet();
     _terminalControllers.removeWhere((id, _) => !projectIds.contains(id));
     _sessionTitles.removeWhere((id, _) => !projectIds.contains(id));
+    if (_warmSessionId != null && !projectIds.contains(_warmSessionId)) {
+      _warmSessionId = null;
+    }
+
+    // Only mount the active session and the previous ("warm") session to bound
+    // the number of live terminal views (platform views, controllers, callbacks).
+    final retainedSessionIds = <String>{
+      if (activeId != null) activeId,
+      if (_warmSessionId != null) _warmSessionId!,
+    };
 
     Widget content;
     if (projectSessions.isEmpty) {
@@ -183,7 +197,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    ...projectSessions.map((session) {
+                    ...projectSessions.where((s) => retainedSessionIds.contains(s.id)).map((session) {
                       final isActive = session.id == activeId;
                       final group =
                           groups
