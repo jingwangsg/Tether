@@ -3,6 +3,7 @@ import 'dart:math' show min;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models/group.dart';
 import '../models/session.dart';
 import '../providers/server_provider.dart';
 import '../providers/session_provider.dart';
@@ -213,11 +214,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
-    final serverState = ref.watch(serverProvider);
+    final groups = ref.watch(serverProvider.select((s) => s.groups));
+    final sessions = ref.watch(serverProvider.select((s) => s.sessions));
     final sessionState = ref.watch(sessionProvider);
     final uiState = ref.watch(uiProvider);
     final sidebarW = _sidebarWidth(context);
-    _maybeAutoOpenTestSession(serverState, sessionState);
+    _maybeAutoOpenTestSession(groups, sessions, sessionState);
 
     return PopScope<void>(
       canPop: !uiState.isMobile,
@@ -402,7 +404,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   void _maybeAutoOpenTestSession(
-    ServerState serverState,
+    List<Group> groups,
+    List<Session> sessions,
     SessionState sessionState,
   ) {
     if (_autoOpenedTestSession || sessionState.activeSessionId != null) {
@@ -414,7 +417,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       return;
     }
     Session? targetSession;
-    for (final session in serverState.sessions) {
+    for (final session in sessions) {
       if (session.name == targetName) {
         targetSession = session;
         break;

@@ -3,10 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../models/group.dart';
 import '../../models/session.dart';
+import '../../models/ssh_host.dart';
 import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_creation.dart';
+import '../../utils/project_status_summary.dart';
 import '../../utils/session_interaction.dart';
 import '../../utils/session_status.dart';
 import '../../utils/shell_dialogs.dart';
@@ -19,38 +21,6 @@ List<Group> _projects(List<Group> groups) =>
     groups.where((group) => group.parentId == null).toList()
       ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
 
-SessionIndicatorStatus? _projectStatus(
-  Group project,
-  List<Session> sessions, {
-  required String? selectedProjectId,
-  required String? activeSessionId,
-}) {
-  final statuses =
-      sessions
-          .where((session) => session.groupId == project.id)
-          .map(
-            (session) => deriveSessionIndicatorStatus(
-              session,
-              isActive:
-                  selectedProjectId == project.id &&
-                  activeSessionId == session.id,
-            ),
-          )
-          .whereType<SessionIndicatorStatus>()
-          .toList();
-
-  if (statuses.contains(SessionIndicatorStatus.attention)) {
-    return SessionIndicatorStatus.attention;
-  }
-  if (statuses.contains(SessionIndicatorStatus.waiting)) {
-    return SessionIndicatorStatus.waiting;
-  }
-  if (statuses.contains(SessionIndicatorStatus.running)) {
-    return SessionIndicatorStatus.running;
-  }
-  return null;
-}
-
 class Sidebar extends ConsumerWidget {
   final double? width;
 
@@ -58,12 +28,24 @@ class Sidebar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final serverState = ref.watch(serverProvider);
+    final groups = ref.watch(serverProvider.select((s) => s.groups));
+    final sessions = ref.watch(serverProvider.select((s) => s.sessions));
+    final sshHosts = ref.watch(serverProvider.select((s) => s.sshHosts));
+    final isConnected = ref.watch(serverProvider.select((s) => s.isConnected));
+    final error = ref.watch(serverProvider.select((s) => s.error));
+    final navState = ref.watch(sessionProvider);
     final uiState = ref.watch(uiProvider);
     final screenWidth = MediaQuery.of(context).size.width;
     final sidebarWidth =
         width ?? (uiState.isMobile ? min(280.0, screenWidth * 0.85) : 280.0);
     final safeTop = uiState.isMobile ? MediaQuery.of(context).padding.top : 0.0;
+
+    final visible = visibleSessions(sessions, groups);
+    final projectStatuses = summarizeProjectStatuses(
+      sessions: visible,
+      selectedProjectId: navState.selectedProjectId,
+      activeSessionId: navState.activeSessionId,
+    );
 
     return Container(
       width: sidebarWidth,
@@ -71,20 +53,28 @@ class Sidebar extends ConsumerWidget {
       child: Column(
         children: [
           if (safeTop > 0) SizedBox(height: safeTop),
-          _buildHeader(context, ref, serverState),
+          _buildHeader(context, ref, isConnected),
           const Divider(height: 1, color: Colors.white12),
           Expanded(
             child:
-                serverState.isConnected
-                    ? _buildContent(context, ref, serverState)
-                    : _buildDisconnected(context, ref, serverState),
+                isConnected
+                    ? _buildContent(
+                        context,
+                        ref,
+                        groups: groups,
+                        sessions: visible,
+                        sshHosts: sshHosts,
+                        navState: navState,
+                        projectStatuses: projectStatuses,
+                      )
+                    : _buildDisconnected(context, ref, error),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildHeader(BuildContext context, WidgetRef ref, ServerState state) {
+  Widget _buildHeader(BuildContext context, WidgetRef ref, bool isConnected) {
     return Container(
       height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -110,7 +100,7 @@ class Sidebar extends ConsumerWidget {
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
           ),
-          if (state.isConnected) ...[
+          if (isConnected) ...[
             IconButton(
               icon: const Icon(Icons.create_new_folder_outlined, size: 18),
               color: Colors.white54,
@@ -133,20 +123,33 @@ class Sidebar extends ConsumerWidget {
     );
   }
 
-  Widget _buildContent(BuildContext context, WidgetRef ref, ServerState state) {
-    final projects = _projects(state.groups);
-    final sessions = visibleSessions(state.sessions, state.groups);
+  Widget _buildContent(
+    BuildContext context,
+    WidgetRef ref, {
+    required List<Group> groups,
+    required List<Session> sessions,
+    required List<SshHost> sshHosts,
+    required SessionState navState,
+    required Map<String, SessionIndicatorStatus> projectStatuses,
+  }) {
+    final projects = _projects(groups);
 
     return ListView(
       children: [
-        if (state.sshHosts.any((h) => h.reachable == true)) ...[
+        if (sshHosts.any((h) => h.reachable == true)) ...[
           SshHostList(
-            hosts: state.sshHosts.where((h) => h.reachable == true).toList(),
+            hosts: sshHosts.where((h) => h.reachable == true).toList(),
           ),
           const Divider(height: 1, color: Colors.white12),
         ],
         for (final project in projects)
-          _buildProjectTile(context, ref, project, sessions),
+          _buildProjectTile(
+            context,
+            ref,
+            project,
+            isSelected: navState.selectedProjectId == project.id,
+            status: projectStatuses[project.id],
+          ),
       ],
     );
   }
@@ -154,18 +157,10 @@ class Sidebar extends ConsumerWidget {
   Widget _buildProjectTile(
     BuildContext context,
     WidgetRef ref,
-    Group project,
-    List<Session> sessions,
-  ) {
-    final navState = ref.watch(sessionProvider);
-    final isSelected = navState.selectedProjectId == project.id;
-    final status = _projectStatus(
-      project,
-      sessions,
-      selectedProjectId: navState.selectedProjectId,
-      activeSessionId: navState.activeSessionId,
-    );
-
+    Group project, {
+    required bool isSelected,
+    required SessionIndicatorStatus? status,
+  }) {
     return Semantics(
       identifier: 'project-tile-${project.id}',
       label: project.name,
@@ -211,7 +206,7 @@ class Sidebar extends ConsumerWidget {
   Widget _buildDisconnected(
     BuildContext context,
     WidgetRef ref,
-    ServerState state,
+    String? error,
   ) {
     return Center(
       child: Padding(
@@ -222,7 +217,7 @@ class Sidebar extends ConsumerWidget {
             const Icon(Icons.link_off, size: 48, color: Colors.white24),
             const SizedBox(height: 16),
             Text(
-              state.error ?? 'Not connected',
+              error ?? 'Not connected',
               style: const TextStyle(color: Colors.white54, fontSize: 13),
               textAlign: TextAlign.center,
               maxLines: 4,
