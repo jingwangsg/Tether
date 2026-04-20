@@ -431,11 +431,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       if (!mounted) {
         return;
       }
+      final target = targetSession!;
       ref.read(sessionProvider.notifier)
-        ..selectProject(targetSession!.groupId)
+        ..selectProject(target.groupId)
         ..setActiveSession(
-          projectId: targetSession!.groupId,
-          sessionId: targetSession!.id,
+          projectId: target.groupId,
+          sessionId: target.id,
         );
     });
   }

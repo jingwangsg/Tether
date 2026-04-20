@@ -1,10 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tether/models/group.dart';
 import 'package:tether/models/session.dart';
 import 'package:tether/utils/project_status_summary.dart';
 import 'package:tether/utils/session_status.dart';
-
-Group _group(String id) => Group(id: id, name: id);
 
 Session _session(
   String id, {
