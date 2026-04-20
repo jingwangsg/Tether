@@ -318,6 +318,46 @@ void main() {
       );
     },
   );
+
+  testWidgets(
+    'session top bar prefers detected agent title over raw session name',
+    (tester) async {
+      final sessions = [
+        Session(
+          id: 'session-0',
+          groupId: 'alpha',
+          name: 'feature/refactor-shell',
+          shell: 'bash',
+          cols: 80,
+          rows: 24,
+          cwd: '/tmp/session-0',
+          isAlive: true,
+          createdAt: '',
+          lastActive: '',
+          foregroundProcess: 'claude',
+          oscTitle: '· Claude Code',
+        ),
+      ];
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(
+              body: SessionTopBar(
+                projectId: 'alpha',
+                sessions: sessions,
+                activeSessionId: 'session-0',
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Claude Code'), findsOneWidget);
+      expect(find.text('feature/refactor-shell'), findsNothing);
+    },
+  );
 }
 
 class _SessionTopBarTestServerNotifier extends ServerNotifier {

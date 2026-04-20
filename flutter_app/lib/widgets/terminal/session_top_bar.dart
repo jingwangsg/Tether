@@ -5,6 +5,7 @@ import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_close.dart';
+import '../../utils/session_tab_presentation.dart';
 import '../../utils/session_status.dart';
 import '../shell_shortcut_hint_badge.dart';
 import 'session_status_dot.dart';
@@ -65,6 +66,7 @@ class SessionTopBar extends ConsumerWidget {
         itemBuilder: (context, index) {
           final session = sessions[index];
           final isActive = session.id == activeSessionId;
+          final presentation = deriveSessionTabPresentation(session, const {});
           final status = deriveSessionIndicatorStatus(
             session,
             isActive: isActive,
@@ -74,7 +76,7 @@ class SessionTopBar extends ConsumerWidget {
             index: index,
             child: Semantics(
               identifier: 'session-top-tab-${session.id}',
-              label: session.name,
+              label: presentation.primaryTitle,
               selected: isActive,
               child: InkWell(
                 onTap: () {
@@ -106,7 +108,7 @@ class SessionTopBar extends ConsumerWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        session.name,
+                        presentation.primaryTitle,
                         style: TextStyle(
                           color: isActive ? Colors.white : Colors.white54,
                           fontSize: 12,
