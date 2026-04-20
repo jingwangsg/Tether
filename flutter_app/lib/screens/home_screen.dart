@@ -49,13 +49,49 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   double _dragDistance = 0;
   bool _autoOpenedTestSession = false;
 
-  bool get _usesNativeRenameShortcut => widget.backend.platformId == 'native';
+  bool get _usesNativeShellShortcuts => widget.backend.platformId == 'native';
+
+  bool _isNativeOwnedShellShortcut(KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return false;
+    }
+
+    final projectIndex = _digitIndex(event.logicalKey);
+    if (HardwareKeyboard.instance.isMetaPressed) {
+      if (event.logicalKey == LogicalKeyboardKey.keyN ||
+          event.logicalKey == LogicalKeyboardKey.keyT ||
+          event.logicalKey == LogicalKeyboardKey.keyR ||
+          projectIndex != null) {
+        return true;
+      }
+    }
+
+    if (HardwareKeyboard.instance.isControlPressed && projectIndex != null) {
+      return true;
+    }
+
+    return false;
+  }
+
+  void _syncDesktopShortcutHintsFromKeyboard() {
+    if (_usesNativeShellShortcuts) {
+      return;
+    }
+    ref.read(uiProvider.notifier).setDesktopShortcutHints(
+          showProjectHints: HardwareKeyboard.instance.isMetaPressed,
+          showSessionHints: HardwareKeyboard.instance.isControlPressed,
+        );
+  }
+
+  void _clearDesktopShortcutHints() {
+    ref.read(uiProvider.notifier).clearDesktopShortcutHints();
+  }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    if (_usesNativeRenameShortcut) {
+    if (_usesNativeShellShortcuts) {
       _windowChannel.setMethodCallHandler(_handleWindowMethodCall);
     }
     HardwareKeyboard.instance.addHandler(_handleGlobalKey);
@@ -65,21 +101,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   void didUpdateWidget(covariant HomeScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     final usedNativeRenameShortcut = oldWidget.backend.platformId == 'native';
-    if (usedNativeRenameShortcut == _usesNativeRenameShortcut) {
+    if (usedNativeRenameShortcut == _usesNativeShellShortcuts) {
       return;
     }
     if (usedNativeRenameShortcut) {
       _windowChannel.setMethodCallHandler(null);
     }
-    if (_usesNativeRenameShortcut) {
+    if (_usesNativeShellShortcuts) {
       _windowChannel.setMethodCallHandler(_handleWindowMethodCall);
     }
   }
 
   @override
+  void deactivate() {
+    _clearDesktopShortcutHints();
+    super.deactivate();
+  }
+
+  @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_handleGlobalKey);
-    if (_usesNativeRenameShortcut) {
+    if (_usesNativeShellShortcuts) {
       _windowChannel.setMethodCallHandler(null);
     }
     WidgetsBinding.instance.removeObserver(this);
@@ -100,13 +142,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           index: args['index'] as int?,
         );
         return null;
+      case 'setShellShortcutHints':
+        final args = Map<String, dynamic>.from(
+          call.arguments as Map? ?? const {},
+        );
+        ref.read(uiProvider.notifier).setDesktopShortcutHints(
+              showProjectHints: args['showProjectHints'] as bool? ?? false,
+              showSessionHints: args['showSessionHints'] as bool? ?? false,
+            );
+        return null;
       default:
         return null;
     }
   }
 
   bool _handleGlobalKey(KeyEvent event) {
+    _syncDesktopShortcutHintsFromKeyboard();
+
+    if (event is KeyUpEvent) {
+      _syncDesktopShortcutHintsFromKeyboard();
+      return false;
+    }
+
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
+
+    if (_usesNativeShellShortcuts && _isNativeOwnedShellShortcut(event)) {
+      return false;
+    }
 
     if (HardwareKeyboard.instance.isMetaPressed) {
       if (event is KeyDownEvent) {
@@ -123,8 +185,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           _performShellAction('renameCurrentSession');
           return true;
         }
-        if (event.logicalKey == LogicalKeyboardKey.keyR &&
-            !_usesNativeRenameShortcut) {
+        if (event.logicalKey == LogicalKeyboardKey.keyR) {
           _performShellAction('renameCurrentProject');
           return true;
         }
@@ -343,6 +404,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   Future<void> _performShellAction(String action, {int? index}) async {
+    _clearDesktopShortcutHints();
     final serverState = ref.read(serverProvider);
     final projects =
         serverState.groups.where((g) => g.parentId == null).toList()
