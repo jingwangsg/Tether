@@ -4,9 +4,9 @@ import '../../models/session.dart';
 import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
+import '../../utils/session_close.dart';
 import '../../utils/session_display.dart';
 import '../../utils/session_status.dart';
-import '../../utils/shell_dialogs.dart';
 import '../shell_shortcut_hint_badge.dart';
 import 'session_status_dot.dart';
 
@@ -58,35 +58,10 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
     }
   }
 
-  Future<void> _handleSessionAction(Session session, String action) async {
-    switch (action) {
-      case 'rename':
-        await showRenameSessionDialog(context, ref, session);
-        return;
-      case 'delete':
-        final selectedProjectId = ref.read(sessionProvider).selectedProjectId;
-        final activeSessionId = ref.read(sessionProvider).activeSessionId;
-        try {
-          await ref.read(serverProvider.notifier).deleteSession(session.id);
-          await ref.read(serverProvider.notifier).refresh();
-          if (selectedProjectId != null && activeSessionId == session.id) {
-            final remaining = ref
-                .read(serverProvider)
-                .sessions
-                .where((s) => s.groupId == selectedProjectId)
-                .where((s) => s.id != session.id)
-                .toList()
-              ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
-            if (remaining.isNotEmpty) {
-              ref.read(sessionProvider.notifier).setActiveSession(
-                    projectId: selectedProjectId,
-                    sessionId: remaining.first.id,
-                  );
-            }
-          }
-        } catch (_) {}
-        return;
-    }
+  Future<void> _closeSession(Session session) async {
+    try {
+      await closeSession(ref, session);
+    } catch (_) {}
   }
 
   @override
@@ -101,27 +76,37 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
       child: ReorderableListView.builder(
         scrollDirection: Axis.horizontal,
         buildDefaultDragHandles: false,
-        onReorder: widget.projectId == null
-            ? (_, __) {}
-            : (oldIndex, newIndex) async {
-                if (newIndex > oldIndex) {
-                  newIndex--;
-                }
-                final reordered = List<Session>.from(widget.sessions);
-                final moved = reordered.removeAt(oldIndex);
-                reordered.insert(newIndex, moved);
-                final payload = [
-                  for (int i = 0; i < reordered.length; i++)
-                    {'id': reordered[i].id, 'sort_order': i, 'group_id': widget.projectId},
-                ];
-                await ref.read(serverProvider.notifier).reorderSessions(payload);
-              },
+        onReorder:
+            widget.projectId == null
+                ? (_, __) {}
+                : (oldIndex, newIndex) async {
+                  if (newIndex > oldIndex) {
+                    newIndex--;
+                  }
+                  final reordered = List<Session>.from(widget.sessions);
+                  final moved = reordered.removeAt(oldIndex);
+                  reordered.insert(newIndex, moved);
+                  final payload = [
+                    for (int i = 0; i < reordered.length; i++)
+                      {
+                        'id': reordered[i].id,
+                        'sort_order': i,
+                        'group_id': widget.projectId,
+                      },
+                  ];
+                  await ref
+                      .read(serverProvider.notifier)
+                      .reorderSessions(payload);
+                },
         itemCount: widget.sessions.length,
         itemBuilder: (context, index) {
           final session = widget.sessions[index];
           final isActive = session.id == widget.activeSessionId;
           final display = getDisplayInfo(session, widget.sessions);
-          final status = deriveSessionIndicatorStatus(session, isActive: isActive);
+          final status = deriveSessionIndicatorStatus(
+            session,
+            isActive: isActive,
+          );
           return ReorderableDelayedDragStartListener(
             key: ValueKey('session-top-tab-${session.id}'),
             index: index,
@@ -132,7 +117,9 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
               child: InkWell(
                 onTap: () {
                   if (widget.projectId != null) {
-                    ref.read(sessionProvider.notifier).setActiveSession(
+                    ref
+                        .read(sessionProvider.notifier)
+                        .setActiveSession(
                           projectId: widget.projectId!,
                           sessionId: session.id,
                         );
@@ -141,7 +128,10 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   decoration: BoxDecoration(
-                    color: isActive ? const Color(0xFF2D2D2D) : const Color(0xFF1E1E1E),
+                    color:
+                        isActive
+                            ? const Color(0xFF2D2D2D)
+                            : const Color(0xFF1E1E1E),
                     border: Border(
                       bottom: BorderSide(
                         color: isActive ? Colors.blue : Colors.transparent,
@@ -153,7 +143,8 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(widget.sessionTitles[session.id] ?? display.displayName,
+                      Text(
+                        widget.sessionTitles[session.id] ?? display.displayName,
                         style: TextStyle(
                           color: isActive ? Colors.white : Colors.white54,
                           fontSize: 12,
@@ -171,23 +162,26 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
                         SessionStatusDot(
                           key: ValueKey('session-tab-status-${session.id}'),
                           status: status,
-                          semanticIdentifier: 'session-tab-status-${session.id}',
+                          semanticIdentifier:
+                              'session-tab-status-${session.id}',
                         ),
                       ],
                       const SizedBox(width: 4),
-                      PopupMenuButton<String>(
+                      IconButton(
+                        key: ValueKey('session-close-button-${session.id}'),
                         padding: EdgeInsets.zero,
-                        iconSize: 14,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 20,
+                          height: 20,
+                        ),
+                        splashRadius: 12,
+                        tooltip: 'Close session',
+                        onPressed: () => _closeSession(session),
                         icon: Icon(
-                          Icons.more_vert,
+                          Icons.close,
                           size: 14,
                           color: isActive ? Colors.white54 : Colors.white24,
                         ),
-                        itemBuilder: (_) => const [
-                          PopupMenuItem(value: 'rename', child: Text('Rename Session')),
-                          PopupMenuItem(value: 'delete', child: Text('Delete Session')),
-                        ],
-                        onSelected: (value) => _handleSessionAction(session, value),
                       ),
                     ],
                   ),

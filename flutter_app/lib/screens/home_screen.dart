@@ -1,3 +1,4 @@
+import 'dart:async' show unawaited;
 import 'dart:io' show Platform;
 import 'dart:math' show min;
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import '../providers/session_provider.dart';
 import '../providers/sidebar_width_provider.dart';
 import '../providers/ui_provider.dart';
 import '../platform/terminal_backend.dart';
+import '../utils/session_close.dart';
 import '../utils/session_creation.dart';
 import '../utils/shell_dialogs.dart';
 import '../widgets/sidebar/sidebar.dart';
@@ -52,7 +54,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   bool get _usesNativeShellShortcuts => widget.backend.platformId == 'native';
 
-  bool _isNativeOwnedShellShortcut(KeyEvent event) {
+  bool _isEditableTextFocused() {
+    final focusContext = FocusManager.instance.primaryFocus?.context;
+    return focusContext?.widget is EditableText;
+  }
+
+  bool _hasDialogFocus() {
+    final focusContext = FocusManager.instance.primaryFocus?.context;
+    return focusContext != null && ModalRoute.of(focusContext) is DialogRoute;
+  }
+
+  bool _shouldHandleDesktopShortcutAction() {
+    return !_hasDialogFocus() && !_isEditableTextFocused();
+  }
+
+  bool _isNativeOwnedDesktopShortcut(KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return false;
     }
@@ -62,6 +78,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       if (event.logicalKey == LogicalKeyboardKey.keyN ||
           event.logicalKey == LogicalKeyboardKey.keyT ||
           event.logicalKey == LogicalKeyboardKey.keyR ||
+          event.logicalKey == LogicalKeyboardKey.keyW ||
+          event.logicalKey == LogicalKeyboardKey.keyF ||
+          event.logicalKey == LogicalKeyboardKey.keyB ||
+          HomeScreen.fontZoomAction(event.logicalKey) != null ||
           projectIndex != null) {
         return true;
       }
@@ -78,7 +98,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     if (_usesNativeShellShortcuts) {
       return;
     }
-    ref.read(uiProvider.notifier).setDesktopShortcutHints(
+    ref
+        .read(uiProvider.notifier)
+        .setDesktopShortcutHints(
           showProjectHints: HardwareKeyboard.instance.isMetaPressed,
           showSessionHints: HardwareKeyboard.instance.isControlPressed,
         );
@@ -114,12 +136,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   @override
-  void deactivate() {
-    _clearDesktopShortcutHints();
-    super.deactivate();
-  }
-
-  @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_handleGlobalKey);
     if (_usesNativeShellShortcuts) {
@@ -132,25 +148,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   Future<dynamic> _handleWindowMethodCall(MethodCall call) async {
     switch (call.method) {
       case 'renameActiveSession':
-        _performShellAction('renameCurrentSession');
+        if (_shouldHandleDesktopShortcutAction()) {
+          unawaited(_performDesktopAction('renameCurrentSession'));
+        } else {
+          _clearDesktopShortcutHints();
+        }
         return null;
+      case 'performDesktopAction':
       case 'performShellAction':
         final args = Map<String, dynamic>.from(
           call.arguments as Map? ?? const {},
         );
-        await _performShellAction(
-          args['action'] as String,
-          index: args['index'] as int?,
-        );
+        if (_shouldHandleDesktopShortcutAction()) {
+          unawaited(
+            _performDesktopAction(
+              args['action'] as String,
+              index: args['index'] as int?,
+            ),
+          );
+        } else {
+          _clearDesktopShortcutHints();
+        }
         return null;
       case 'setShellShortcutHints':
         final args = Map<String, dynamic>.from(
           call.arguments as Map? ?? const {},
         );
-        ref.read(uiProvider.notifier).setDesktopShortcutHints(
-              showProjectHints: args['showProjectHints'] as bool? ?? false,
-              showSessionHints: args['showSessionHints'] as bool? ?? false,
-            );
+        if (_shouldHandleDesktopShortcutAction()) {
+          ref
+              .read(uiProvider.notifier)
+              .setDesktopShortcutHints(
+                showProjectHints: args['showProjectHints'] as bool? ?? false,
+                showSessionHints: args['showSessionHints'] as bool? ?? false,
+              );
+        } else {
+          _clearDesktopShortcutHints();
+        }
         return null;
       default:
         return null;
@@ -167,27 +200,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
 
-    if (_usesNativeShellShortcuts && _isNativeOwnedShellShortcut(event)) {
+    if (_usesNativeShellShortcuts && _isNativeOwnedDesktopShortcut(event)) {
       return false;
     }
 
     if (HardwareKeyboard.instance.isMetaPressed) {
       if (event is KeyDownEvent) {
         if (event.logicalKey == LogicalKeyboardKey.keyN) {
-          _performShellAction('newProject');
+          _performDesktopAction('newProject');
           return true;
         }
         if (event.logicalKey == LogicalKeyboardKey.keyT) {
-          _performShellAction('newSession');
+          _performDesktopAction('newSession');
           return true;
         }
         if (event.logicalKey == LogicalKeyboardKey.keyR &&
             HardwareKeyboard.instance.isShiftPressed) {
-          _performShellAction('renameCurrentSession');
+          _performDesktopAction('renameCurrentSession');
           return true;
         }
         if (event.logicalKey == LogicalKeyboardKey.keyR) {
-          _performShellAction('renameCurrentProject');
+          _performDesktopAction('renameCurrentProject');
+          return true;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.keyW) {
+          _performDesktopAction('closeCurrentSession');
           return true;
         }
         if (event.logicalKey == LogicalKeyboardKey.keyF) {
@@ -200,7 +237,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         }
         final projectIndex = _digitIndex(event.logicalKey);
         if (projectIndex != null) {
-          _performShellAction('selectProjectByNumber', index: projectIndex);
+          _performDesktopAction('selectProjectByNumber', index: projectIndex);
           return true;
         }
       }
@@ -215,7 +252,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     if (event is KeyDownEvent && HardwareKeyboard.instance.isControlPressed) {
       final sessionIndex = _digitIndex(event.logicalKey);
       if (sessionIndex != null) {
-        _performShellAction('selectSessionByNumber', index: sessionIndex);
+        _performDesktopAction('selectSessionByNumber', index: sessionIndex);
         return true;
       }
     }
@@ -405,8 +442,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  Future<void> _performShellAction(String action, {int? index}) async {
+  Future<void> _performDesktopAction(String action, {int? index}) async {
     _clearDesktopShortcutHints();
+    switch (action) {
+      case 'showSearch':
+        _terminalAreaKey.currentState?.showSearchForActiveSession();
+        return;
+      case 'toggleSidebar':
+        ref.read(uiProvider.notifier).toggleSidebar();
+        return;
+      case 'increaseFontSize':
+        _terminalAreaKey.currentState?.performActionOnActiveSession(
+          'increase_font_size:1',
+        );
+        return;
+      case 'decreaseFontSize':
+        _terminalAreaKey.currentState?.performActionOnActiveSession(
+          'decrease_font_size:1',
+        );
+        return;
+      case 'resetFontSize':
+        _terminalAreaKey.currentState?.performActionOnActiveSession(
+          'reset_font_size',
+        );
+        return;
+    }
+
     final serverState = ref.read(serverProvider);
     final projects =
         serverState.groups.where((g) => g.parentId == null).toList()
@@ -439,6 +500,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       case 'renameCurrentSession':
         if (activeSession != null) {
           await showRenameSessionDialog(context, ref, activeSession);
+        }
+        return;
+      case 'closeCurrentSession':
+        if (activeSession != null) {
+          await closeSession(ref, activeSession);
         }
         return;
       case 'selectProjectByNumber':
@@ -496,10 +562,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       final target = targetSession!;
       ref.read(sessionProvider.notifier)
         ..selectProject(target.groupId)
-        ..setActiveSession(
-          projectId: target.groupId,
-          sessionId: target.id,
-        );
+        ..setActiveSession(projectId: target.groupId, sessionId: target.id);
     });
   }
 }

@@ -268,107 +268,155 @@ class RunnerTests: XCTestCase {
     )
   }
 
-  func testShellShortcutCmdRReturnsRenameCurrentProject() {
-    let payload = MainFlutterWindow.shellShortcutPayload(
+  func testDesktopShortcutCmdRReturnsRenameCurrentProject() {
+    let payload = MainFlutterWindow.desktopActionPayload(
       eventType: .keyDown,
       modifierFlags: .command,
+      characters: "r",
       charactersIgnoringModifiers: "r",
-      superHandled: false,
-      firstResponderIsTerminal: true
     )
     XCTAssertEqual(payload?.action, "renameCurrentProject")
     XCTAssertNil(payload?.index)
   }
 
-  func testShellShortcutCmdShiftRReturnsRenameCurrentSession() {
-    let payload = MainFlutterWindow.shellShortcutPayload(
+  func testDesktopShortcutCmdShiftRReturnsRenameCurrentSession() {
+    let payload = MainFlutterWindow.desktopActionPayload(
       eventType: .keyDown,
       modifierFlags: [.command, .shift],
+      characters: "R",
       charactersIgnoringModifiers: "R",
-      superHandled: false,
-      firstResponderIsTerminal: true
     )
     XCTAssertEqual(payload?.action, "renameCurrentSession")
     XCTAssertNil(payload?.index)
   }
 
-  func testShellShortcutCmdNReturnsNewProject() {
-    let payload = MainFlutterWindow.shellShortcutPayload(
+  func testDesktopShortcutCmdNReturnsNewProject() {
+    let payload = MainFlutterWindow.desktopActionPayload(
       eventType: .keyDown,
       modifierFlags: .command,
+      characters: "n",
       charactersIgnoringModifiers: "n",
-      superHandled: false,
-      firstResponderIsTerminal: true
     )
     XCTAssertEqual(payload?.action, "newProject")
     XCTAssertNil(payload?.index)
   }
 
-  func testShellShortcutCmdTReturnsNewSession() {
-    let payload = MainFlutterWindow.shellShortcutPayload(
+  func testDesktopShortcutCmdTReturnsNewSession() {
+    let payload = MainFlutterWindow.desktopActionPayload(
       eventType: .keyDown,
       modifierFlags: .command,
+      characters: "t",
       charactersIgnoringModifiers: "t",
-      superHandled: false,
-      firstResponderIsTerminal: true
     )
     XCTAssertEqual(payload?.action, "newSession")
     XCTAssertNil(payload?.index)
   }
 
-  func testShellShortcutCmd1ReturnsSelectProjectByNumber() {
-    let payload = MainFlutterWindow.shellShortcutPayload(
+  func testDesktopShortcutCmdWReturnsCloseCurrentSession() {
+    let payload = MainFlutterWindow.desktopActionPayload(
       eventType: .keyDown,
       modifierFlags: .command,
+      characters: "w",
+      charactersIgnoringModifiers: "w",
+    )
+    XCTAssertEqual(payload?.action, "closeCurrentSession")
+    XCTAssertNil(payload?.index)
+  }
+
+  func testDesktopShortcutCmd1ReturnsSelectProjectByNumber() {
+    let payload = MainFlutterWindow.desktopActionPayload(
+      eventType: .keyDown,
+      modifierFlags: .command,
+      characters: "1",
       charactersIgnoringModifiers: "1",
-      superHandled: false,
-      firstResponderIsTerminal: true
     )
     XCTAssertEqual(payload?.action, "selectProjectByNumber")
     XCTAssertEqual(payload?.index, 0)
   }
 
-  func testShellShortcutCtrl1ReturnsSelectSessionByNumber() {
-    let payload = MainFlutterWindow.shellShortcutPayload(
+  func testDesktopShortcutCtrl1ReturnsSelectSessionByNumber() {
+    let payload = MainFlutterWindow.desktopActionPayload(
       eventType: .keyDown,
       modifierFlags: .control,
+      characters: "1",
       charactersIgnoringModifiers: "1",
-      superHandled: false,
-      firstResponderIsTerminal: true
     )
     XCTAssertEqual(payload?.action, "selectSessionByNumber")
     XCTAssertEqual(payload?.index, 0)
   }
 
-  func testShellShortcutReturnsNilWhenNotTerminal() {
-    let payload = MainFlutterWindow.shellShortcutPayload(
+  func testDesktopShortcutCmdFReturnsShowSearch() {
+    let payload = MainFlutterWindow.desktopActionPayload(
       eventType: .keyDown,
       modifierFlags: .command,
-      charactersIgnoringModifiers: "r",
-      superHandled: false,
-      firstResponderIsTerminal: false
+      characters: "f",
+      charactersIgnoringModifiers: "f"
     )
-    XCTAssertNil(payload)
+    XCTAssertEqual(payload?.action, "showSearch")
+    XCTAssertNil(payload?.index)
   }
 
-  func testShellShortcutReturnsNilWhenSuperHandled() {
-    let payload = MainFlutterWindow.shellShortcutPayload(
+  func testDesktopShortcutCmdBReturnsToggleSidebar() {
+    let payload = MainFlutterWindow.desktopActionPayload(
       eventType: .keyDown,
       modifierFlags: .command,
-      charactersIgnoringModifiers: "r",
-      superHandled: true,
-      firstResponderIsTerminal: true
+      characters: "b",
+      charactersIgnoringModifiers: "b"
     )
-    XCTAssertNil(payload)
+    XCTAssertEqual(payload?.action, "toggleSidebar")
+    XCTAssertNil(payload?.index)
   }
 
-  func testShellShortcutReturnsNilForNonKeyDownEvent() {
-    let payload = MainFlutterWindow.shellShortcutPayload(
+  func testDesktopShortcutCmdEqualReturnsIncreaseFontSize() {
+    let payload = MainFlutterWindow.desktopActionPayload(
+      eventType: .keyDown,
+      modifierFlags: .command,
+      characters: "=",
+      charactersIgnoringModifiers: "="
+    )
+    XCTAssertEqual(payload?.action, "increaseFontSize")
+    XCTAssertNil(payload?.index)
+  }
+
+  func testDesktopShortcutCmdShiftEqualReturnsIncreaseFontSize() {
+    let payload = MainFlutterWindow.desktopActionPayload(
+      eventType: .keyDown,
+      modifierFlags: [.command, .shift],
+      characters: "+",
+      charactersIgnoringModifiers: "="
+    )
+    XCTAssertEqual(payload?.action, "increaseFontSize")
+    XCTAssertNil(payload?.index)
+  }
+
+  func testDesktopShortcutCmdMinusReturnsDecreaseFontSize() {
+    let payload = MainFlutterWindow.desktopActionPayload(
+      eventType: .keyDown,
+      modifierFlags: .command,
+      characters: "-",
+      charactersIgnoringModifiers: "-"
+    )
+    XCTAssertEqual(payload?.action, "decreaseFontSize")
+    XCTAssertNil(payload?.index)
+  }
+
+  func testDesktopShortcutCmd0ReturnsResetFontSize() {
+    let payload = MainFlutterWindow.desktopActionPayload(
+      eventType: .keyDown,
+      modifierFlags: .command,
+      characters: "0",
+      charactersIgnoringModifiers: "0"
+    )
+    XCTAssertEqual(payload?.action, "resetFontSize")
+    XCTAssertNil(payload?.index)
+  }
+
+  func testDesktopShortcutReturnsNilForNonKeyDownEvent() {
+    let payload = MainFlutterWindow.desktopActionPayload(
       eventType: .flagsChanged,
       modifierFlags: .command,
-      charactersIgnoringModifiers: "r",
-      superHandled: false,
-      firstResponderIsTerminal: true
+      characters: "r",
+      charactersIgnoringModifiers: "r"
     )
     XCTAssertNil(payload)
   }
@@ -792,71 +840,164 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(terminalView.debugTotalScrollbackBytes, initialTotalScrollbackBytes)
   }
 
-  func testShellShortcutHintStateShowsCommandAndControlHintsOnlyForTerminalFocus() {
-    let commandState = MainFlutterWindow.shellShortcutHintState(
+  func testDesktopShortcutRoutingDispatchesRecognizedShortcutsForWorkspaceResponder() {
+    let routing = MainFlutterWindow.desktopShortcutRouting(
+      eventType: .keyDown,
       modifierFlags: .command,
-      firstResponderIsTerminal: true
+      characters: "f",
+      charactersIgnoringModifiers: "f",
+      firstResponder: NSResponder(),
+      hasAttachedSheet: false
+    )
+
+    XCTAssertEqual(
+      routing,
+      .dispatch(MainFlutterWindow.DesktopActionPayload(action: "showSearch", index: nil))
+    )
+  }
+
+  func testDesktopShortcutRoutingSuppressesRecognizedShortcutsForEditableTextResponder() {
+    let routing = MainFlutterWindow.desktopShortcutRouting(
+      eventType: .keyDown,
+      modifierFlags: .command,
+      characters: "n",
+      charactersIgnoringModifiers: "n",
+      firstResponder: NSTextView(),
+      hasAttachedSheet: false
+    )
+
+    XCTAssertEqual(routing, .suppress)
+  }
+
+  func testDesktopShortcutRoutingSuppressesRecognizedShortcutsForAttachedSheet() {
+    let routing = MainFlutterWindow.desktopShortcutRouting(
+      eventType: .keyDown,
+      modifierFlags: .command,
+      characters: "n",
+      charactersIgnoringModifiers: "n",
+      firstResponder: NSResponder(),
+      hasAttachedSheet: true
+    )
+
+    XCTAssertEqual(routing, .suppress)
+  }
+
+  func testDesktopShortcutHintStateShowsCommandAndControlHintsForWorkspaceResponder() {
+    let commandState = MainFlutterWindow.desktopShortcutHintState(
+      modifierFlags: .command,
+      firstResponder: NSResponder(),
+      hasAttachedSheet: false
     )
     XCTAssertEqual(commandState.showProjectHints, true)
     XCTAssertEqual(commandState.showSessionHints, false)
 
-    let controlState = MainFlutterWindow.shellShortcutHintState(
+    let controlState = MainFlutterWindow.desktopShortcutHintState(
       modifierFlags: .control,
-      firstResponderIsTerminal: true
+      firstResponder: NSResponder(),
+      hasAttachedSheet: false
     )
     XCTAssertEqual(controlState.showProjectHints, false)
     XCTAssertEqual(controlState.showSessionHints, true)
-
-    let notTerminal = MainFlutterWindow.shellShortcutHintState(
-      modifierFlags: [.command, .control],
-      firstResponderIsTerminal: false
-    )
-    XCTAssertEqual(notTerminal.showProjectHints, false)
-    XCTAssertEqual(notTerminal.showSessionHints, false)
   }
 
-  func testTerminalViewForwardsShellShortcutsToWindow() {
+  func testDesktopShortcutHintStateHidesHintsForEditableTextOrAttachedSheet() {
+    let editableText = MainFlutterWindow.desktopShortcutHintState(
+      modifierFlags: [.command, .control],
+      firstResponder: NSTextView(),
+      hasAttachedSheet: false
+    )
+    XCTAssertEqual(editableText.showProjectHints, false)
+    XCTAssertEqual(editableText.showSessionHints, false)
+
+    let attachedSheet = MainFlutterWindow.desktopShortcutHintState(
+      modifierFlags: [.command, .control],
+      firstResponder: NSResponder(),
+      hasAttachedSheet: true
+    )
+    XCTAssertEqual(attachedSheet.showProjectHints, false)
+    XCTAssertEqual(attachedSheet.showSessionHints, false)
+  }
+
+  func testTerminalViewForwardsWindowOwnedShortcutsToWindow() {
     XCTAssertTrue(
-      TerminalView.shouldForwardShellShortcutToWindow(
+      TerminalView.shouldForwardShortcutToWindow(
         eventType: .keyDown,
+        characters: "n",
         modifierFlags: .command,
         charactersIgnoringModifiers: "n"
       )
     )
     XCTAssertTrue(
-      TerminalView.shouldForwardShellShortcutToWindow(
+      TerminalView.shouldForwardShortcutToWindow(
         eventType: .keyDown,
+        characters: "1",
         modifierFlags: .control,
         charactersIgnoringModifiers: "1"
       )
     )
     XCTAssertTrue(
-      TerminalView.shouldForwardShellShortcutToWindow(
+      TerminalView.shouldForwardShortcutToWindow(
         eventType: .keyDown,
+        characters: "R",
         modifierFlags: [.command, .shift],
         charactersIgnoringModifiers: "r"
       )
     )
-  }
-
-  func testTerminalViewKeepsNonShellShortcutsInTerminal() {
-    XCTAssertFalse(
-      TerminalView.shouldForwardShellShortcutToWindow(
+    XCTAssertTrue(
+      TerminalView.shouldForwardShortcutToWindow(
         eventType: .keyDown,
+        characters: "f",
         modifierFlags: .command,
         charactersIgnoringModifiers: "f"
       )
     )
-    XCTAssertFalse(
-      TerminalView.shouldForwardShellShortcutToWindow(
+    XCTAssertTrue(
+      TerminalView.shouldForwardShortcutToWindow(
         eventType: .keyDown,
+        characters: "w",
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "w"
+      )
+    )
+    XCTAssertTrue(
+      TerminalView.shouldForwardShortcutToWindow(
+        eventType: .keyDown,
+        characters: "=",
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "="
+      )
+    )
+  }
+
+  func testTerminalViewKeepsNonWindowOwnedShortcutsInTerminal() {
+    XCTAssertFalse(
+      TerminalView.shouldForwardShortcutToWindow(
+        eventType: .keyDown,
+        characters: "p",
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "p"
+      )
+    )
+    XCTAssertFalse(
+      TerminalView.shouldForwardShortcutToWindow(
+        eventType: .keyDown,
+        characters: "v",
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "v"
+      )
+    )
+    XCTAssertFalse(
+      TerminalView.shouldForwardShortcutToWindow(
+        eventType: .keyDown,
+        characters: "1",
         modifierFlags: [.command, .option],
         charactersIgnoringModifiers: "1"
       )
     )
     XCTAssertFalse(
-      TerminalView.shouldForwardShellShortcutToWindow(
+      TerminalView.shouldForwardShortcutToWindow(
         eventType: .flagsChanged,
+        characters: nil,
         modifierFlags: .command,
         charactersIgnoringModifiers: nil
       )

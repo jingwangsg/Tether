@@ -29,7 +29,9 @@ Session _session(String id, String groupId, String name) => Session(
 );
 
 void main() {
-  testWidgets('terminal area shows only sessions from the selected project', (tester) async {
+  testWidgets('terminal area shows only sessions from the selected project', (
+    tester,
+  ) async {
     final alpha = _group('alpha', 'Alpha');
     final beta = _group('beta', 'Beta');
     final sessions = [
@@ -42,7 +44,11 @@ void main() {
       overrides: [
         serverProvider.overrideWith(
           (ref) => ServerNotifier.test(
-            ServerState(isConnected: true, groups: [alpha, beta], sessions: sessions),
+            ServerState(
+              isConnected: true,
+              groups: [alpha, beta],
+              sessions: sessions,
+            ),
           ),
         ),
       ],
@@ -56,7 +62,9 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: const MaterialApp(home: Scaffold(body: TerminalArea(backend: _FakeTerminalBackend()))),
+        child: const MaterialApp(
+          home: Scaffold(body: TerminalArea(backend: _FakeTerminalBackend())),
+        ),
       ),
     );
     await tester.pump();
@@ -67,47 +75,238 @@ void main() {
     expect(find.text('beta-one'), findsNothing);
   });
 
-  testWidgets('session top bar shows ctrl digit hints for only the first nine sessions', (tester) async {
-    tester.view.physicalSize = const Size(3000, 600);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
+  testWidgets(
+    'session top bar shows ctrl digit hints for only the first nine sessions',
+    (tester) async {
+      tester.view.physicalSize = const Size(3000, 600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
 
-    final sessions = List.generate(
-      10,
-      (index) => Session(
-        id: 'session-$index',
-        groupId: 'alpha',
-        name: 'session-$index',
-        shell: 'bash',
-        cols: 80,
-        rows: 24,
-        cwd: '/tmp/session-$index',
-        isAlive: true,
-        createdAt: '',
-        lastActive: '',
-        sortOrder: index,
-      ),
-    );
-    final container = ProviderContainer();
-    final titleRevision = ValueNotifier<int>(0);
-    addTearDown(container.dispose);
-    addTearDown(titleRevision.dispose);
+      final sessions = List.generate(
+        10,
+        (index) => Session(
+          id: 'session-$index',
+          groupId: 'alpha',
+          name: 'session-$index',
+          shell: 'bash',
+          cols: 80,
+          rows: 24,
+          cwd: '/tmp/session-$index',
+          isAlive: true,
+          createdAt: '',
+          lastActive: '',
+          sortOrder: index,
+        ),
+      );
+      final container = ProviderContainer();
+      final titleRevision = ValueNotifier<int>(0);
+      addTearDown(container.dispose);
+      addTearDown(titleRevision.dispose);
 
-    container.read(uiProvider.notifier).setDesktopShortcutHints(
-          showProjectHints: false,
-          showSessionHints: true,
+      container
+          .read(uiProvider.notifier)
+          .setDesktopShortcutHints(
+            showProjectHints: false,
+            showSessionHints: true,
+          );
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: Scaffold(
+              body: SizedBox(
+                width: 2000,
+                child: SessionTopBar(
+                  projectId: 'alpha',
+                  sessions: sessions,
+                  activeSessionId: 'session-0',
+                  sessionTitles: const {},
+                  titleRevision: titleRevision,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      for (var index = 0; index < 9; index++) {
+        expect(
+          find.byKey(ValueKey('session-shortcut-hint-session-$index')),
+          findsOneWidget,
         );
+      }
+      expect(
+        find.byKey(const ValueKey('session-shortcut-hint-session-9')),
+        findsNothing,
+      );
+    },
+  );
 
-    await tester.pumpWidget(
-      UncontrolledProviderScope(
-        container: container,
-        child: MaterialApp(
-          home: Scaffold(
-            body: SizedBox(
-              width: 2000,
-              child: SessionTopBar(
-                projectId: 'alpha',
+  testWidgets(
+    'session top bar shows close button for every tab and no overflow menu',
+    (tester) async {
+      final group = _group('alpha', 'Alpha');
+      final sessions = [
+        _session('session-0', group.id, 'session-0'),
+        _session('session-1', group.id, 'session-1'),
+      ];
+      final container = ProviderContainer(
+        overrides: [
+          serverProvider.overrideWith(
+            (ref) => _SessionTopBarTestServerNotifier(
+              ServerState(
+                isConnected: true,
+                groups: [group],
+                sessions: sessions,
+              ),
+            ),
+          ),
+        ],
+      );
+      final titleRevision = ValueNotifier<int>(0);
+      addTearDown(container.dispose);
+      addTearDown(titleRevision.dispose);
+
+      container.read(sessionProvider.notifier)
+        ..selectProject(group.id)
+        ..setActiveSession(projectId: group.id, sessionId: sessions.first.id);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: Scaffold(
+              body: SessionTopBar(
+                projectId: group.id,
+                sessions: sessions,
+                activeSessionId: sessions.first.id,
+                sessionTitles: const {},
+                titleRevision: titleRevision,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(PopupMenuButton<String>), findsNothing);
+      expect(find.byIcon(Icons.more_vert), findsNothing);
+      expect(
+        find.byKey(const ValueKey('session-close-button-session-0')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('session-close-button-session-1')),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'closing the active session tab switches to the first remaining session',
+    (tester) async {
+      final group = _group('alpha', 'Alpha');
+      final sessions = [
+        _session('session-0', group.id, 'session-0'),
+        _session('session-1', group.id, 'session-1'),
+        _session('session-2', group.id, 'session-2'),
+      ];
+      final container = ProviderContainer(
+        overrides: [
+          serverProvider.overrideWith(
+            (ref) => _SessionTopBarTestServerNotifier(
+              ServerState(
+                isConnected: true,
+                groups: [group],
+                sessions: sessions,
+              ),
+            ),
+          ),
+        ],
+      );
+      final titleRevision = ValueNotifier<int>(0);
+      addTearDown(container.dispose);
+      addTearDown(titleRevision.dispose);
+
+      container.read(sessionProvider.notifier)
+        ..selectProject(group.id)
+        ..setActiveSession(projectId: group.id, sessionId: 'session-1');
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: Scaffold(
+              body: SessionTopBar(
+                projectId: group.id,
+                sessions: sessions,
+                activeSessionId: 'session-1',
+                sessionTitles: const {},
+                titleRevision: titleRevision,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.byKey(const ValueKey('session-close-button-session-1')),
+      );
+      await tester.pumpAndSettle();
+
+      final notifier =
+          container.read(serverProvider.notifier)
+              as _SessionTopBarTestServerNotifier;
+      expect(notifier.deletedSessionIds, ['session-1']);
+      expect(container.read(sessionProvider).activeSessionId, 'session-0');
+      expect(
+        container.read(serverProvider).sessions.map((session) => session.id),
+        ['session-0', 'session-2'],
+      );
+    },
+  );
+
+  testWidgets(
+    'closing an inactive session tab keeps the active session selected',
+    (tester) async {
+      final group = _group('alpha', 'Alpha');
+      final sessions = [
+        _session('session-0', group.id, 'session-0'),
+        _session('session-1', group.id, 'session-1'),
+        _session('session-2', group.id, 'session-2'),
+      ];
+      final container = ProviderContainer(
+        overrides: [
+          serverProvider.overrideWith(
+            (ref) => _SessionTopBarTestServerNotifier(
+              ServerState(
+                isConnected: true,
+                groups: [group],
+                sessions: sessions,
+              ),
+            ),
+          ),
+        ],
+      );
+      final titleRevision = ValueNotifier<int>(0);
+      addTearDown(container.dispose);
+      addTearDown(titleRevision.dispose);
+
+      container.read(sessionProvider.notifier)
+        ..selectProject(group.id)
+        ..setActiveSession(projectId: group.id, sessionId: 'session-0');
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: Scaffold(
+              body: SessionTopBar(
+                projectId: group.id,
                 sessions: sessions,
                 activeSessionId: 'session-0',
                 sessionTitles: const {},
@@ -116,21 +315,39 @@ void main() {
             ),
           ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    for (var index = 0; index < 9; index++) {
-      expect(
-        find.byKey(ValueKey('session-shortcut-hint-session-$index')),
-        findsOneWidget,
       );
-    }
-    expect(
-      find.byKey(const ValueKey('session-shortcut-hint-session-9')),
-      findsNothing,
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.byKey(const ValueKey('session-close-button-session-2')),
+      );
+      await tester.pumpAndSettle();
+
+      final notifier =
+          container.read(serverProvider.notifier)
+              as _SessionTopBarTestServerNotifier;
+      expect(notifier.deletedSessionIds, ['session-2']);
+      expect(container.read(sessionProvider).activeSessionId, 'session-0');
+      expect(
+        container.read(serverProvider).sessions.map((session) => session.id),
+        ['session-0', 'session-1'],
+      );
+    },
+  );
+}
+
+class _SessionTopBarTestServerNotifier extends ServerNotifier {
+  _SessionTopBarTestServerNotifier(super.state) : super.test();
+
+  final List<String> deletedSessionIds = [];
+
+  @override
+  Future<void> deleteSession(String id) async {
+    deletedSessionIds.add(id);
+    state = state.copyWith(
+      sessions: state.sessions.where((session) => session.id != id).toList(),
     );
-  });
+  }
 }
 
 class _FakeTerminalBackend implements TerminalBackend {

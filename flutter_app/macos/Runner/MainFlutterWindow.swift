@@ -20,7 +20,15 @@ class MainFlutterWindow: NSWindow {
         responder is TerminalShortcutFocusable
     }
 
-    struct ShellShortcutHintState {
+    static func isEditableTextResponder(_ responder: NSResponder?) -> Bool {
+        guard let responder else { return false }
+        if let textView = responder as? NSTextView {
+            return textView.isFieldEditor || textView.isEditable
+        }
+        return responder is NSText
+    }
+
+    struct DesktopShortcutHintState {
         let showProjectHints: Bool
         let showSessionHints: Bool
 
@@ -32,29 +40,39 @@ class MainFlutterWindow: NSWindow {
         }
     }
 
-    static func shellShortcutHintState(
+    static func desktopShortcutHintState(
         modifierFlags: NSEvent.ModifierFlags,
-        firstResponderIsTerminal: Bool
-    ) -> ShellShortcutHintState {
+        firstResponder: NSResponder?,
+        hasAttachedSheet: Bool
+    ) -> DesktopShortcutHintState {
         let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard firstResponderIsTerminal else {
-            return ShellShortcutHintState(showProjectHints: false, showSessionHints: false)
+        let canShowHints = !hasAttachedSheet && !isEditableTextResponder(firstResponder)
+        guard canShowHints else {
+            return DesktopShortcutHintState(showProjectHints: false, showSessionHints: false)
         }
-        return ShellShortcutHintState(
+        return DesktopShortcutHintState(
             showProjectHints: flags.contains(.command),
             showSessionHints: flags.contains(.control)
         )
     }
 
-    private func pushShellShortcutHints(modifierFlags: NSEvent.ModifierFlags) {
-        let hintState = Self.shellShortcutHintState(
+    private func pushDesktopShortcutHints(modifierFlags: NSEvent.ModifierFlags) {
+        let hintState = Self.desktopShortcutHintState(
             modifierFlags: modifierFlags,
-            firstResponderIsTerminal: Self.isTerminalFocusedResponder(firstResponder)
+            firstResponder: firstResponder,
+            hasAttachedSheet: attachedSheet != nil
         )
         windowChannel?.invokeMethod("setShellShortcutHints", arguments: hintState.arguments)
     }
 
-    struct ShellShortcutPayload {
+    private func clearDesktopShortcutHints() {
+        windowChannel?.invokeMethod(
+            "setShellShortcutHints",
+            arguments: ["showProjectHints": false, "showSessionHints": false]
+        )
+    }
+
+    struct DesktopActionPayload: Equatable {
         let action: String
         let index: Int?
 
@@ -67,36 +85,94 @@ class MainFlutterWindow: NSWindow {
         }
     }
 
-    static func shellShortcutPayload(
+    enum DesktopShortcutRouting: Equatable {
+        case dispatch(DesktopActionPayload)
+        case suppress
+        case ignore
+    }
+
+    static func desktopActionPayload(
         eventType: NSEvent.EventType,
         modifierFlags: NSEvent.ModifierFlags,
-        charactersIgnoringModifiers: String?,
-        superHandled: Bool,
-        firstResponderIsTerminal: Bool
-    ) -> ShellShortcutPayload? {
-        guard !superHandled, firstResponderIsTerminal, eventType == .keyDown else { return nil }
+        characters: String?,
+        charactersIgnoringModifiers: String?
+    ) -> DesktopActionPayload? {
+        guard eventType == .keyDown else { return nil }
         let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let chars = charactersIgnoringModifiers ?? ""
+        let chars = charactersIgnoringModifiers?.lowercased() ?? ""
+        let typedChars = characters?.lowercased() ?? ""
 
-        if flags == .command && chars == "n" {
-            return ShellShortcutPayload(action: "newProject", index: nil)
+        if flags == [.command, .shift] {
+            if chars == "r" {
+                return DesktopActionPayload(action: "renameCurrentSession", index: nil)
+            }
+            if chars == "=" || typedChars == "+" {
+                return DesktopActionPayload(action: "increaseFontSize", index: nil)
+            }
         }
-        if flags == .command && chars == "t" {
-            return ShellShortcutPayload(action: "newSession", index: nil)
+
+        if flags == .command {
+            if chars == "n" {
+                return DesktopActionPayload(action: "newProject", index: nil)
+            }
+            if chars == "t" {
+                return DesktopActionPayload(action: "newSession", index: nil)
+            }
+            if chars == "w" {
+                return DesktopActionPayload(action: "closeCurrentSession", index: nil)
+            }
+            if chars == "r" {
+                return DesktopActionPayload(action: "renameCurrentProject", index: nil)
+            }
+            if chars == "f" {
+                return DesktopActionPayload(action: "showSearch", index: nil)
+            }
+            if chars == "b" {
+                return DesktopActionPayload(action: "toggleSidebar", index: nil)
+            }
+            if chars == "=" || typedChars == "+" {
+                return DesktopActionPayload(action: "increaseFontSize", index: nil)
+            }
+            if chars == "-" {
+                return DesktopActionPayload(action: "decreaseFontSize", index: nil)
+            }
+            if chars == "0" {
+                return DesktopActionPayload(action: "resetFontSize", index: nil)
+            }
+            if let digit = Int(chars), (1...9).contains(digit) {
+                return DesktopActionPayload(action: "selectProjectByNumber", index: digit - 1)
+            }
         }
-        if flags == [.command, .shift] && chars.lowercased() == "r" {
-            return ShellShortcutPayload(action: "renameCurrentSession", index: nil)
-        }
-        if flags == .command && chars == "r" {
-            return ShellShortcutPayload(action: "renameCurrentProject", index: nil)
-        }
-        if flags == .command, let digit = Int(chars), (1...9).contains(digit) {
-            return ShellShortcutPayload(action: "selectProjectByNumber", index: digit - 1)
-        }
+
         if flags == .control, let digit = Int(chars), (1...9).contains(digit) {
-            return ShellShortcutPayload(action: "selectSessionByNumber", index: digit - 1)
+            return DesktopActionPayload(action: "selectSessionByNumber", index: digit - 1)
         }
+
         return nil
+    }
+
+    static func desktopShortcutRouting(
+        eventType: NSEvent.EventType,
+        modifierFlags: NSEvent.ModifierFlags,
+        characters: String?,
+        charactersIgnoringModifiers: String?,
+        firstResponder: NSResponder?,
+        hasAttachedSheet: Bool
+    ) -> DesktopShortcutRouting {
+        guard let payload = desktopActionPayload(
+            eventType: eventType,
+            modifierFlags: modifierFlags,
+            characters: characters,
+            charactersIgnoringModifiers: charactersIgnoringModifiers
+        ) else {
+            return .ignore
+        }
+
+        if hasAttachedSheet || isEditableTextResponder(firstResponder) {
+            return .suppress
+        }
+
+        return .dispatch(payload)
     }
 
     override func awakeFromNib() {
@@ -142,21 +218,26 @@ class MainFlutterWindow: NSWindow {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        let superHandled = super.performKeyEquivalent(with: event)
-        if let payload = Self.shellShortcutPayload(
+        switch Self.desktopShortcutRouting(
             eventType: event.type,
             modifierFlags: event.modifierFlags,
+            characters: event.characters,
             charactersIgnoringModifiers: event.charactersIgnoringModifiers,
-            superHandled: superHandled,
-            firstResponderIsTerminal: Self.isTerminalFocusedResponder(firstResponder)
+            firstResponder: firstResponder,
+            hasAttachedSheet: attachedSheet != nil
         ) {
-            windowChannel?.invokeMethod("performShellAction", arguments: payload.arguments)
-            windowChannel?.invokeMethod(
-                "setShellShortcutHints",
-                arguments: ["showProjectHints": false, "showSessionHints": false]
-            )
+        case .dispatch(let payload):
+            windowChannel?.invokeMethod("performDesktopAction", arguments: payload.arguments)
+            clearDesktopShortcutHints()
             return true
+        case .suppress:
+            clearDesktopShortcutHints()
+            return true
+        case .ignore:
+            break
         }
+
+        let superHandled = super.performKeyEquivalent(with: event)
         if Self.shouldUsePasteChannelFallback(
             eventType: event.type,
             modifierFlags: event.modifierFlags,
@@ -172,15 +253,12 @@ class MainFlutterWindow: NSWindow {
     }
 
     override func flagsChanged(with event: NSEvent) {
-        pushShellShortcutHints(modifierFlags: event.modifierFlags)
+        pushDesktopShortcutHints(modifierFlags: event.modifierFlags)
         super.flagsChanged(with: event)
     }
 
     override func resignKey() {
-        windowChannel?.invokeMethod(
-            "setShellShortcutHints",
-            arguments: ["showProjectHints": false, "showSessionHints": false]
-        )
+        clearDesktopShortcutHints()
         super.resignKey()
     }
 

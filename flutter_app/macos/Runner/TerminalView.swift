@@ -580,17 +580,17 @@ final class TerminalView: NSView {
         pressedMouseButtons == 0
     }
 
-    static func shouldForwardShellShortcutToWindow(
+    static func shouldForwardShortcutToWindow(
         eventType: NSEvent.EventType,
+        characters: String?,
         modifierFlags: NSEvent.ModifierFlags,
         charactersIgnoringModifiers: String?
     ) -> Bool {
-        MainFlutterWindow.shellShortcutPayload(
+        MainFlutterWindow.desktopActionPayload(
             eventType: eventType,
             modifierFlags: modifierFlags,
-            charactersIgnoringModifiers: charactersIgnoringModifiers,
-            superHandled: false,
-            firstResponderIsTerminal: true
+            characters: characters,
+            charactersIgnoringModifiers: charactersIgnoringModifiers
         ) != nil
     }
 }
@@ -1227,6 +1227,7 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     }
 
     override func flagsChanged(with event: NSEvent) {
+        defer { super.flagsChanged(with: event) }
         guard let s = surface, !hasMarkedText() else { return }
         let mod: UInt32
         switch event.keyCode {
@@ -1248,8 +1249,9 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         guard event.type == .keyDown, focused else { return false }
         guard let s = surface else { return false }
 
-        if TerminalView.shouldForwardShellShortcutToWindow(
+        if TerminalView.shouldForwardShortcutToWindow(
             eventType: event.type,
+            characters: event.characters,
             modifierFlags: event.modifierFlags,
             charactersIgnoringModifiers: event.charactersIgnoringModifiers
         ) {

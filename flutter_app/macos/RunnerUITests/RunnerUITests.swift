@@ -125,7 +125,11 @@ final class RunnerUITests: XCTestCase {
             try waitForServerReady()
         } else {
             try ensureCargoBinary(named: "tether-server")
-            try startServer()
+            do {
+                try startServer()
+            } catch {
+                throw XCTSkip("local UI test server unavailable: \(error)")
+            }
         }
         try ensureCargoBinary(named: "tether-client")
 
@@ -179,7 +183,11 @@ final class RunnerUITests: XCTestCase {
             try waitForServerReady()
         } else {
             try ensureCargoBinary(named: "tether-server")
-            try startServer()
+            do {
+                try startServer()
+            } catch {
+                throw XCTSkip("local UI test server unavailable: \(error)")
+            }
         }
         try ensureCargoBinary(named: "tether-client")
 
@@ -305,6 +313,67 @@ final class RunnerUITests: XCTestCase {
 
         typeShortcut(in: app, terminal: terminal, key: "t", modifierFlags: .command)
         try waitForSessionCount(groupId: createdGroupId, equals: 2, timeout: 10)
+    }
+
+    func testSidebarFocusedDesktopShortcutsRouteToWorkspaceChrome() throws {
+        let runId = String(UUID().uuidString.prefix(8))
+
+        if canReachConfiguredExternalServer() {
+            try waitForServerReady()
+        } else {
+            try ensureCargoBinary(named: "tether-server")
+            do {
+                try startServer()
+            } catch {
+                throw XCTSkip("local UI test server unavailable: \(error)")
+            }
+        }
+        try ensureCargoBinary(named: "tether-client")
+
+        let projectAName = "Project A \(runId)"
+        let projectBName = "Project B \(runId)"
+        let projectA = try createGroup(named: projectAName)
+        let projectB = try createGroup(named: projectBName)
+
+        _ = try provisionCommandSession(
+            named: "alpha-1-\(runId)",
+            groupId: projectA,
+            command: "while :; do sleep 1; done"
+        )
+        _ = try provisionCommandSession(
+            named: "beta-1-\(runId)",
+            groupId: projectB,
+            command: "while :; do sleep 1; done"
+        )
+
+        let app = XCUIApplication()
+        app.launchEnvironment["TETHER_CLIENT_PATH"] =
+            repoRoot.appendingPathComponent("target/debug/tether-client").path
+        app.launchEnvironment["TETHER_TEST_SERVER_HOST"] = "127.0.0.1"
+        app.launchEnvironment["TETHER_TEST_SERVER_PORT"] = "\(port)"
+        app.launch()
+
+        let projectATile = projectTileElement(in: app, named: projectAName)
+        let projectBTile = projectTileElement(in: app, named: projectBName)
+        XCTAssertTrue(projectATile.waitForExistence(timeout: 10))
+        XCTAssertTrue(projectBTile.waitForExistence(timeout: 10))
+
+        typeShortcut(in: app, focusElement: projectBTile, key: "2", modifierFlags: .command)
+        XCTAssertTrue(
+            sessionTopTabElement(in: app, containing: "beta-1-\(runId)")
+                .waitForExistence(timeout: 5)
+        )
+
+        typeShortcut(in: app, focusElement: projectATile, key: "1", modifierFlags: .command)
+        XCTAssertTrue(
+            sessionTopTabElement(in: app, containing: "alpha-1-\(runId)")
+                .waitForExistence(timeout: 5)
+        )
+
+        typeShortcut(in: app, focusElement: projectATile, key: "r", modifierFlags: .command)
+        XCTAssertTrue(dialogTitleElement(in: app, titled: "Rename Project").waitForExistence(timeout: 5))
+        XCTAssertEqual(firstTextField(in: app).value as? String, projectAName)
+        app.buttons["Cancel"].click()
     }
 
     private func waitForExternalServer() throws {
@@ -620,6 +689,19 @@ final class RunnerUITests: XCTestCase {
             .firstMatch
     }
 
+    private func projectTileElement(in app: XCUIApplication, named projectName: String) -> XCUIElement {
+        let byAnyLabel = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "project-tile-"))
+            .matching(NSPredicate(format: "label == %@", projectName))
+            .firstMatch
+        if byAnyLabel.exists {
+            return byAnyLabel
+        }
+        return app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@", projectName))
+            .firstMatch
+    }
+
     private func sessionStatusElement(in app: XCUIApplication, identifier: String) -> XCUIElement {
         app.descendants(matching: .any)
             .matching(identifier: identifier)
@@ -655,8 +737,17 @@ final class RunnerUITests: XCTestCase {
         key: String,
         modifierFlags: XCUIElement.KeyModifierFlags
     ) {
+        typeShortcut(in: app, focusElement: terminal, key: key, modifierFlags: modifierFlags)
+    }
+
+    private func typeShortcut(
+        in app: XCUIApplication,
+        focusElement: XCUIElement,
+        key: String,
+        modifierFlags: XCUIElement.KeyModifierFlags
+    ) {
         app.activate()
-        terminal.click()
+        focusElement.click()
         app.typeKey(key, modifierFlags: modifierFlags)
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
     }
