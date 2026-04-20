@@ -79,6 +79,57 @@ fn scrollback_snapshot(session: &Arc<PtySession>) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+async fn wait_for_file_contains(path: &std::path::Path, needle: &str) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            if contents.contains(needle) {
+                return contents;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "file {:?} never contained {:?}",
+            path,
+            needle
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn wait_for_scrollback_contains(session: &Arc<PtySession>, needle: &str) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let snapshot = scrollback_snapshot(session);
+        if snapshot.contains(needle) {
+            return snapshot;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "scrollback never contained {:?}; latest snapshot: {:?}",
+            needle,
+            snapshot
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn wait_for_shell_integration(session: &Arc<PtySession>) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if session.has_shell_integration() {
+            return;
+        }
+        let snapshot = scrollback_snapshot(session);
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "shell integration never became active; latest snapshot: {:?}",
+            snapshot
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[test]
 fn materialize_terminal_runtime_writes_agent_bundle_files() {
     let temp = tempfile::tempdir().unwrap();
@@ -269,5 +320,137 @@ async fn default_bash_shell_wrapper_emits_lifecycle_markers_with_prompt_command_
         std::env::set_var("HOME", home);
     } else {
         std::env::remove_var("HOME");
+    }
+}
+
+#[tokio::test]
+async fn local_session_claude_wrapper_injects_hooks_and_prefers_runtime_bundle() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let home = tempdir().unwrap();
+    let old_home = std::env::var_os("HOME");
+    let old_path = std::env::var_os("PATH");
+    std::env::set_var("HOME", home.path());
+
+    let state = test_state_with_shell("/bin/bash");
+    let group = state.inner.db.create_group("g", "~", None, None).unwrap();
+
+    let temp = tempdir().unwrap();
+    let real_dir = temp.path().join("real-bin");
+    std::fs::create_dir_all(&real_dir).unwrap();
+    let argv_log = temp.path().join("claude-argv.log");
+    std::fs::write(
+        real_dir.join("claude"),
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            argv_log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        real_dir.join("claude"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    let path_with_fake = match &old_path {
+        Some(path) => format!("{}:{}", real_dir.display(), path.to_string_lossy()),
+        None => real_dir.display().to_string(),
+    };
+    std::env::set_var("PATH", path_with_fake);
+
+    let session = state
+        .create_session(
+            Uuid::parse_str(&group.id).unwrap(),
+            Some("shell".to_string()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    wait_for_shell_integration(&session).await;
+    session.write_input(b"claude hello\n").unwrap();
+
+    let argv = wait_for_file_contains(&argv_log, "--settings").await;
+    assert!(argv.contains("hello"), "expected original arg in {argv:?}");
+    assert!(argv.contains("--settings"), "expected injected settings in {argv:?}");
+
+    session.kill();
+    cleanup(&state);
+    if let Some(home) = old_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
+    if let Some(path) = old_path {
+        std::env::set_var("PATH", path);
+    } else {
+        std::env::remove_var("PATH");
+    }
+}
+
+#[tokio::test]
+async fn local_session_terminal_notifier_shim_emits_osc777() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let home = tempdir().unwrap();
+    let old_home = std::env::var_os("HOME");
+    let old_path = std::env::var_os("PATH");
+    std::env::set_var("HOME", home.path());
+
+    let state = test_state_with_shell("/bin/bash");
+    let group = state.inner.db.create_group("g", "~", None, None).unwrap();
+
+    let temp = tempdir().unwrap();
+    let real_dir = temp.path().join("real-bin");
+    std::fs::create_dir_all(&real_dir).unwrap();
+    std::fs::write(
+        real_dir.join("terminal-notifier"),
+        "#!/bin/sh\nprintf 'real-terminal-notifier\\n'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        real_dir.join("terminal-notifier"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    let path_with_fake = match &old_path {
+        Some(path) => format!("{}:{}", real_dir.display(), path.to_string_lossy()),
+        None => real_dir.display().to_string(),
+    };
+    std::env::set_var("PATH", path_with_fake);
+
+    let session = state
+        .create_session(
+            Uuid::parse_str(&group.id).unwrap(),
+            Some("shell".to_string()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    wait_for_shell_integration(&session).await;
+    session
+        .write_input(b"terminal-notifier -title 'Codex' -message 'needs input'\n")
+        .unwrap();
+
+    let output = wait_for_scrollback_contains(&session, "]777;notify;Codex;needs input").await;
+    assert!(
+        output.contains("]777;notify;Codex;needs input"),
+        "expected OSC 777 reminder in {output:?}"
+    );
+
+    session.kill();
+    cleanup(&state);
+    if let Some(home) = old_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
+    if let Some(path) = old_path {
+        std::env::set_var("PATH", path);
+    } else {
+        std::env::remove_var("PATH");
     }
 }
