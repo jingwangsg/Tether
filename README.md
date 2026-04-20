@@ -38,12 +38,12 @@ Nest sessions into named groups with their own working directories. Drag to reor
 Point a group at an SSH host. Tether deploys itself on the remote, tunnels in, and your remote sessions appear in the sidebar alongside local ones — in the same group, every time you reconnect.
 
 **AI tool awareness**
-A small dot on each session tab shows what Claude Code or Codex is doing right now:
+A detected Claude Code or Codex session takes over the session tab title immediately, so the tab itself tells you which agent currently owns that session. The dot still shows what the agent is doing right now:
 
 - 🟢 pulsing — running
 - 🟡 static — waiting for you
 
-Works for local and remote sessions alike.
+When the agent starts waiting and Tether is not already focused on that session, Tether also surfaces a macOS desktop reminder. Works for local and remote sessions alike.
 
 **Global hotkey**
 One keystroke brings Tether to the front from anywhere on your Mac, even when you're deep in another app.
