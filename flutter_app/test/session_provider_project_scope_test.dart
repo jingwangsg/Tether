@@ -41,5 +41,27 @@ void main() {
       expect(notifier.state.activeSessionIdFor('beta'), isNull);
       expect(notifier.state.activeSessionId, isNull);
     });
+
+    test('syncProjects is a no-op when nothing changes', () {
+      final notifier = SessionNotifier()
+        ..setActiveSession(projectId: 'alpha', sessionId: 'alpha-1')
+        ..selectProject('alpha');
+
+      final before = notifier.state;
+      notifier.syncProjects(['alpha']);
+
+      expect(identical(notifier.state, before), isTrue);
+    });
+
+    test('cleanupSessions is a no-op when no remembered session is removed', () {
+      final notifier = SessionNotifier()
+        ..setActiveSession(projectId: 'alpha', sessionId: 'alpha-1')
+        ..selectProject('alpha');
+
+      final before = notifier.state;
+      notifier.cleanupSessions({'alpha-1'});
+
+      expect(identical(notifier.state, before), isTrue);
+    });
   });
 }

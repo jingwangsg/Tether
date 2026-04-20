@@ -52,8 +52,13 @@ class SessionNotifier extends StateNotifier<SessionState> {
   }) {
     final nextMap = Map<String, String>.from(state.activeSessionIdByProject)
       ..[projectId] = sessionId;
+    final nextSelected = selectProject ? projectId : state.selectedProjectId;
+    if (nextSelected == state.selectedProjectId &&
+        _sameRememberedSessions(nextMap, state.activeSessionIdByProject)) {
+      return;
+    }
     state = state.copyWith(
-      selectedProjectId: selectProject ? projectId : state.selectedProjectId,
+      selectedProjectId: nextSelected,
       activeSessionIdByProject: nextMap,
     );
   }
@@ -65,6 +70,12 @@ class SessionNotifier extends StateNotifier<SessionState> {
     );
     final nextSelected =
         validIds.contains(state.selectedProjectId) ? state.selectedProjectId : projectIds.firstOrNull;
+
+    if (nextSelected == state.selectedProjectId &&
+        _sameRememberedSessions(nextMap, state.activeSessionIdByProject)) {
+      return;
+    }
+
     state = SessionState(
       selectedProjectId: nextSelected,
       activeSessionIdByProject: nextMap,
@@ -78,8 +89,21 @@ class SessionNotifier extends StateNotifier<SessionState> {
         nextMap[entry.key] = entry.value;
       }
     }
+
+    if (_sameRememberedSessions(nextMap, state.activeSessionIdByProject)) {
+      return;
+    }
+
     state = state.copyWith(activeSessionIdByProject: nextMap);
   }
+}
+
+bool _sameRememberedSessions(Map<String, String> a, Map<String, String> b) {
+  if (a.length != b.length) return false;
+  for (final entry in a.entries) {
+    if (b[entry.key] != entry.value) return false;
+  }
+  return true;
 }
 
 final sessionProvider =
