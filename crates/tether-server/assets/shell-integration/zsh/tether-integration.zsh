@@ -51,4 +51,11 @@ if [[ -z "${TETHER_GHOSTTY_ZSH_INTEGRATION:-}" ]]; then
     preexec_functions+=(_tether_preexec)
     chpwd_functions+=(_tether_report_pwd)
   fi
+
+  if [[ -n "${TETHER_AGENT_RUNTIME_DIR:-}" && -x "${TETHER_AGENT_RUNTIME_DIR}/bin/tether-ssh" ]]; then
+    ssh() {
+      TETHER_REAL_SSH="$(whence -p ssh)" \
+        "${TETHER_AGENT_RUNTIME_DIR}/bin/tether-ssh" "$@"
+    }
+  fi
 fi

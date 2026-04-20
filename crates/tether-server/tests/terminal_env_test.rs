@@ -454,3 +454,147 @@ async fn local_session_terminal_notifier_shim_emits_osc777() {
         std::env::remove_var("PATH");
     }
 }
+
+#[tokio::test]
+async fn nested_interactive_ssh_bootstraps_remote_agent_bundle() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let home = tempdir().unwrap();
+    let old_home = std::env::var_os("HOME");
+    let old_path = std::env::var_os("PATH");
+    std::env::set_var("HOME", home.path());
+
+    let state = test_state_with_shell("/bin/bash");
+    let group = state.inner.db.create_group("g", "~", None, None).unwrap();
+
+    let temp = tempdir().unwrap();
+    let fake_bin = temp.path().join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let ssh_log = temp.path().join("ssh.log");
+    std::fs::write(
+        fake_bin.join("ssh"),
+        format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", ssh_log.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        fake_bin.join("ssh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    let path_with_fake = match &old_path {
+        Some(path) => format!("{}:{}", fake_bin.display(), path.to_string_lossy()),
+        None => fake_bin.display().to_string(),
+    };
+    std::env::set_var("PATH", path_with_fake);
+
+    let session = state
+        .create_session(
+            Uuid::parse_str(&group.id).unwrap(),
+            Some("shell".to_string()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    wait_for_shell_integration(&session).await;
+    session.write_input(b"ssh devbox\n").unwrap();
+
+    let logged = wait_for_file_contains(&ssh_log, "devbox").await;
+    assert!(
+        logged.contains("TETHER_AGENT_NOTIFY_BIN"),
+        "expected nested ssh bootstrap in {logged:?}"
+    );
+    assert!(
+        logged.contains("CODEX_HOME"),
+        "expected nested ssh to export CODEX_HOME in {logged:?}"
+    );
+    assert!(
+        logged.contains("exec $SHELL -l"),
+        "expected nested ssh to exec remote shell in {logged:?}"
+    );
+
+    session.kill();
+    cleanup(&state);
+    if let Some(home) = old_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
+    if let Some(path) = old_path {
+        std::env::set_var("PATH", path);
+    } else {
+        std::env::remove_var("PATH");
+    }
+}
+
+#[tokio::test]
+async fn nested_port_forward_ssh_bypasses_bootstrap() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let home = tempdir().unwrap();
+    let old_home = std::env::var_os("HOME");
+    let old_path = std::env::var_os("PATH");
+    std::env::set_var("HOME", home.path());
+
+    let state = test_state_with_shell("/bin/bash");
+    let group = state.inner.db.create_group("g", "~", None, None).unwrap();
+
+    let temp = tempdir().unwrap();
+    let fake_bin = temp.path().join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let ssh_log = temp.path().join("ssh.log");
+    std::fs::write(
+        fake_bin.join("ssh"),
+        format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", ssh_log.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        fake_bin.join("ssh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    let path_with_fake = match &old_path {
+        Some(path) => format!("{}:{}", fake_bin.display(), path.to_string_lossy()),
+        None => fake_bin.display().to_string(),
+    };
+    std::env::set_var("PATH", path_with_fake);
+
+    let session = state
+        .create_session(
+            Uuid::parse_str(&group.id).unwrap(),
+            Some("shell".to_string()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    wait_for_shell_integration(&session).await;
+    session
+        .write_input(b"ssh -N -L 9000:127.0.0.1:9000 devbox\n")
+        .unwrap();
+
+    let logged = wait_for_file_contains(&ssh_log, "9000:127.0.0.1:9000").await;
+    assert!(
+        !logged.contains("TETHER_AGENT_NOTIFY_BIN"),
+        "did not expect nested ssh bootstrap in {logged:?}"
+    );
+    assert!(
+        !logged.contains("CODEX_HOME"),
+        "did not expect CODEX_HOME export in {logged:?}"
+    );
+
+    session.kill();
+    cleanup(&state);
+    if let Some(home) = old_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
+    if let Some(path) = old_path {
+        std::env::set_var("PATH", path);
+    } else {
+        std::env::remove_var("PATH");
+    }
+}

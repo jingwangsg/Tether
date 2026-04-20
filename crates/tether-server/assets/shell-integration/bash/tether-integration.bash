@@ -96,4 +96,11 @@ if [[ -z "${TETHER_GHOSTTY_BASH_INTEGRATION:-}" ]]; then
   fi
 
   trap '__tether_preexec' DEBUG
+
+  if [[ -n "${TETHER_AGENT_RUNTIME_DIR:-}" && -x "${TETHER_AGENT_RUNTIME_DIR}/bin/tether-ssh" ]]; then
+    ssh() {
+      TETHER_REAL_SSH="$(type -P ssh)" \
+        "${TETHER_AGENT_RUNTIME_DIR}/bin/tether-ssh" "$@"
+    }
+  fi
 fi

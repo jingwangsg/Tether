@@ -2,4 +2,28 @@
 set -euo pipefail
 
 REAL_SSH="${TETHER_REAL_SSH:-$(command -v ssh)}"
-exec "$REAL_SSH" "$@"
+
+_tether_is_passthrough() {
+  for arg in "$@"; do
+    case "$arg" in
+      -N|-O|-S)
+        return 0
+        ;;
+      -L|-R|-D)
+        return 0
+        ;;
+      -L*|-R*|-D*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+if _tether_is_passthrough "$@"; then
+  exec "$REAL_SSH" "$@"
+fi
+
+remote_bootstrap='export PATH="$HOME/.tether/runtime/agent/bin:$PATH"; export CODEX_HOME="$HOME/.tether/runtime/agent/codex-home"; export TETHER_AGENT_NOTIFY_BIN="$HOME/.tether/runtime/agent/bin/tether-agent-notify"; exec $SHELL -l'
+
+exec "$REAL_SSH" -t "$@" "$remote_bootstrap"
