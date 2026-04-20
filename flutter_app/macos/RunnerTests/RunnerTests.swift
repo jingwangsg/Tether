@@ -268,88 +268,109 @@ class RunnerTests: XCTestCase {
     )
   }
 
-  func testRenameShortcutRequiresExactCmdROnTerminal() {
-    XCTAssertTrue(
-      MainFlutterWindow.shouldDispatchRenameShortcut(
-        eventType: .keyDown,
-        modifierFlags: .command,
-        charactersIgnoringModifiers: "r",
-        superHandled: false,
-        firstResponderIsTerminal: true,
-      )
+  func testShellShortcutCmdRReturnsRenameCurrentProject() {
+    let payload = MainFlutterWindow.shellShortcutPayload(
+      eventType: .keyDown,
+      modifierFlags: .command,
+      charactersIgnoringModifiers: "r",
+      superHandled: false,
+      firstResponderIsTerminal: true
     )
+    XCTAssertEqual(payload?.action, "renameCurrentProject")
+    XCTAssertNil(payload?.index)
   }
 
-  func testRenameShortcutSkipsWhenSuperHandledOrNotTerminal() {
-    XCTAssertFalse(
-      MainFlutterWindow.shouldDispatchRenameShortcut(
-        eventType: .keyDown,
-        modifierFlags: .command,
-        charactersIgnoringModifiers: "r",
-        superHandled: true,
-        firstResponderIsTerminal: true,
-      )
+  func testShellShortcutCmdShiftRReturnsRenameCurrentSession() {
+    let payload = MainFlutterWindow.shellShortcutPayload(
+      eventType: .keyDown,
+      modifierFlags: [.command, .shift],
+      charactersIgnoringModifiers: "R",
+      superHandled: false,
+      firstResponderIsTerminal: true
     )
-    XCTAssertFalse(
-      MainFlutterWindow.shouldDispatchRenameShortcut(
-        eventType: .keyDown,
-        modifierFlags: .command,
-        charactersIgnoringModifiers: "r",
-        superHandled: false,
-        firstResponderIsTerminal: false,
-      )
-    )
+    XCTAssertEqual(payload?.action, "renameCurrentSession")
+    XCTAssertNil(payload?.index)
   }
 
-  func testRenameShortcutRejectsModifiedOrWrongKeys() {
-    XCTAssertFalse(
-      MainFlutterWindow.shouldDispatchRenameShortcut(
-        eventType: .keyDown,
-        modifierFlags: [.command, .shift],
-        charactersIgnoringModifiers: "r",
-        superHandled: false,
-        firstResponderIsTerminal: true,
-      )
+  func testShellShortcutCmdNReturnsNewProject() {
+    let payload = MainFlutterWindow.shellShortcutPayload(
+      eventType: .keyDown,
+      modifierFlags: .command,
+      charactersIgnoringModifiers: "n",
+      superHandled: false,
+      firstResponderIsTerminal: true
     )
-    XCTAssertFalse(
-      MainFlutterWindow.shouldDispatchRenameShortcut(
-        eventType: .keyDown,
-        modifierFlags: [.command, .option],
-        charactersIgnoringModifiers: "r",
-        superHandled: false,
-        firstResponderIsTerminal: true,
-      )
-    )
-    XCTAssertFalse(
-      MainFlutterWindow.shouldDispatchRenameShortcut(
-        eventType: .keyDown,
-        modifierFlags: .control,
-        charactersIgnoringModifiers: "r",
-        superHandled: false,
-        firstResponderIsTerminal: true,
-      )
-    )
-    XCTAssertFalse(
-      MainFlutterWindow.shouldDispatchRenameShortcut(
-        eventType: .keyDown,
-        modifierFlags: .command,
-        charactersIgnoringModifiers: "f",
-        superHandled: false,
-        firstResponderIsTerminal: true,
-      )
-    )
+    XCTAssertEqual(payload?.action, "newProject")
+    XCTAssertNil(payload?.index)
   }
 
-  func testRenameShortcutRejectsNonKeyDownEvents() {
-    XCTAssertFalse(
-      MainFlutterWindow.shouldDispatchRenameShortcut(
-        eventType: .flagsChanged,
-        modifierFlags: .command,
-        charactersIgnoringModifiers: "r",
-        superHandled: false,
-        firstResponderIsTerminal: true,
-      )
+  func testShellShortcutCmdTReturnsNewSession() {
+    let payload = MainFlutterWindow.shellShortcutPayload(
+      eventType: .keyDown,
+      modifierFlags: .command,
+      charactersIgnoringModifiers: "t",
+      superHandled: false,
+      firstResponderIsTerminal: true
     )
+    XCTAssertEqual(payload?.action, "newSession")
+    XCTAssertNil(payload?.index)
+  }
+
+  func testShellShortcutCmd1ReturnsSelectProjectByNumber() {
+    let payload = MainFlutterWindow.shellShortcutPayload(
+      eventType: .keyDown,
+      modifierFlags: .command,
+      charactersIgnoringModifiers: "1",
+      superHandled: false,
+      firstResponderIsTerminal: true
+    )
+    XCTAssertEqual(payload?.action, "selectProjectByNumber")
+    XCTAssertEqual(payload?.index, 0)
+  }
+
+  func testShellShortcutCtrl1ReturnsSelectSessionByNumber() {
+    let payload = MainFlutterWindow.shellShortcutPayload(
+      eventType: .keyDown,
+      modifierFlags: .control,
+      charactersIgnoringModifiers: "1",
+      superHandled: false,
+      firstResponderIsTerminal: true
+    )
+    XCTAssertEqual(payload?.action, "selectSessionByNumber")
+    XCTAssertEqual(payload?.index, 0)
+  }
+
+  func testShellShortcutReturnsNilWhenNotTerminal() {
+    let payload = MainFlutterWindow.shellShortcutPayload(
+      eventType: .keyDown,
+      modifierFlags: .command,
+      charactersIgnoringModifiers: "r",
+      superHandled: false,
+      firstResponderIsTerminal: false
+    )
+    XCTAssertNil(payload)
+  }
+
+  func testShellShortcutReturnsNilWhenSuperHandled() {
+    let payload = MainFlutterWindow.shellShortcutPayload(
+      eventType: .keyDown,
+      modifierFlags: .command,
+      charactersIgnoringModifiers: "r",
+      superHandled: true,
+      firstResponderIsTerminal: true
+    )
+    XCTAssertNil(payload)
+  }
+
+  func testShellShortcutReturnsNilForNonKeyDownEvent() {
+    let payload = MainFlutterWindow.shellShortcutPayload(
+      eventType: .flagsChanged,
+      modifierFlags: .command,
+      charactersIgnoringModifiers: "r",
+      superHandled: false,
+      firstResponderIsTerminal: true
+    )
+    XCTAssertNil(payload)
   }
 
   func testTerminalFocusedResponderMarker() {

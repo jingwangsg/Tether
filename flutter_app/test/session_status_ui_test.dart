@@ -3,15 +3,12 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tether/models/group.dart';
 import 'package:tether/models/session.dart';
 import 'package:tether/platform/terminal_backend.dart';
 import 'package:tether/providers/server_provider.dart';
 import 'package:tether/providers/session_provider.dart';
 import 'package:tether/utils/session_status.dart';
-import 'package:tether/widgets/sidebar/group_section.dart';
-import 'package:tether/widgets/sidebar/sidebar.dart';
 import 'package:tether/widgets/terminal/session_status_dot.dart';
 import 'package:tether/widgets/terminal/terminal_area.dart';
 import 'package:tether/widgets/terminal/terminal_controller.dart';
@@ -72,14 +69,9 @@ Future<void> _pumpWithContainer(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  setUp(() {
-    SharedPreferences.setMockInitialValues({});
-  });
-
   testWidgets('session tab shows yellow waiting dot for Claude Code', (
     tester,
   ) async {
-    SharedPreferences.setMockInitialValues({'show_tab_bar': true});
     final group = _group('local');
     final session = _session(
       'session-1',
@@ -93,7 +85,9 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    container.read(sessionProvider.notifier).openTab(session.id);
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: session.id);
 
     await _pumpWithContainer(
       tester,
@@ -114,7 +108,6 @@ void main() {
   testWidgets('session tab shows running dot for Codex activity', (
     tester,
   ) async {
-    SharedPreferences.setMockInitialValues({'show_tab_bar': true});
     final group = _group('local');
     final session = _session(
       'session-2',
@@ -128,7 +121,9 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    container.read(sessionProvider.notifier).openTab(session.id);
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: session.id);
 
     await _pumpWithContainer(
       tester,
@@ -148,7 +143,6 @@ void main() {
   testWidgets('session tab hides status dot when there is no tool state', (
     tester,
   ) async {
-    SharedPreferences.setMockInitialValues({'show_tab_bar': true});
     final group = _group('local');
     final session = _session('session-3', groupId: group.id, name: 'shell');
     final container = _container(
@@ -156,7 +150,9 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    container.read(sessionProvider.notifier).openTab(session.id);
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: session.id);
 
     await _pumpWithContainer(
       tester,
@@ -171,74 +167,9 @@ void main() {
     );
   });
 
-  testWidgets('sidebar no longer renders raw osc title symbols', (
-    tester,
-  ) async {
-    final group = _group('local');
-    final session = _session(
-      'session-4',
-      groupId: group.id,
-      name: 'agent',
-      foregroundProcess: 'claude',
-      oscTitle: '✱ Claude Code',
-    );
-    final container = _container(
-      ServerState(isConnected: true, groups: [group], sessions: [session]),
-    );
-    addTearDown(container.dispose);
-
-    await _pumpWithContainer(
-      tester,
-      container,
-      GroupSection(
-        group: group,
-        allGroups: [group],
-        allSessions: [session],
-        depth: 0,
-      ),
-    );
-
-    expect(find.text('Claude Code'), findsOneWidget);
-    expect(find.text('✱'), findsNothing);
-    final finder = find.byKey(
-      const ValueKey('session-sidebar-status-session-4'),
-    );
-    expect(finder, findsOneWidget);
-    expect(
-      tester.widget<SessionStatusDot>(finder).status,
-      SessionIndicatorStatus.running,
-    );
-  });
-
-  testWidgets('root sidebar session shows waiting status dot', (tester) async {
-    final session = _session(
-      'session-5',
-      groupId: 'missing-group',
-      name: 'agent',
-      foregroundProcess: 'claude',
-      oscTitle: '· Claude Code',
-    );
-    final container = _container(
-      ServerState(isConnected: true, groups: const [], sessions: [session]),
-    );
-    addTearDown(container.dispose);
-
-    await _pumpWithContainer(tester, container, const Sidebar());
-
-    final finder = find.byKey(
-      const ValueKey('session-sidebar-status-session-5'),
-    );
-    expect(finder, findsOneWidget);
-    expect(
-      tester.widget<SessionStatusDot>(finder).status,
-      SessionIndicatorStatus.waiting,
-    );
-  });
-
   testWidgets('session tab status dot updates through live state changes', (
     tester,
   ) async {
-    SharedPreferences.setMockInitialValues({'show_tab_bar': true});
     final group = _group('local');
     final session = _session(
       'session-6',
@@ -252,7 +183,9 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    container.read(sessionProvider.notifier).openTab(session.id);
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: session.id);
 
     await _pumpWithContainer(
       tester,
@@ -299,81 +232,9 @@ void main() {
     expect(finder, findsNothing);
   });
 
-  testWidgets('top bar stays hidden by default on fresh settings', (
-    tester,
-  ) async {
-    final group = _group('local');
-    final session = _session(
-      'session-7',
-      groupId: group.id,
-      name: 'agent',
-      foregroundProcess: 'claude',
-      oscTitle: '· Claude Code',
-    );
-    final container = _container(
-      ServerState(isConnected: true, groups: [group], sessions: [session]),
-    );
-    addTearDown(container.dispose);
-
-    container.read(sessionProvider.notifier).openTab(session.id);
-
-    await _pumpWithContainer(
-      tester,
-      container,
-      TerminalArea(backend: const _FakeTerminalBackend()),
-    );
-    await tester.pump();
-
-    expect(
-      find.byKey(const ValueKey('session-tab-status-session-7')),
-      findsNothing,
-    );
-    expect(find.text('Claude Code'), findsNothing);
-  });
-
-  testWidgets('sidebar shows bell indicator for completed background session', (
-    tester,
-  ) async {
-    final group = _group('local');
-    final session = _session(
-      'session-8',
-      groupId: group.id,
-      name: 'agent',
-      foregroundProcess: 'claude',
-      oscTitle: '· Claude Code',
-      attentionSeq: 1,
-      attentionAckSeq: 0,
-    );
-    final container = _container(
-      ServerState(isConnected: true, groups: [group], sessions: [session]),
-    );
-    addTearDown(container.dispose);
-
-    await _pumpWithContainer(
-      tester,
-      container,
-      GroupSection(
-        group: group,
-        allGroups: [group],
-        allSessions: [session],
-        depth: 0,
-      ),
-    );
-
-    final finder = find.byKey(
-      const ValueKey('session-sidebar-status-session-8'),
-    );
-    expect(finder, findsOneWidget);
-    expect(
-      tester.widget<SessionStatusDot>(finder).status,
-      SessionIndicatorStatus.attention,
-    );
-  });
-
   testWidgets('active tab suppresses bell indicator for completed session', (
     tester,
   ) async {
-    SharedPreferences.setMockInitialValues({'show_tab_bar': true});
     final group = _group('local');
     final session = _session(
       'session-9',
@@ -389,7 +250,9 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    container.read(sessionProvider.notifier).openTab(session.id);
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: session.id);
 
     await _pumpWithContainer(
       tester,

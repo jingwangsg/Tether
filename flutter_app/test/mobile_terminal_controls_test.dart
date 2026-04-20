@@ -3,7 +3,6 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tether/models/group.dart';
 import 'package:tether/models/mobile_key.dart';
 import 'package:tether/models/session.dart';
@@ -72,10 +71,6 @@ int _buttonCountForRow(WidgetTester tester, String key) {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-
-  setUp(() {
-    SharedPreferences.setMockInitialValues({});
-  });
 
   testWidgets(
     'mobile key bar renders two balanced rows and no horizontal list',
@@ -265,7 +260,9 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    container.read(sessionProvider.notifier).openTab(session.id);
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: session.id);
 
     await _pumpWithContainer(tester, container, TerminalArea(backend: backend));
 
@@ -326,7 +323,9 @@ void main() {
       );
       addTearDown(container.dispose);
 
-      container.read(sessionProvider.notifier).openTab(session.id);
+      container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: session.id);
 
       await _pumpWithContainer(
         tester,

@@ -1,101 +1,86 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-class OpenTab {
-  final String sessionId;
-
-  const OpenTab({required this.sessionId});
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is OpenTab && sessionId == other.sessionId;
-
-  @override
-  int get hashCode => sessionId.hashCode;
-}
-
 class SessionState {
-  final String? activeSessionId;
-  final List<OpenTab> openTabs;
+  final String? selectedProjectId;
+  final Map<String, String> activeSessionIdByProject;
 
   const SessionState({
-    this.activeSessionId,
-    this.openTabs = const [],
+    this.selectedProjectId,
+    this.activeSessionIdByProject = const {},
   });
 
   SessionState copyWith({
-    String? activeSessionId,
-    List<OpenTab>? openTabs,
-    bool clearActive = false,
+    String? selectedProjectId,
+    bool clearSelectedProject = false,
+    Map<String, String>? activeSessionIdByProject,
   }) {
     return SessionState(
-      activeSessionId: clearActive ? null : (activeSessionId ?? this.activeSessionId),
-      openTabs: openTabs ?? this.openTabs,
+      selectedProjectId:
+          clearSelectedProject ? null : (selectedProjectId ?? this.selectedProjectId),
+      activeSessionIdByProject:
+          activeSessionIdByProject ?? this.activeSessionIdByProject,
     );
   }
+
+  String? activeSessionIdFor(String? projectId) {
+    if (projectId == null) {
+      return null;
+    }
+    return activeSessionIdByProject[projectId];
+  }
+
+  String? get activeSessionId => activeSessionIdFor(selectedProjectId);
 }
 
 class SessionNotifier extends StateNotifier<SessionState> {
   SessionNotifier() : super(const SessionState());
 
-  void openTab(String sessionId) {
-    final tab = OpenTab(sessionId: sessionId);
-    if (!state.openTabs.contains(tab)) {
-      state = state.copyWith(
-        openTabs: [...state.openTabs, tab],
-        activeSessionId: sessionId,
-      );
-    } else {
-      state = state.copyWith(activeSessionId: sessionId);
+  void selectProject(String? projectId) {
+    if (projectId == state.selectedProjectId) {
+      return;
     }
-  }
-
-  void closeTab(String sessionId) {
-    final tabs = state.openTabs.where((t) => t.sessionId != sessionId).toList();
-    String? newActive = state.activeSessionId;
-
-    if (state.activeSessionId == sessionId) {
-      final oldIdx = state.openTabs.indexWhere((t) => t.sessionId == sessionId);
-      if (tabs.isNotEmpty) {
-        final newIdx = oldIdx.clamp(0, tabs.length - 1);
-        newActive = tabs[newIdx].sessionId;
-      } else {
-        newActive = null;
-      }
-    }
-
-    state = SessionState(
-      activeSessionId: newActive,
-      openTabs: tabs,
+    state = state.copyWith(
+      selectedProjectId: projectId,
+      clearSelectedProject: projectId == null,
     );
   }
 
-  void setActiveSession(String sessionId) {
-    state = state.copyWith(activeSessionId: sessionId);
+  void setActiveSession({
+    required String projectId,
+    required String sessionId,
+    bool selectProject = true,
+  }) {
+    final nextMap = Map<String, String>.from(state.activeSessionIdByProject)
+      ..[projectId] = sessionId;
+    state = state.copyWith(
+      selectedProjectId: selectProject ? projectId : state.selectedProjectId,
+      activeSessionIdByProject: nextMap,
+    );
   }
 
-  void reorderTabs(int oldIndex, int newIndex) {
-    final tabs = List<OpenTab>.from(state.openTabs);
-    final tab = tabs.removeAt(oldIndex);
-    tabs.insert(newIndex, tab);
-    state = state.copyWith(openTabs: tabs);
+  void syncProjects(List<String> projectIds) {
+    final validIds = projectIds.toSet();
+    final nextMap = Map<String, String>.fromEntries(
+      state.activeSessionIdByProject.entries.where((entry) => validIds.contains(entry.key)),
+    );
+    final nextSelected =
+        validIds.contains(state.selectedProjectId) ? state.selectedProjectId : projectIds.firstOrNull;
+    state = SessionState(
+      selectedProjectId: nextSelected,
+      activeSessionIdByProject: nextMap,
+    );
   }
 
-  void cleanupStaleTabs(Set<String> validSessionIds) {
-    final tabs = state.openTabs
-        .where((t) => validSessionIds.contains(t.sessionId))
-        .toList();
-
-    if (tabs.length != state.openTabs.length) {
-      String? active = state.activeSessionId;
-      if (active != null && !validSessionIds.contains(active)) {
-        active = tabs.isNotEmpty ? tabs.last.sessionId : null;
+  void cleanupSessions(Set<String> validSessionIds) {
+    final nextMap = <String, String>{};
+    for (final entry in state.activeSessionIdByProject.entries) {
+      if (validSessionIds.contains(entry.value)) {
+        nextMap[entry.key] = entry.value;
       }
-      state = SessionState(activeSessionId: active, openTabs: tabs);
     }
+    state = state.copyWith(activeSessionIdByProject: nextMap);
   }
 }
 
-final sessionProvider = StateNotifierProvider<SessionNotifier, SessionState>((ref) {
-  return SessionNotifier();
-});
+final sessionProvider =
+    StateNotifierProvider<SessionNotifier, SessionState>((ref) => SessionNotifier());

@@ -3,13 +3,11 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tether/models/group.dart';
 import 'package:tether/models/session.dart';
 import 'package:tether/platform/terminal_backend.dart';
 import 'package:tether/providers/server_provider.dart';
 import 'package:tether/providers/session_provider.dart';
-import 'package:tether/widgets/sidebar/group_section.dart';
 import 'package:tether/widgets/sidebar/sidebar.dart';
 import 'package:tether/widgets/terminal/terminal_area.dart';
 import 'package:tether/widgets/terminal/terminal_controller.dart';
@@ -63,12 +61,8 @@ Future<void> _pumpWithContainer(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  setUp(() {
-    SharedPreferences.setMockInitialValues({});
-  });
-
   testWidgets(
-    'terminal area closes tabs for sessions that become dead locals',
+    'terminal area excludes dead local sessions from project view',
     (tester) async {
       final group = _group('local');
       final alive = _session(
@@ -83,7 +77,9 @@ void main() {
       );
       addTearDown(container.dispose);
 
-      container.read(sessionProvider.notifier).openTab(alive.id);
+      container.read(sessionProvider.notifier)
+        ..selectProject(group.id)
+        ..setActiveSession(projectId: group.id, sessionId: alive.id);
 
       await _pumpWithContainer(
         tester,
@@ -92,15 +88,10 @@ void main() {
       );
       await tester.pump();
 
-      expect(
-        container
-            .read(sessionProvider)
-            .openTabs
-            .map((tab) => tab.sessionId)
-            .toList(),
-        [alive.id],
-      );
+      // Session should be visible in the top bar
+      expect(find.text('local-live'), findsOneWidget);
 
+      // Session dies
       final notifier =
           container.read(serverProvider.notifier) as _TestServerNotifier;
       notifier.setServerState(
@@ -110,156 +101,39 @@ void main() {
       await tester.pump();
       await tester.pump();
 
-      expect(container.read(sessionProvider).openTabs, isEmpty);
-      expect(find.text('No sessions open'), findsOneWidget);
+      // Dead local session should be excluded
+      expect(find.text('No sessions in this project'), findsOneWidget);
     },
   );
 
   testWidgets(
-    'terminal area closes pre-opened tabs when only dead local sessions remain',
+    'sidebar shows project tile but no individual session names',
     (tester) async {
       final group = _group('local');
-      final dead = _session(
+      final alive = _session(
         'session-1',
         groupId: group.id,
-        name: 'dead-local',
-        isAlive: false,
+        name: 'alive-local',
+        isAlive: true,
       );
       final container = _container(
-        ServerState(isConnected: true, groups: [group], sessions: [dead]),
+        ServerState(isConnected: true, groups: [group], sessions: [alive]),
       );
       addTearDown(container.dispose);
-
-      container.read(sessionProvider.notifier).openTab(dead.id);
 
       await _pumpWithContainer(
         tester,
         container,
-        TerminalArea(backend: const _FakeTerminalBackend()),
+        const SizedBox(width: 280, child: Sidebar()),
       );
-      await tester.pump();
+      await tester.pumpAndSettle();
 
-      expect(container.read(sessionProvider).openTabs, isEmpty);
-      expect(find.text('No sessions open'), findsOneWidget);
+      // Project tile should exist
+      expect(find.text('local'), findsOneWidget);
+      // Individual session names should NOT appear in the sidebar
+      expect(find.text('alive-local'), findsNothing);
     },
   );
-
-  testWidgets('dead local group session does not open from the sidebar group', (
-    tester,
-  ) async {
-    final group = _group('local');
-    final session = _session(
-      'session-1',
-      groupId: group.id,
-      name: 'dead-local',
-      isAlive: false,
-    );
-    final container = _container(
-      ServerState(isConnected: true, groups: [group], sessions: [session]),
-    );
-    addTearDown(container.dispose);
-
-    await _pumpWithContainer(
-      tester,
-      container,
-      GroupSection(
-        group: group,
-        allGroups: [group],
-        allSessions: [session],
-        depth: 0,
-      ),
-    );
-
-    expect(find.text('dead-local'), findsNothing);
-    expect(find.text('0'), findsOneWidget);
-    expect(container.read(sessionProvider).openTabs, isEmpty);
-  });
-
-  testWidgets('alive local group session still opens from the sidebar group', (
-    tester,
-  ) async {
-    final group = _group('local');
-    final session = _session(
-      'session-1',
-      groupId: group.id,
-      name: 'alive-local',
-      isAlive: true,
-    );
-    final container = _container(
-      ServerState(isConnected: true, groups: [group], sessions: [session]),
-    );
-    addTearDown(container.dispose);
-
-    await _pumpWithContainer(
-      tester,
-      container,
-      GroupSection(
-        group: group,
-        allGroups: [group],
-        allSessions: [session],
-        depth: 0,
-      ),
-    );
-
-    await tester.tap(find.text('alive-local'));
-    await tester.pump();
-
-    expect(
-      container
-          .read(sessionProvider)
-          .openTabs
-          .map((tab) => tab.sessionId)
-          .toList(),
-      [session.id],
-    );
-  });
-
-  testWidgets('dead root session tile in sidebar does not open', (
-    tester,
-  ) async {
-    final session = _session(
-      'session-1',
-      groupId: 'missing-group',
-      name: 'dead-root',
-      isAlive: false,
-    );
-    final container = _container(
-      ServerState(isConnected: true, groups: const [], sessions: [session]),
-    );
-    addTearDown(container.dispose);
-
-    await _pumpWithContainer(tester, container, const Sidebar());
-
-    expect(find.text('dead-root'), findsNothing);
-    expect(container.read(sessionProvider).openTabs, isEmpty);
-  });
-
-  testWidgets('alive root session tile in sidebar still opens', (tester) async {
-    final session = _session(
-      'session-1',
-      groupId: 'missing-group',
-      name: 'alive-root',
-      isAlive: true,
-    );
-    final container = _container(
-      ServerState(isConnected: true, groups: const [], sessions: [session]),
-    );
-    addTearDown(container.dispose);
-
-    await _pumpWithContainer(tester, container, const Sidebar());
-
-    await tester.tap(find.text('alive-root'));
-    await tester.pump();
-
-    expect(
-      container
-          .read(sessionProvider)
-          .openTabs
-          .map((tab) => tab.sessionId)
-          .toList(),
-      [session.id],
-    );
-  });
 }
 
 class _TestServerNotifier extends ServerNotifier {

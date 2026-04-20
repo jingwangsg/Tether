@@ -5,15 +5,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
-import '../../providers/settings_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../platform/paste_service.dart';
 import '../../platform/volume_keys.dart';
 import '../../platform/terminal_backend.dart';
-import '../../utils/session_display.dart';
 import '../../utils/session_interaction.dart';
-import '../../utils/session_status.dart';
-import 'session_status_dot.dart';
+import 'session_top_bar.dart';
 import 'terminal_controller.dart';
 import 'terminal_bottom_insets.dart';
 import 'terminal_image_paste.dart';
@@ -104,11 +101,9 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
 
   @override
   Widget build(BuildContext context) {
-    final sessState = ref.watch(sessionProvider);
-    final settings = ref.watch(settingsProvider);
+    final navState = ref.watch(sessionProvider);
     final uiState = ref.watch(uiProvider);
-    final openTabs = sessState.openTabs;
-    final activeId = sessState.activeSessionId;
+    final selectedProjectId = navState.selectedProjectId;
     final groups = ref.watch(serverProvider.select((s) => s.groups));
     final sessions = ref.watch(serverProvider.select((s) => s.sessions));
     final serverConfig = ref.watch(serverProvider.select((s) => s.config));
@@ -120,13 +115,38 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       showKeyBar: uiState.showKeyBar,
     );
 
-    // Prune maps for sessions that are no longer open to prevent unbounded growth.
-    final openIds = openTabs.map((t) => t.sessionId).toSet();
-    _terminalControllers.removeWhere((id, _) => !openIds.contains(id));
-    _sessionTitles.removeWhere((id, _) => !openIds.contains(id));
+    // Derive project sessions: filter to selected project, interactive only, sorted.
+    final projectSessions = sessions
+        .where((s) => s.groupId == selectedProjectId && isSessionInteractive(s, groups))
+        .toList()
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+
+    // Derive active session id, falling back to first project session.
+    var activeId = navState.activeSessionId;
+    if (activeId == null || !projectSessions.any((s) => s.id == activeId)) {
+      activeId = projectSessions.firstOrNull?.id;
+      if (activeId != null && activeId != navState.activeSessionId && selectedProjectId != null) {
+        final fallbackId = activeId;
+        final projId = selectedProjectId;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            ref.read(sessionProvider.notifier).setActiveSession(
+                  projectId: projId,
+                  sessionId: fallbackId,
+                  selectProject: false,
+                );
+          }
+        });
+      }
+    }
+
+    // Prune maps for sessions that are no longer in the project to prevent unbounded growth.
+    final projectIds = projectSessions.map((s) => s.id).toSet();
+    _terminalControllers.removeWhere((id, _) => !projectIds.contains(id));
+    _sessionTitles.removeWhere((id, _) => !projectIds.contains(id));
 
     Widget content;
-    if (openTabs.isEmpty) {
+    if (projectSessions.isEmpty) {
       content = const Expanded(
         child: Center(
           child: Column(
@@ -135,7 +155,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
               Icon(Icons.terminal, size: 64, color: Colors.white24),
               SizedBox(height: 16),
               Text(
-                'No sessions open',
+                'No sessions in this project',
                 style: TextStyle(color: Colors.white38, fontSize: 16),
               ),
               SizedBox(height: 8),
@@ -151,52 +171,46 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       content = Expanded(
         child: Column(
           children: [
-            if (settings.showTabBar)
-              _TerminalTabBar(
-                openTabs: openTabs,
-                activeId: activeId,
-                sessionTitles: _sessionTitles,
-                titleRevision: _titleRevision,
-              ),
+            SessionTopBar(
+              projectId: selectedProjectId,
+              sessions: projectSessions,
+              activeSessionId: activeId,
+              sessionTitles: _sessionTitles,
+              titleRevision: _titleRevision,
+            ),
             Expanded(
               child: ClipRect(
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    ...openTabs.map((tab) {
-                      final isActive = tab.sessionId == activeId;
-                      final session =
-                          sessions
-                              .where((s) => s.id == tab.sessionId)
-                              .firstOrNull;
+                    ...projectSessions.map((session) {
+                      final isActive = session.id == activeId;
                       final group =
                           groups
-                              .where((g) => g.id == session?.groupId)
+                              .where((g) => g.id == session.groupId)
                               .firstOrNull;
 
                       final terminalController = _terminalControllers
-                          .putIfAbsent(tab.sessionId, TerminalController.new);
+                          .putIfAbsent(session.id, TerminalController.new);
 
                       return Offstage(
                         offstage: !isActive,
                         child: widget.backend.createTerminalWidget(
                           key: ValueKey(
-                            '${widget.backend.platformId}:${tab.sessionId}',
+                            '${widget.backend.platformId}:${session.id}',
                           ),
-                          sessionId: tab.sessionId,
+                          sessionId: session.id,
                           controller: terminalController,
                           serverConfig: serverConfig,
-                          command: session?.shell,
-                          cwd: session?.cwd,
+                          command: session.shell,
+                          cwd: session.cwd,
                           isActive: isActive,
                           imagePasteBridgeEnabled: shouldEnableImagePasteBridge(
                             session: session,
                             group: group,
                           ),
                           onSessionExited: () {
-                            ref
-                                .read(sessionProvider.notifier)
-                                .closeTab(tab.sessionId);
+                            ref.read(serverProvider.notifier).refresh();
                           },
                           onTitleChanged: (title) {
                             if (title == null || title.isEmpty) return;
@@ -215,8 +229,8 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                             // Store locally for tab display when no process is active.
                             // Update map directly and bump revision to rebuild
                             // only the tab bar, not the entire TerminalArea.
-                            if (_sessionTitles[tab.sessionId] != clean) {
-                              _sessionTitles[tab.sessionId] = clean;
+                            if (_sessionTitles[session.id] != clean) {
+                              _sessionTitles[session.id] = clean;
                               _titleRevision.value++;
                             }
                           },
@@ -227,7 +241,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                                 attentionSeq,
                                 attentionAckSeq,
                               ) => _handleSessionStatusUpdate(
-                                sessionId: tab.sessionId,
+                                sessionId: session.id,
                                 process: process,
                                 oscTitle: oscTitle,
                                 attentionSeq: attentionSeq,
@@ -236,7 +250,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                               ),
                           onClipboardImage: (data, mimeType) {
                             return _handleClipboardImage(
-                              sessionId: tab.sessionId,
+                              sessionId: session.id,
                               data: data,
                               mimeType: mimeType,
                             );
@@ -249,7 +263,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                     // draggable floating nav pad's default position never
                     // lands beneath the keybar / keyboard — its taps would
                     // otherwise be intercepted by the overlay.
-                    if (uiState.showKeyBar && openTabs.isNotEmpty)
+                    if (uiState.showKeyBar && projectSessions.isNotEmpty)
                       Positioned(
                         left: 0,
                         right: 0,
@@ -397,7 +411,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       if (!mounted) return;
       final validIds = _pendingInteractiveSessionIds ?? const <String>{};
       _pendingInteractiveSessionIds = null;
-      ref.read(sessionProvider.notifier).cleanupStaleTabs(validIds);
+      ref.read(sessionProvider.notifier).cleanupSessions(validIds);
     });
   }
 
@@ -437,211 +451,6 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       (_) {
         return null;
       },
-    );
-  }
-}
-
-class _TerminalTabBar extends ConsumerStatefulWidget {
-  final List<OpenTab> openTabs;
-  final String? activeId;
-  final Map<String, String> sessionTitles;
-  final ValueNotifier<int> titleRevision;
-
-  const _TerminalTabBar({
-    required this.openTabs,
-    required this.activeId,
-    required this.sessionTitles,
-    required this.titleRevision,
-  });
-
-  @override
-  ConsumerState<_TerminalTabBar> createState() => _TerminalTabBarState();
-}
-
-class _TerminalTabBarState extends ConsumerState<_TerminalTabBar> {
-  @override
-  void initState() {
-    super.initState();
-    widget.titleRevision.addListener(_onTitleRevision);
-  }
-
-  @override
-  void didUpdateWidget(covariant _TerminalTabBar oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.titleRevision, widget.titleRevision)) {
-      oldWidget.titleRevision.removeListener(_onTitleRevision);
-      widget.titleRevision.addListener(_onTitleRevision);
-    }
-  }
-
-  @override
-  void dispose() {
-    widget.titleRevision.removeListener(_onTitleRevision);
-    super.dispose();
-  }
-
-  void _onTitleRevision() {
-    if (mounted) setState(() {});
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final sessions = ref.watch(serverProvider.select((s) => s.sessions));
-
-    return Container(
-      height: 48,
-      color: const Color(0xFF1E1E1E),
-      child: ScrollConfiguration(
-        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-        child: ReorderableListView.builder(
-          scrollDirection: Axis.horizontal,
-          buildDefaultDragHandles: false,
-          onReorder: (oldIndex, newIndex) {
-            if (newIndex > oldIndex) newIndex--;
-            ref.read(sessionProvider.notifier).reorderTabs(oldIndex, newIndex);
-          },
-          proxyDecorator: (child, index, animation) {
-            return Material(
-              color: Colors.transparent,
-              elevation: 4,
-              child: child,
-            );
-          },
-          itemCount: widget.openTabs.length,
-          itemBuilder: (context, index) {
-            final tab = widget.openTabs[index];
-            final isActive = tab.sessionId == widget.activeId;
-            final session =
-                sessions.where((s) => s.id == tab.sessionId).firstOrNull;
-
-            if (session == null) {
-              return SizedBox.shrink(key: ValueKey('missing_${tab.sessionId}'));
-            }
-
-            final display = getDisplayInfo(session, sessions);
-            final oscTitle = widget.sessionTitles[tab.sessionId];
-            final hasProcess = session.foregroundProcess != null;
-            // When a process (claude/codex) is active: getDisplayInfo() already shows the right name+icon.
-            // When no process: use OSC title (directory) or session-<hash> as fallback.
-            final tabDisplayName =
-                hasProcess
-                    ? display.displayName
-                    : (oscTitle ?? display.displayName);
-            final tabSubtitle =
-                hasProcess
-                    ? session.name
-                    : (oscTitle != null ? session.name : display.subtitle);
-            final status = deriveSessionIndicatorStatus(
-              session,
-              isActive: isActive,
-            );
-
-            return ReorderableDelayedDragStartListener(
-              key: ValueKey(tab.sessionId),
-              index: index,
-              child: GestureDetector(
-                onTap: () {
-                  ref
-                      .read(sessionProvider.notifier)
-                      .setActiveSession(tab.sessionId);
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  decoration: BoxDecoration(
-                    color:
-                        isActive
-                            ? const Color(0xFF2D2D2D)
-                            : const Color(0xFF1E1E1E),
-                    border: Border(
-                      bottom: BorderSide(
-                        color: isActive ? Colors.blue : Colors.transparent,
-                        width: 2,
-                      ),
-                    ),
-                  ),
-                  alignment: Alignment.center,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      display.iconAsset != null
-                          ? Opacity(
-                            opacity: isActive ? 1.0 : 0.5,
-                            child: Image.asset(
-                              display.iconAsset!,
-                              width: 14,
-                              height: 14,
-                            ),
-                          )
-                          : Icon(
-                            display.icon,
-                            size: 14,
-                            color:
-                                isActive
-                                    ? display.iconColor
-                                    : display.iconColor.withValues(alpha: 0.5),
-                          ),
-                      const SizedBox(width: 6),
-                      Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            tabDisplayName,
-                            style: TextStyle(
-                              color: isActive ? Colors.white : Colors.white54,
-                              fontSize: 12,
-                            ),
-                          ),
-                          if (tabSubtitle != null)
-                            Text(
-                              tabSubtitle,
-                              style: TextStyle(
-                                color:
-                                    isActive ? Colors.white38 : Colors.white24,
-                                fontSize: 10,
-                              ),
-                            ),
-                        ],
-                      ),
-                      if (status != null) ...[
-                        const SizedBox(width: 8),
-                        SessionStatusDot(
-                          key: ValueKey('session-tab-status-${tab.sessionId}'),
-                          status: status,
-                          semanticIdentifier:
-                              'session-tab-status-${tab.sessionId}',
-                        ),
-                      ],
-                      const SizedBox(width: 6),
-                      SizedBox(
-                        width: 28,
-                        height: 28,
-                        child: IconButton(
-                          icon: Icon(
-                            Icons.close,
-                            size: 14,
-                            color: isActive ? Colors.white54 : Colors.white24,
-                          ),
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(
-                            minWidth: 28,
-                            minHeight: 28,
-                          ),
-                          onPressed: () {
-                            ref
-                                .read(sessionProvider.notifier)
-                                .closeTab(tab.sessionId);
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          },
-        ),
-      ),
     );
   }
 }

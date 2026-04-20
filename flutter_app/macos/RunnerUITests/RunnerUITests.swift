@@ -219,6 +219,72 @@ final class RunnerUITests: XCTestCase {
         }
     }
 
+    func testProjectSidebarAndSessionTopBarNavigation() throws {
+        let runId = String(UUID().uuidString.prefix(8))
+
+        if canReachConfiguredExternalServer() {
+            try waitForServerReady()
+        } else {
+            try ensureCargoBinary(named: "tether-server")
+            try startServer()
+        }
+        try ensureCargoBinary(named: "tether-client")
+
+        let projectA = try createGroup(named: "Project A \(runId)")
+        let projectB = try createGroup(named: "Project B \(runId)")
+
+        _ = try provisionCommandSession(
+            named: "alpha-1-\(runId)",
+            groupId: projectA,
+            command: "while :; do sleep 1; done"
+        )
+        _ = try provisionCommandSession(
+            named: "alpha-2-\(runId)",
+            groupId: projectA,
+            command: "while :; do sleep 1; done"
+        )
+        _ = try provisionCommandSession(
+            named: "beta-1-\(runId)",
+            groupId: projectB,
+            command: "while :; do sleep 1; done"
+        )
+
+        let app = XCUIApplication()
+        app.launchEnvironment["TETHER_CLIENT_PATH"] =
+            repoRoot.appendingPathComponent("target/debug/tether-client").path
+        app.launchEnvironment["TETHER_TEST_SERVER_HOST"] = "127.0.0.1"
+        app.launchEnvironment["TETHER_TEST_SERVER_PORT"] = "\(port)"
+        app.launch()
+
+        let projectAItem = app.descendants(matching: .any)
+            .matching(identifier: "project-tile-\(projectA)")
+            .firstMatch
+        XCTAssertTrue(projectAItem.waitForExistence(timeout: 10))
+        projectAItem.click()
+
+        let alphaOne = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "session-top-tab-"))
+            .matching(NSPredicate(format: "label CONTAINS %@", "alpha-1-\(runId)"))
+            .firstMatch
+        let alphaTwo = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "session-top-tab-"))
+            .matching(NSPredicate(format: "label CONTAINS %@", "alpha-2-\(runId)"))
+            .firstMatch
+        XCTAssertTrue(alphaOne.waitForExistence(timeout: 10))
+        XCTAssertTrue(alphaTwo.waitForExistence(timeout: 10))
+
+        let projectBItem = app.descendants(matching: .any)
+            .matching(identifier: "project-tile-\(projectB)")
+            .firstMatch
+        projectBItem.click()
+
+        let betaOne = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "session-top-tab-"))
+            .matching(NSPredicate(format: "label CONTAINS %@", "beta-1-\(runId)"))
+            .firstMatch
+        XCTAssertTrue(betaOne.waitForExistence(timeout: 10))
+    }
+
     private func waitForExternalServer() throws {
         let deadline = Date().addingTimeInterval(15)
         while Date() < deadline {

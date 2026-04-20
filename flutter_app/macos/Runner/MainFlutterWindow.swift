@@ -20,16 +20,49 @@ class MainFlutterWindow: NSWindow {
         responder is TerminalShortcutFocusable
     }
 
-    static func shouldDispatchRenameShortcut(
+    struct ShellShortcutPayload {
+        let action: String
+        let index: Int?
+
+        var arguments: [String: Any] {
+            var value: [String: Any] = ["action": action]
+            if let index {
+                value["index"] = index
+            }
+            return value
+        }
+    }
+
+    static func shellShortcutPayload(
         eventType: NSEvent.EventType,
         modifierFlags: NSEvent.ModifierFlags,
         charactersIgnoringModifiers: String?,
         superHandled: Bool,
         firstResponderIsTerminal: Bool
-    ) -> Bool {
-        guard !superHandled, firstResponderIsTerminal, eventType == .keyDown else { return false }
-        return modifierFlags.intersection(.deviceIndependentFlagsMask) == .command &&
-            charactersIgnoringModifiers == "r"
+    ) -> ShellShortcutPayload? {
+        guard !superHandled, firstResponderIsTerminal, eventType == .keyDown else { return nil }
+        let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let chars = charactersIgnoringModifiers ?? ""
+
+        if flags == .command && chars == "n" {
+            return ShellShortcutPayload(action: "newProject", index: nil)
+        }
+        if flags == .command && chars == "t" {
+            return ShellShortcutPayload(action: "newSession", index: nil)
+        }
+        if flags == [.command, .shift] && chars.lowercased() == "r" {
+            return ShellShortcutPayload(action: "renameCurrentSession", index: nil)
+        }
+        if flags == .command && chars == "r" {
+            return ShellShortcutPayload(action: "renameCurrentProject", index: nil)
+        }
+        if flags == .command, let digit = Int(chars), (1...9).contains(digit) {
+            return ShellShortcutPayload(action: "selectProjectByNumber", index: digit - 1)
+        }
+        if flags == .control, let digit = Int(chars), (1...9).contains(digit) {
+            return ShellShortcutPayload(action: "selectSessionByNumber", index: digit - 1)
+        }
+        return nil
     }
 
     override func awakeFromNib() {
@@ -76,14 +109,14 @@ class MainFlutterWindow: NSWindow {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let superHandled = super.performKeyEquivalent(with: event)
-        if Self.shouldDispatchRenameShortcut(
+        if let payload = Self.shellShortcutPayload(
             eventType: event.type,
             modifierFlags: event.modifierFlags,
             charactersIgnoringModifiers: event.charactersIgnoringModifiers,
             superHandled: superHandled,
             firstResponderIsTerminal: Self.isTerminalFocusedResponder(firstResponder)
         ) {
-            windowChannel?.invokeMethod("renameActiveSession", arguments: nil)
+            windowChannel?.invokeMethod("performShellAction", arguments: payload.arguments)
             return true
         }
         if Self.shouldUsePasteChannelFallback(

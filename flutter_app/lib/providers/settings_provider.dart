@@ -11,7 +11,6 @@ class TerminalSettings {
   final String fontFamily;
   final double fontSize;
   final List<MobileKey> customKeys;
-  final bool showTabBar;
   final String? globalHotkey;
   final bool scrollToBottomOnOutput;
 
@@ -19,7 +18,6 @@ class TerminalSettings {
     this.fontFamily = 'MesloLGSNF',
     this.fontSize = defaultFontSize,
     this.customKeys = defaultCustomKeys,
-    this.showTabBar = false,
     this.globalHotkey,
     this.scrollToBottomOnOutput = false,
   });
@@ -28,7 +26,6 @@ class TerminalSettings {
     String? fontFamily,
     double? fontSize,
     List<MobileKey>? customKeys,
-    bool? showTabBar,
     String? globalHotkey,
     bool clearHotkey = false,
     bool? scrollToBottomOnOutput,
@@ -37,7 +34,6 @@ class TerminalSettings {
       fontFamily: fontFamily ?? this.fontFamily,
       fontSize: fontSize ?? this.fontSize,
       customKeys: customKeys ?? this.customKeys,
-      showTabBar: showTabBar ?? this.showTabBar,
       globalHotkey: clearHotkey ? null : (globalHotkey ?? this.globalHotkey),
       scrollToBottomOnOutput:
           scrollToBottomOnOutput ?? this.scrollToBottomOnOutput,
@@ -53,7 +49,6 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
   static const _keyFontFamily = 'terminal_font_family';
   static const _keyFontSize = 'terminal_font_size';
   static const _keyCustomKeys = 'custom_mobile_keys';
-  static const _keyShowTabBar = 'show_tab_bar';
   static const _keyGlobalHotkey = 'global_hotkey';
   static const _keyScrollToBottomOnOutput = 'scroll_to_bottom_on_output';
 
@@ -62,7 +57,6 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
     final fontFamily = prefs.getString(_keyFontFamily);
     final fontSize = prefs.getDouble(_keyFontSize);
     final customKeysJson = prefs.getString(_keyCustomKeys);
-    final showTabBar = prefs.getBool(_keyShowTabBar);
     final globalHotkey = prefs.getString(_keyGlobalHotkey);
     final scrollToBottomOnOutput = prefs.getBool(_keyScrollToBottomOnOutput);
     List<MobileKey>? customKeys;
@@ -77,7 +71,6 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
       fontFamily: fontFamily ?? state.fontFamily,
       fontSize: fontSize ?? state.fontSize,
       customKeys: customKeys ?? state.customKeys,
-      showTabBar: showTabBar ?? state.showTabBar,
       globalHotkey: globalHotkey,
       scrollToBottomOnOutput:
           scrollToBottomOnOutput ?? state.scrollToBottomOnOutput,
@@ -104,12 +97,6 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
       _keyCustomKeys,
       jsonEncode(keys.map((k) => k.toJson()).toList()),
     );
-  }
-
-  Future<void> setShowTabBar(bool show) async {
-    state = state.copyWith(showTabBar: show);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_keyShowTabBar, show);
   }
 
   Future<void> setGlobalHotkey(String? hotkey) async {

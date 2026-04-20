@@ -32,7 +32,7 @@ class _FailingDeleteApiService extends ApiService {
 
 void main() {
   test(
-    'closeTab is NOT called when deleteSession throws',
+    'cleanupSessions is NOT called when deleteSession throws',
     () async {
       final api = _FailingDeleteApiService();
       final serverNotifier = ServerNotifier.test(
@@ -58,32 +58,27 @@ void main() {
         ),
       );
 
-      final sessionNotifier = SessionNotifier();
-      sessionNotifier.openTab('s1');
+      final sessionNotifier = SessionNotifier()
+        ..selectProject('g1')
+        ..setActiveSession(projectId: 'g1', sessionId: 's1');
 
-      // Verify tab is open
-      expect(sessionNotifier.state.openTabs.length, 1);
+      expect(sessionNotifier.state.selectedProjectId, 'g1');
       expect(sessionNotifier.state.activeSessionId, 's1');
 
-      // Simulate what the fixed delete handler should do:
-      // await deleteSession, only closeTab on success.
       try {
         await serverNotifier.deleteSession('s1');
-        sessionNotifier.closeTab('s1');
+        sessionNotifier.cleanupSessions({});
       } catch (_) {
-        // Delete failed — tab should NOT be closed
+        // Delete failed — selection must stay intact.
       }
 
-      // Tab must still be open since delete threw
-      expect(sessionNotifier.state.openTabs.length, 1,
-          reason: 'Tab should remain open when delete fails');
-      expect(sessionNotifier.state.activeSessionId, 's1',
-          reason: 'Active session should be preserved when delete fails');
+      expect(sessionNotifier.state.selectedProjectId, 'g1');
+      expect(sessionNotifier.state.activeSessionId, 's1');
     },
   );
 
   test(
-    'closeTab IS called when deleteSession succeeds',
+    'cleanupSessions IS called when deleteSession succeeds',
     () async {
       final api = _SuccessDeleteApiService();
       final serverNotifier = ServerNotifier.test(
@@ -109,20 +104,21 @@ void main() {
         ),
       );
 
-      final sessionNotifier = SessionNotifier();
-      sessionNotifier.openTab('s1');
+      final sessionNotifier = SessionNotifier()
+        ..selectProject('g1')
+        ..setActiveSession(projectId: 'g1', sessionId: 's1');
 
-      expect(sessionNotifier.state.openTabs.length, 1);
+      expect(sessionNotifier.state.activeSessionId, 's1');
 
       try {
         await serverNotifier.deleteSession('s1');
-        sessionNotifier.closeTab('s1');
+        sessionNotifier.cleanupSessions({});
       } catch (_) {
         // Should not happen
       }
 
-      expect(sessionNotifier.state.openTabs, isEmpty,
-          reason: 'Tab should be closed on successful delete');
+      expect(sessionNotifier.state.activeSessionId, isNull,
+          reason: 'Active session should be cleared on successful delete');
     },
   );
 }
