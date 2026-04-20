@@ -5,6 +5,7 @@ import 'package:tether/models/group.dart';
 import 'package:tether/models/session.dart';
 import 'package:tether/providers/server_provider.dart';
 import 'package:tether/providers/session_provider.dart';
+import 'package:tether/providers/ui_provider.dart';
 import 'package:tether/widgets/sidebar/sidebar.dart';
 
 Group _group(String id, String name, int sortOrder, {String? parentId}) =>
@@ -81,5 +82,48 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(container.read(sessionProvider).selectedProjectId, 'beta');
+  });
+
+  testWidgets('sidebar shows cmd digit hints for only the first nine visible projects', (tester) async {
+    final groups = List.generate(
+      10,
+      (index) => _group('project-$index', 'Project ${index + 1}', index),
+    );
+    final container = ProviderContainer(
+      overrides: [
+        serverProvider.overrideWith(
+          (ref) => ServerNotifier.test(
+            ServerState(isConnected: true, groups: groups, sessions: const []),
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    container.read(uiProvider.notifier).setDesktopShortcutHints(
+          showProjectHints: true,
+          showSessionHints: false,
+        );
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: Scaffold(body: SizedBox(width: 280, child: Sidebar())),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (var index = 0; index < 9; index++) {
+      expect(
+        find.byKey(ValueKey('project-shortcut-hint-project-$index')),
+        findsOneWidget,
+      );
+    }
+    expect(
+      find.byKey(const ValueKey('project-shortcut-hint-project-9')),
+      findsNothing,
+    );
   });
 }

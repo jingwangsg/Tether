@@ -3,9 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../models/session.dart';
 import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
+import '../../providers/ui_provider.dart';
 import '../../utils/session_display.dart';
 import '../../utils/session_status.dart';
 import '../../utils/shell_dialogs.dart';
+import '../shell_shortcut_hint_badge.dart';
 import 'session_status_dot.dart';
 
 class SessionTopBar extends ConsumerStatefulWidget {
@@ -89,6 +91,9 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
 
   @override
   Widget build(BuildContext context) {
+    final showSessionShortcutHints = ref.watch(
+      uiProvider.select((state) => state.showSessionShortcutHints),
+    );
     return Container(
       key: const ValueKey('session-top-bar'),
       height: 48,
@@ -154,6 +159,13 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
                           fontSize: 12,
                         ),
                       ),
+                      if (showSessionShortcutHints && index < 9) ...[
+                        const SizedBox(width: 8),
+                        ShellShortcutHintBadge(
+                          key: ValueKey('session-shortcut-hint-${session.id}'),
+                          label: '${index + 1}',
+                        ),
+                      ],
                       if (status != null) ...[
                         const SizedBox(width: 8),
                         SessionStatusDot(

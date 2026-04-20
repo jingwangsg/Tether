@@ -15,6 +15,8 @@ class UiState {
   final ModifierMode altMode;
   final List<MobileKey> mobileKeys;
   final Offset? floatingNavOffset;
+  final bool showProjectShortcutHints;
+  final bool showSessionShortcutHints;
 
   const UiState({
     this.isMobile = false,
@@ -26,6 +28,8 @@ class UiState {
     this.altMode = ModifierMode.inactive,
     this.mobileKeys = defaultMobileKeys,
     this.floatingNavOffset,
+    this.showProjectShortcutHints = false,
+    this.showSessionShortcutHints = false,
   });
 
   bool get ctrlActive => ctrlMode != ModifierMode.inactive;
@@ -42,6 +46,8 @@ class UiState {
     List<MobileKey>? mobileKeys,
     Offset? floatingNavOffset,
     bool clearFloatingNavOffset = false,
+    bool? showProjectShortcutHints,
+    bool? showSessionShortcutHints,
   }) {
     return UiState(
       isMobile: isMobile ?? this.isMobile,
@@ -57,6 +63,10 @@ class UiState {
           clearFloatingNavOffset
               ? null
               : (floatingNavOffset ?? this.floatingNavOffset),
+      showProjectShortcutHints:
+          showProjectShortcutHints ?? this.showProjectShortcutHints,
+      showSessionShortcutHints:
+          showSessionShortcutHints ?? this.showSessionShortcutHints,
     );
   }
 }
@@ -170,6 +180,27 @@ class UiNotifier extends StateNotifier<UiState> {
 
   void resetFloatingNavOffset() {
     state = state.copyWith(clearFloatingNavOffset: true);
+  }
+
+  void setDesktopShortcutHints({
+    required bool showProjectHints,
+    required bool showSessionHints,
+  }) {
+    if (state.showProjectShortcutHints == showProjectHints &&
+        state.showSessionShortcutHints == showSessionHints) {
+      return;
+    }
+    state = state.copyWith(
+      showProjectShortcutHints: showProjectHints,
+      showSessionShortcutHints: showSessionHints,
+    );
+  }
+
+  void clearDesktopShortcutHints() {
+    setDesktopShortcutHints(
+      showProjectHints: false,
+      showSessionHints: false,
+    );
   }
 }
 

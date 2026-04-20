@@ -8,6 +8,8 @@ import 'package:tether/models/session.dart';
 import 'package:tether/platform/terminal_backend.dart';
 import 'package:tether/providers/server_provider.dart';
 import 'package:tether/providers/session_provider.dart';
+import 'package:tether/providers/ui_provider.dart';
+import 'package:tether/widgets/terminal/session_top_bar.dart';
 import 'package:tether/widgets/terminal/terminal_area.dart';
 import 'package:tether/widgets/terminal/terminal_controller.dart';
 
@@ -63,6 +65,71 @@ void main() {
     expect(find.text('alpha-one'), findsOneWidget);
     expect(find.text('alpha-two'), findsOneWidget);
     expect(find.text('beta-one'), findsNothing);
+  });
+
+  testWidgets('session top bar shows ctrl digit hints for only the first nine sessions', (tester) async {
+    tester.view.physicalSize = const Size(3000, 600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final sessions = List.generate(
+      10,
+      (index) => Session(
+        id: 'session-$index',
+        groupId: 'alpha',
+        name: 'session-$index',
+        shell: 'bash',
+        cols: 80,
+        rows: 24,
+        cwd: '/tmp/session-$index',
+        isAlive: true,
+        createdAt: '',
+        lastActive: '',
+        sortOrder: index,
+      ),
+    );
+    final container = ProviderContainer();
+    final titleRevision = ValueNotifier<int>(0);
+    addTearDown(container.dispose);
+    addTearDown(titleRevision.dispose);
+
+    container.read(uiProvider.notifier).setDesktopShortcutHints(
+          showProjectHints: false,
+          showSessionHints: true,
+        );
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 2000,
+              child: SessionTopBar(
+                projectId: 'alpha',
+                sessions: sessions,
+                activeSessionId: 'session-0',
+                sessionTitles: const {},
+                titleRevision: titleRevision,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (var index = 0; index < 9; index++) {
+      expect(
+        find.byKey(ValueKey('session-shortcut-hint-session-$index')),
+        findsOneWidget,
+      );
+    }
+    expect(
+      find.byKey(const ValueKey('session-shortcut-hint-session-9')),
+      findsNothing,
+    );
   });
 }
 
