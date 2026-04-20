@@ -9,7 +9,8 @@ use tokio::time::timeout;
 
 use super::client::SshClient;
 use super::deploy::{
-    ensure_deployed, ensure_remote_ghostty_terminfo, ensure_started_without_restart,
+    ensure_deployed, ensure_remote_agent_bundle, ensure_remote_ghostty_terminfo,
+    ensure_started_without_restart,
     remote_binary_version,
 };
 use super::tunnel::Tunnel;
@@ -282,6 +283,13 @@ async fn connect_remote(
     if let Err(error) = ensure_remote_ghostty_terminfo(&client).await {
         tracing::warn!(
             "Failed to sync Ghostty terminfo to {}: {}",
+            client.host_alias,
+            error
+        );
+    }
+    if let Err(error) = ensure_remote_agent_bundle(&client).await {
+        tracing::warn!(
+            "Failed to sync agent reminder bundle to {}: {}",
             client.host_alias,
             error
         );

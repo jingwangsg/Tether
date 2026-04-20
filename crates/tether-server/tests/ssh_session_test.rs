@@ -251,6 +251,26 @@ fn full_command_format_with_absolute_path() {
     );
 }
 
+#[test]
+fn ssh_group_command_exports_remote_agent_runtime_before_shell_exec() {
+    let (shell, _) = resolve_ssh_command(Some("devbox"), "ssh devbox", "~/project");
+
+    assert!(
+        shell.contains("export PATH=~/.tether/runtime/agent/bin:\\$PATH"),
+        "should export remote agent PATH, got: {shell}"
+    );
+    assert!(
+        shell.contains("export CODEX_HOME=~/.tether/runtime/agent/codex-home"),
+        "should export remote CODEX_HOME, got: {shell}"
+    );
+    assert!(
+        shell.contains(
+            "export TETHER_AGENT_NOTIFY_BIN=~/.tether/runtime/agent/bin/tether-agent-notify"
+        ),
+        "should export remote helper path, got: {shell}"
+    );
+}
+
 // --- Edge case: paths that must be shell-quoted ---
 
 #[test]

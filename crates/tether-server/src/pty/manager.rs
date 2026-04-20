@@ -61,21 +61,27 @@ pub fn resolve_ssh_command(ssh_host: Option<&str>, shell: &str, cwd: &str) -> (S
             "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay ",
             1,
         );
+        let agent_exports = concat!(
+            "export PATH=~/.tether/runtime/agent/bin:\\$PATH; ",
+            "export CODEX_HOME=~/.tether/runtime/agent/codex-home; ",
+            "export TETHER_AGENT_NOTIFY_BIN=~/.tether/runtime/agent/bin/tether-agent-notify"
+        );
         // Install xterm-ghostty terminfo on the remote before starting
         // the shell.  SSH forwards TERM but not TERMINFO, so without
         // this TUI apps that rely on terminfo (gdu, htop, etc.) fail.
         let ti_preamble = ssh_terminfo_preamble();
         let ssh_cmd = if cwd != "~" && !cwd.is_empty() {
             format!(
-                "{} -t \"{}; cd {} && exec \\$SHELL -l\"",
+                "{} -t \"{}; {}; cd {} && exec \\$SHELL -l\"",
                 shell_with_keepalive,
                 ti_preamble,
+                agent_exports,
                 shell_quote(cwd)
             )
         } else {
             format!(
-                "{} -t \"{}; exec \\$SHELL -l\"",
-                shell_with_keepalive, ti_preamble
+                "{} -t \"{}; {}; exec \\$SHELL -l\"",
+                shell_with_keepalive, ti_preamble, agent_exports
             )
         };
         let local_cwd = shellexpand::tilde("~").to_string();

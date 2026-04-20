@@ -6,6 +6,14 @@ use crate::config::ghostty_terminfo_asset;
 /// Workspace root embedded at compile time (two levels up from this crate's manifest).
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const CRATE_ROOT: &str = env!("CARGO_MANIFEST_DIR");
+const AGENT_NOTIFY_SCRIPT: &str =
+    include_str!("../../assets/shell-integration/bin/tether-agent-notify");
+const CLAUDE_WRAPPER_SCRIPT: &str = include_str!("../../assets/shell-integration/bin/claude");
+const TERMINAL_NOTIFIER_SHIM: &str =
+    include_str!("../../assets/shell-integration/bin/terminal-notifier");
+const CODEX_HOOKS_JSON: &str = include_str!("../../assets/shell-integration/codex/hooks.json");
+const CODEX_CONFIG_TOML: &str =
+    include_str!("../../assets/shell-integration/codex/config.toml");
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
@@ -109,6 +117,59 @@ fn remote_ghostty_terminfo_entry_path() -> String {
 
 fn remote_ghostty_terminfo_source_path() -> String {
     "~/.tether/tmp/xterm-ghostty.src".to_string()
+}
+
+fn remote_agent_runtime_bin_dir() -> &'static str {
+    "~/.tether/runtime/agent/bin"
+}
+
+fn remote_agent_runtime_codex_home_dir() -> &'static str {
+    "~/.tether/runtime/agent/codex-home"
+}
+
+pub async fn ensure_remote_agent_bundle(client: &SshClient) -> anyhow::Result<()> {
+    client
+        .exec_checked(&format!(
+            "mkdir -p {} {}",
+            remote_agent_runtime_bin_dir(),
+            remote_agent_runtime_codex_home_dir()
+        ))
+        .await?;
+    client
+        .upload(
+            AGENT_NOTIFY_SCRIPT.as_bytes(),
+            "~/.tether/runtime/agent/bin/tether-agent-notify",
+        )
+        .await?;
+    client
+        .upload(CLAUDE_WRAPPER_SCRIPT.as_bytes(), "~/.tether/runtime/agent/bin/claude")
+        .await?;
+    client
+        .upload(
+            TERMINAL_NOTIFIER_SHIM.as_bytes(),
+            "~/.tether/runtime/agent/bin/terminal-notifier",
+        )
+        .await?;
+    client
+        .upload(
+            CODEX_HOOKS_JSON.as_bytes(),
+            "~/.tether/runtime/agent/codex-home/hooks.json",
+        )
+        .await?;
+    client
+        .upload(
+            CODEX_CONFIG_TOML.as_bytes(),
+            "~/.tether/runtime/agent/codex-home/config.toml",
+        )
+        .await?;
+    client
+        .exec_checked(
+            "chmod 755 ~/.tether/runtime/agent/bin/tether-agent-notify \
+             ~/.tether/runtime/agent/bin/claude \
+             ~/.tether/runtime/agent/bin/terminal-notifier",
+        )
+        .await?;
+    Ok(())
 }
 
 pub async fn ensure_remote_ghostty_terminfo(client: &SshClient) -> anyhow::Result<()> {
@@ -476,6 +537,55 @@ mod tests {
         let (_, _, expected) = ghostty_terminfo_asset();
         let uploaded = std::fs::read(&upload_path).unwrap();
         assert_eq!(uploaded, expected.as_bytes());
+
+        if let Some(path) = old_path {
+            std::env::set_var("PATH", path);
+        } else {
+            std::env::remove_var("PATH");
+        }
+    }
+
+    #[tokio::test]
+    async fn ensure_remote_agent_bundle_uploads_runtime_assets() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let fake_ssh = temp.path().join("ssh");
+        let log_path = temp.path().join("ssh.log");
+        let old_path = std::env::var_os("PATH");
+
+        std::fs::write(
+            &fake_ssh,
+            format!(
+                "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"{}\"\ncat >/dev/null\n",
+                log_path.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let mut path = std::ffi::OsString::from(temp.path());
+        if let Some(old_path_value) = &old_path {
+            path.push(":");
+            path.push(old_path_value);
+        }
+        std::env::set_var("PATH", path);
+
+        let client = SshClient {
+            host_alias: "fake-host".to_string(),
+        };
+        ensure_remote_agent_bundle(&client).await.unwrap();
+
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(log.contains("mkdir -p ~/.tether/runtime/agent/bin ~/.tether/runtime/agent/codex-home"));
+        assert!(log.contains("cat > ~/.tether/runtime/agent/bin/tether-agent-notify"));
+        assert!(log.contains("cat > ~/.tether/runtime/agent/bin/claude"));
+        assert!(log.contains("cat > ~/.tether/runtime/agent/bin/terminal-notifier"));
+        assert!(log.contains("cat > ~/.tether/runtime/agent/codex-home/hooks.json"));
+        assert!(log.contains("cat > ~/.tether/runtime/agent/codex-home/config.toml"));
 
         if let Some(path) = old_path {
             std::env::set_var("PATH", path);
