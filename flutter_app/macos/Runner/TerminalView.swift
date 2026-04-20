@@ -579,6 +579,20 @@ final class TerminalView: NSView {
     static func shouldReportMouseExit(pressedMouseButtons: Int) -> Bool {
         pressedMouseButtons == 0
     }
+
+    static func shouldForwardShellShortcutToWindow(
+        eventType: NSEvent.EventType,
+        modifierFlags: NSEvent.ModifierFlags,
+        charactersIgnoringModifiers: String?
+    ) -> Bool {
+        MainFlutterWindow.shellShortcutPayload(
+            eventType: eventType,
+            modifierFlags: modifierFlags,
+            charactersIgnoringModifiers: charactersIgnoringModifiers,
+            superHandled: false,
+            firstResponderIsTerminal: true
+        ) != nil
+    }
 }
 
 #if DEBUG
@@ -1233,6 +1247,14 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.type == .keyDown, focused else { return false }
         guard let s = surface else { return false }
+
+        if TerminalView.shouldForwardShellShortcutToWindow(
+            eventType: event.type,
+            modifierFlags: event.modifierFlags,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers
+        ) {
+            return false
+        }
 
         if TerminalView.keyboardPasteRoutingAction(
             eventType: event.type,

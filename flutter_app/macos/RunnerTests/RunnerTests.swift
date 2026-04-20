@@ -792,6 +792,77 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(terminalView.debugTotalScrollbackBytes, initialTotalScrollbackBytes)
   }
 
+  func testShellShortcutHintStateShowsCommandAndControlHintsOnlyForTerminalFocus() {
+    let commandState = MainFlutterWindow.shellShortcutHintState(
+      modifierFlags: .command,
+      firstResponderIsTerminal: true
+    )
+    XCTAssertEqual(commandState.showProjectHints, true)
+    XCTAssertEqual(commandState.showSessionHints, false)
+
+    let controlState = MainFlutterWindow.shellShortcutHintState(
+      modifierFlags: .control,
+      firstResponderIsTerminal: true
+    )
+    XCTAssertEqual(controlState.showProjectHints, false)
+    XCTAssertEqual(controlState.showSessionHints, true)
+
+    let notTerminal = MainFlutterWindow.shellShortcutHintState(
+      modifierFlags: [.command, .control],
+      firstResponderIsTerminal: false
+    )
+    XCTAssertEqual(notTerminal.showProjectHints, false)
+    XCTAssertEqual(notTerminal.showSessionHints, false)
+  }
+
+  func testTerminalViewForwardsShellShortcutsToWindow() {
+    XCTAssertTrue(
+      TerminalView.shouldForwardShellShortcutToWindow(
+        eventType: .keyDown,
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "n"
+      )
+    )
+    XCTAssertTrue(
+      TerminalView.shouldForwardShellShortcutToWindow(
+        eventType: .keyDown,
+        modifierFlags: .control,
+        charactersIgnoringModifiers: "1"
+      )
+    )
+    XCTAssertTrue(
+      TerminalView.shouldForwardShellShortcutToWindow(
+        eventType: .keyDown,
+        modifierFlags: [.command, .shift],
+        charactersIgnoringModifiers: "r"
+      )
+    )
+  }
+
+  func testTerminalViewKeepsNonShellShortcutsInTerminal() {
+    XCTAssertFalse(
+      TerminalView.shouldForwardShellShortcutToWindow(
+        eventType: .keyDown,
+        modifierFlags: .command,
+        charactersIgnoringModifiers: "f"
+      )
+    )
+    XCTAssertFalse(
+      TerminalView.shouldForwardShellShortcutToWindow(
+        eventType: .keyDown,
+        modifierFlags: [.command, .option],
+        charactersIgnoringModifiers: "1"
+      )
+    )
+    XCTAssertFalse(
+      TerminalView.shouldForwardShellShortcutToWindow(
+        eventType: .flagsChanged,
+        modifierFlags: .command,
+        charactersIgnoringModifiers: nil
+      )
+    )
+  }
+
 }
 
 private func waitForLoggedEvents(
