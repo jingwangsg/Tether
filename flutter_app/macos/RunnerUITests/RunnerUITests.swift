@@ -219,7 +219,7 @@ final class RunnerUITests: XCTestCase {
         }
     }
 
-    func testProjectSidebarAndSessionTopBarNavigation() throws {
+    func testTerminalFocusedShellShortcutsRouteToProjectAndSessionChrome() throws {
         let runId = String(UUID().uuidString.prefix(8))
 
         if canReachConfiguredExternalServer() {
@@ -256,33 +256,55 @@ final class RunnerUITests: XCTestCase {
         app.launchEnvironment["TETHER_TEST_SERVER_PORT"] = "\(port)"
         app.launch()
 
-        let projectAItem = app.descendants(matching: .any)
-            .matching(identifier: "project-tile-\(projectA)")
-            .firstMatch
-        XCTAssertTrue(projectAItem.waitForExistence(timeout: 10))
-        projectAItem.click()
+        let terminal = terminalScrollView(in: app)
+        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
 
-        let alphaOne = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "session-top-tab-"))
-            .matching(NSPredicate(format: "label CONTAINS %@", "alpha-1-\(runId)"))
-            .firstMatch
-        let alphaTwo = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "session-top-tab-"))
-            .matching(NSPredicate(format: "label CONTAINS %@", "alpha-2-\(runId)"))
-            .firstMatch
-        XCTAssertTrue(alphaOne.waitForExistence(timeout: 10))
-        XCTAssertTrue(alphaTwo.waitForExistence(timeout: 10))
+        typeShortcut(in: app, terminal: terminal, key: "2", modifierFlags: .command)
+        XCTAssertTrue(
+            sessionTopTabElement(in: app, containing: "beta-1-\(runId)")
+                .waitForExistence(timeout: 5)
+        )
 
-        let projectBItem = app.descendants(matching: .any)
-            .matching(identifier: "project-tile-\(projectB)")
-            .firstMatch
-        projectBItem.click()
+        typeShortcut(in: app, terminal: terminal, key: "r", modifierFlags: .command)
+        XCTAssertTrue(dialogTitleElement(in: app, titled: "Rename Project").waitForExistence(timeout: 5))
+        XCTAssertEqual(firstTextField(in: app).value as? String, "Project B \(runId)")
+        app.buttons["Cancel"].click()
 
-        let betaOne = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "session-top-tab-"))
-            .matching(NSPredicate(format: "label CONTAINS %@", "beta-1-\(runId)"))
-            .firstMatch
-        XCTAssertTrue(betaOne.waitForExistence(timeout: 10))
+        typeShortcut(in: app, terminal: terminal, key: "1", modifierFlags: .command)
+        XCTAssertTrue(
+            sessionTopTabElement(in: app, containing: "alpha-1-\(runId)")
+                .waitForExistence(timeout: 5)
+        )
+        XCTAssertTrue(
+            sessionTopTabElement(in: app, containing: "alpha-2-\(runId)")
+                .waitForExistence(timeout: 5)
+        )
+
+        typeShortcut(in: app, terminal: terminal, key: "2", modifierFlags: .control)
+        typeShortcut(in: app, terminal: terminal, key: "r", modifierFlags: [.command, .shift])
+        XCTAssertTrue(dialogTitleElement(in: app, titled: "Rename Session").waitForExistence(timeout: 5))
+        XCTAssertEqual(firstTextField(in: app).value as? String, "alpha-2-\(runId)")
+        app.buttons["Cancel"].click()
+
+        typeShortcut(in: app, terminal: terminal, key: "n", modifierFlags: .command)
+        XCTAssertTrue(dialogTitleElement(in: app, titled: "New Group").waitForExistence(timeout: 5))
+        let projectName = "Project C \(runId)"
+        let textFields = app.descendants(matching: .textField)
+        let nameField = textFields.element(boundBy: 0)
+        let pathField = textFields.element(boundBy: 1)
+        nameField.click()
+        nameField.typeText(projectName)
+        pathField.click()
+        pathField.typeText(tempRoot.path)
+        app.buttons["Create"].click()
+
+        let createdGroup = try waitForGroup(named: projectName, timeout: 10)
+        let createdGroupId = try XCTUnwrap(createdGroup["id"] as? String)
+        try waitForSessionCount(groupId: createdGroupId, equals: 1, timeout: 10)
+        XCTAssertTrue(app.staticTexts[projectName].waitForExistence(timeout: 5))
+
+        typeShortcut(in: app, terminal: terminal, key: "t", modifierFlags: .command)
+        try waitForSessionCount(groupId: createdGroupId, equals: 2, timeout: 10)
     }
 
     private func waitForExternalServer() throws {
@@ -602,6 +624,72 @@ final class RunnerUITests: XCTestCase {
         app.descendants(matching: .any)
             .matching(identifier: identifier)
             .firstMatch
+    }
+
+    private func sessionTopTabElement(
+        in app: XCUIApplication,
+        containing labelFragment: String
+    ) -> XCUIElement {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "session-top-tab-"))
+            .matching(NSPredicate(format: "label CONTAINS %@", labelFragment))
+            .firstMatch
+    }
+
+    private func dialogTitleElement(
+        in app: XCUIApplication,
+        titled title: String
+    ) -> XCUIElement {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@", title))
+            .firstMatch
+    }
+
+    private func firstTextField(in app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .textField).firstMatch
+    }
+
+    private func typeShortcut(
+        in app: XCUIApplication,
+        terminal: XCUIElement,
+        key: String,
+        modifierFlags: XCUIElement.KeyModifierFlags
+    ) {
+        app.activate()
+        terminal.click()
+        app.typeKey(key, modifierFlags: modifierFlags)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    }
+
+    private func waitForGroup(
+        named name: String,
+        timeout: TimeInterval
+    ) throws -> [String: Any] {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let groups = try jsonArrayResponse(url: URL(string: "http://127.0.0.1:\(port)/api/groups")!)
+            if let row = groups.first(where: { ($0["name"] as? String) == name }) {
+                return row
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        throw UITestFailure(description: "timed out waiting for group \(name)")
+    }
+
+    private func waitForSessionCount(
+        groupId: String,
+        equals expected: Int,
+        timeout: TimeInterval
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let sessions = try jsonArrayResponse(url: URL(string: "http://127.0.0.1:\(port)/api/sessions")!)
+            if sessions.filter({ ($0["group_id"] as? String) == groupId }).count == expected {
+                return
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        throw UITestFailure(description: "timed out waiting for \(expected) sessions in group \(groupId)")
     }
 
     private func waitForSessionTileValue(
