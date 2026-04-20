@@ -137,6 +137,59 @@ class RunnerTests: XCTestCase {
     wait(for: [scrollbarChanged], timeout: 1.0)
   }
 
+  func testHandleActionPostsDesktopNotificationEvent() {
+    TerminalApp.shared.setup()
+    guard let app = TerminalApp.shared.app else {
+      XCTFail("ghostty app failed to initialize")
+      return
+    }
+    let surface = ghostty_surface_t(bitPattern: 0x2222)
+
+    let desktopNotification = expectation(
+      forNotification: .terminalDesktopNotification,
+      object: nil
+    ) { note in
+      (note.userInfo?["surface"] as? OpaquePointer) == OpaquePointer(surface)
+        && (note.userInfo?["title"] as? String) == "Codex"
+        && (note.userInfo?["body"] as? String) == "needs input"
+    }
+
+    var action = ghostty_action_s()
+    action.tag = GHOSTTY_ACTION_DESKTOP_NOTIFICATION
+    var target = ghostty_target_s()
+    target.tag = GHOSTTY_TARGET_SURFACE
+    target.target.surface = surface
+
+    "Codex".withCString { titlePtr in
+      "needs input".withCString { bodyPtr in
+        action.action.desktop_notification.title = titlePtr
+        action.action.desktop_notification.body = bodyPtr
+        TerminalApp.shared.handleAction(app: app, target: target, action: action)
+      }
+    }
+
+    wait(for: [desktopNotification], timeout: 1.0)
+  }
+
+  func testFocusedSurfaceSuppressesDesktopNotificationDelivery() {
+    let center = TerminalDesktopNotificationCenter()
+
+    XCTAssertFalse(
+      center.shouldDeliverDesktopNotification(
+        appIsActive: true,
+        windowIsKey: true,
+        surfaceIsFocused: true
+      )
+    )
+    XCTAssertTrue(
+      center.shouldDeliverDesktopNotification(
+        appIsActive: false,
+        windowIsKey: false,
+        surfaceIsFocused: false
+      )
+    )
+  }
+
   func testScrollActionForLiveScrollConvertsViewportToRow() {
     let action = TerminalView.scrollActionForLiveScroll(
       documentHeight: 1000,

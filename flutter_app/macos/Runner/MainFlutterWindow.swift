@@ -214,6 +214,18 @@ class MainFlutterWindow: NSWindow {
             }
         }
 
+        NotificationCenter.default.addObserver(
+            forName: .terminalDesktopNotificationActivated,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let sessionId = note.userInfo?["sessionId"] as? String else { return }
+            self?.windowChannel?.invokeMethod(
+                "focusNotificationSession",
+                arguments: ["sessionId": sessionId]
+            )
+        }
+
         super.awakeFromNib()
     }
 

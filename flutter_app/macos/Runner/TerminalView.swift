@@ -973,6 +973,28 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
                 self.scrollbarHandler?(TerminalScrollbarState(total: total, offset: offset, len: len))
             }
         })
+
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .terminalDesktopNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, self.matchesSurface(note) else { return }
+            guard let title = note.userInfo?["title"] as? String,
+                  let body = note.userInfo?["body"] as? String else { return }
+
+            let shouldDeliver = TerminalDesktopNotificationCenter.shared
+                .shouldDeliverDesktopNotification(
+                    appIsActive: NSApp.isActive,
+                    windowIsKey: self.window?.isKeyWindow ?? false,
+                    surfaceIsFocused: self.focused
+                )
+            if shouldDeliver {
+                TerminalDesktopNotificationCenter.shared.schedule(
+                    sessionId: self.sessionId,
+                    title: title,
+                    body: body
+                )
+            }
+        })
     }
 
     private func matchesSurface(_ note: Notification) -> Bool {

@@ -185,6 +185,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           _clearDesktopShortcutHints();
         }
         return null;
+      case 'focusNotificationSession':
+        final args = Map<String, dynamic>.from(
+          call.arguments as Map? ?? const {},
+        );
+        final sessionId = args['sessionId'] as String?;
+        if (sessionId == null) {
+          return null;
+        }
+        final serverState = ref.read(serverProvider);
+        final session =
+            serverState.sessions.where((s) => s.id == sessionId).firstOrNull;
+        if (session != null) {
+          ref.read(sessionProvider.notifier).setActiveSession(
+            projectId: session.groupId,
+            sessionId: session.id,
+          );
+        }
+        return null;
       default:
         return null;
     }

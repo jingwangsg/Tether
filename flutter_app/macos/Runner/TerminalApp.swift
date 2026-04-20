@@ -372,6 +372,26 @@ class TerminalApp {
                 ]
             )
 
+        case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface
+            else { return }
+            let title = action.action.desktop_notification.title.flatMap {
+                String(cString: $0, encoding: .utf8)
+            } ?? "Notification"
+            let body = action.action.desktop_notification.body.flatMap {
+                String(cString: $0, encoding: .utf8)
+            } ?? ""
+            NotificationCenter.default.post(
+                name: .terminalDesktopNotification,
+                object: nil,
+                userInfo: [
+                    "surface": OpaquePointer(surface),
+                    "title": title,
+                    "body": body,
+                ]
+            )
+
         default:
             break
         }
@@ -391,4 +411,6 @@ extension Notification.Name {
     static let terminalSearchTotalChanged = Notification.Name("TerminalSearchTotalChanged")
     static let terminalSearchSelectionChanged = Notification.Name("TerminalSearchSelectionChanged")
     static let terminalScrollbarChanged = Notification.Name("TerminalScrollbarChanged")
+    static let terminalDesktopNotification = Notification.Name("TerminalDesktopNotification")
+    static let terminalDesktopNotificationActivated = Notification.Name("TerminalDesktopNotificationActivated")
 }
