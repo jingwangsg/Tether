@@ -135,6 +135,49 @@ void main() {
     expect(platformViews.views.values.single.id, initialViewId);
     expect(activationChanges, <bool>[false, true]);
   });
+
+  testWidgets('metadata websocket disconnects while inactive and reconnects on resume', (
+    tester,
+  ) async {
+    final controller = TerminalController();
+    final factory = _TrackingMetadataFactory();
+
+    Widget buildTerminal({required bool isActive}) {
+      return MaterialApp(
+        home: Center(
+          child: SizedBox(
+            width: 640,
+            height: 480,
+            child: TerminalView(
+              sessionId: 'session-1',
+              controller: controller,
+              serverConfig: ServerConfig(host: 'localhost', port: 7680),
+              isActive: isActive,
+              metadataWsFactory: factory.call,
+            ),
+          ),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(buildTerminal(isActive: true));
+    await tester.pump();
+
+    expect(factory.instances, hasLength(1));
+    expect(factory.instances.single.connectCalls, 1);
+
+    await tester.pumpWidget(buildTerminal(isActive: false));
+    await tester.pump();
+
+    expect(factory.instances.single.disposeCalls, 1);
+
+    await tester.pumpWidget(buildTerminal(isActive: true));
+    await tester.pump();
+
+    expect(factory.instances, hasLength(2));
+    expect(factory.instances.last.connectCalls, 1);
+    expect(platformViews.createCount, 1);
+  });
 }
 
 class _FakeWebSocketService extends WebSocketService {
@@ -148,6 +191,36 @@ class _FakeWebSocketService extends WebSocketService {
 
   @override
   void dispose() {}
+}
+
+class _TrackingMetadataFactory {
+  final List<_TrackingWebSocketService> instances = [];
+
+  WebSocketService call(String _) {
+    final service = _TrackingWebSocketService();
+    instances.add(service);
+    return service;
+  }
+}
+
+class _TrackingWebSocketService extends WebSocketService {
+  _TrackingWebSocketService() : super('ws://unused');
+
+  int connectCalls = 0;
+  int disposeCalls = 0;
+
+  @override
+  Stream<ServerMessage> get messages => const Stream<ServerMessage>.empty();
+
+  @override
+  void connect() {
+    connectCalls += 1;
+  }
+
+  @override
+  void dispose() {
+    disposeCalls += 1;
+  }
 }
 
 class _FakeMacosPlatformViewsController {

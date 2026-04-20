@@ -187,8 +187,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     _terminal = _createTerminal(maxLines: 10000);
     _bindDecoderPipeline();
     HardwareKeyboard.instance.addHandler(_handleSearchKey);
-    _connect();
-    _syncEffectiveActiveState(forceRelayoutOnResume: false);
+    _isPaused = !(widget.isActive && _appLifecycleActive);
+    if (!_isPaused) {
+      _connect();
+    }
   }
 
   xterm.Terminal _createTerminal({required int maxLines}) {
@@ -447,7 +449,6 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     final shouldReplayAgain = _needsFollowupSemanticResize;
     _needsFollowupSemanticResize = false;
     _isRebuildingSemanticResize = false;
-    _ws?.sendResume();
     if (shouldReplayAgain) {
       _scheduleSemanticResizeRebuild();
     }
@@ -1094,7 +1095,6 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
       final shouldReplayAgain = _needsFollowupSemanticResize;
       _needsFollowupSemanticResize = false;
       _isRebuildingSemanticResize = false;
-      _ws?.sendResume();
       if (shouldReplayAgain) {
         _scheduleSemanticResizeRebuild();
       }
@@ -1123,6 +1123,13 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     }
   }
 
+  void _disconnectLiveConnection() {
+    _msgSub?.cancel();
+    _msgSub = null;
+    _ws?.dispose();
+    _ws = null;
+  }
+
   void _pause() {
     _isPaused = true;
     if (_writeQueue.isNotEmpty) {
@@ -1130,7 +1137,7 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
       _writeQueue.clear();
     }
     _writeScheduled = false;
-    _ws?.sendPause();
+    _disconnectLiveConnection();
   }
 
   void _syncEffectiveActiveState({required bool forceRelayoutOnResume}) {
@@ -1176,6 +1183,10 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
 
   void _resumeAfterLayout() {
     _isPaused = false;
+    if (_ws == null && !_sessionExited) {
+      _isReplaying = true;
+      _connect();
+    }
     if (_pauseBuffer.isNotEmpty) {
       for (final chunk in _pauseBuffer) {
         _writeQueue.add(chunk);
@@ -1184,7 +1195,6 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
       _scheduleFlush();
     }
     _sendCurrentSize();
-    _ws?.sendResume();
   }
 
   void _onTerminalInput(String data) {

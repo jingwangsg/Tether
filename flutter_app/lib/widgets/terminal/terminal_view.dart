@@ -73,7 +73,7 @@ class TerminalViewState extends State<TerminalView> {
       showSearch: showSearch,
       performAction: _performAction,
     );
-    _connectMetadata();
+    _syncMetadataConnection();
   }
 
   @override
@@ -104,13 +104,10 @@ class TerminalViewState extends State<TerminalView> {
     if (oldWidget.sessionId != widget.sessionId ||
         oldWidget.serverConfig?.baseUrl != widget.serverConfig?.baseUrl ||
         oldWidget.serverConfig?.token != widget.serverConfig?.token) {
-      _metadataSubscription?.cancel();
-      _metadataWs?.dispose();
-      _metadataSubscription = null;
-      _metadataWs = null;
+      _disconnectMetadata();
       _didEmitExit = false;
-      _connectMetadata();
     }
+    _syncMetadataConnection();
   }
 
   bool _handleSearchKey(KeyEvent event) {
@@ -128,6 +125,24 @@ class TerminalViewState extends State<TerminalView> {
       return true;
     }
     return false;
+  }
+
+  void _disconnectMetadata() {
+    _metadataSubscription?.cancel();
+    _metadataSubscription = null;
+    _metadataWs?.dispose();
+    _metadataWs = null;
+  }
+
+  void _syncMetadataConnection() {
+    if (!widget.isActive || widget.serverConfig == null) {
+      _disconnectMetadata();
+      return;
+    }
+    if (_metadataWs != null) {
+      return;
+    }
+    _connectMetadata();
   }
 
   void _connectMetadata() {
@@ -292,8 +307,7 @@ class TerminalViewState extends State<TerminalView> {
     HardwareKeyboard.instance.removeHandler(_handleSearchKey);
     _searchController.dispose();
     _searchFocusNode.dispose();
-    _metadataSubscription?.cancel();
-    _metadataWs?.dispose();
+    _disconnectMetadata();
     _eventSubscription?.cancel();
     if (_viewId != null) {
       _inputChannel.invokeMethod('destroyView', {'viewId': _viewId});

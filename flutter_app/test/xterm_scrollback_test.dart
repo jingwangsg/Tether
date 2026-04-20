@@ -25,8 +25,8 @@ class _MockWebSocketService extends WebSocketService {
       StreamController<ServerMessage>.broadcast();
   final String capturedUrl;
   final List<({int cols, int rows})> resizeCalls = [];
-  int pauseCalls = 0;
-  int resumeCalls = 0;
+  int connectCalls = 0;
+  int disposeCalls = 0;
 
   _MockWebSocketService(this.capturedUrl) : super('ws://unused');
 
@@ -34,16 +34,8 @@ class _MockWebSocketService extends WebSocketService {
   Stream<ServerMessage> get messages => _ctrl.stream;
 
   @override
-  void connect() {}
-
-  @override
-  void sendPause() {
-    pauseCalls += 1;
-  }
-
-  @override
-  void sendResume() {
-    resumeCalls += 1;
+  void connect() {
+    connectCalls += 1;
   }
 
   @override
@@ -56,6 +48,7 @@ class _MockWebSocketService extends WebSocketService {
 
   @override
   void dispose() {
+    disposeCalls += 1;
     _ctrl.close();
   }
 
@@ -66,13 +59,17 @@ class _MockWebSocketService extends WebSocketService {
 
 /// Factory that captures the URL builder and creates a mock WS.
 class _MockWsFactory {
-  _MockWebSocketService? lastService;
+  final List<_MockWebSocketService> services = [];
   String? lastUrl;
+
+  _MockWebSocketService? get lastService =>
+      services.isNotEmpty ? services.last : null;
 
   WebSocketService call(String Function() urlBuilder) {
     lastUrl = urlBuilder();
-    lastService = _MockWebSocketService(lastUrl!);
-    return lastService!;
+    final service = _MockWebSocketService(lastUrl!);
+    services.add(service);
+    return service;
   }
 }
 
@@ -357,7 +354,7 @@ void main() {
       expect(find.byType(SizedBox), findsWidgets);
     });
 
-    testWidgets('lifecycle resume re-sends terminal size after relayout', (
+    testWidgets('lifecycle resume disposes old websocket and reconnects with resize', (
       tester,
     ) async {
       final factory = _MockWsFactory();
@@ -367,29 +364,30 @@ void main() {
       await tester.pump();
       await tester.pump();
 
-      final ws = factory.lastService!;
+      final ws = factory.services.single;
       // sendResize is debounced (~120ms) to coalesce IME-jitter bursts, so
       // let the timer fire before asserting.
       await tester.pump(const Duration(milliseconds: 150));
       expect(ws.resizeCalls, isNotEmpty);
 
-      final initialResizeCount = ws.resizeCalls.length;
       final lastKnownSize = ws.resizeCalls.last;
 
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
       await tester.pump();
-      expect(ws.pauseCalls, 1);
+      expect(ws.disposeCalls, 1);
 
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 150));
 
-      expect(ws.resumeCalls, 1);
-      expect(ws.resizeCalls.length, greaterThan(initialResizeCount));
-      expect(ws.resizeCalls.last, lastKnownSize);
+      expect(factory.services, hasLength(2));
+      final ws2 = factory.services.last;
+      expect(ws2.connectCalls, 1);
+      expect(ws2.resizeCalls, isNotEmpty);
+      expect(ws2.resizeCalls.last, lastKnownSize);
     });
 
-    testWidgets('paused lifecycle buffers already queued writes until resume', (
+    testWidgets('paused lifecycle disposes websocket and reconnects on resume', (
       tester,
     ) async {
       final factory = _MockWsFactory();
@@ -398,18 +396,19 @@ void main() {
       );
       await tester.pump();
 
-      final ws = factory.lastService!;
+      final ws = factory.services.single;
       ws.emit(OutputMessage(_textBytes('queued-before-pause')));
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
       await tester.pump();
 
-      expect(ws.pauseCalls, 1);
+      expect(ws.disposeCalls, 1);
 
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pump();
       await tester.pumpAndSettle();
 
-      expect(ws.resumeCalls, 1);
+      expect(factory.services, hasLength(2));
+      expect(factory.services.last.connectCalls, 1);
       expect(tester.takeException(), isNull);
     });
   });
@@ -676,6 +675,36 @@ void main() {
         needle,
       );
       expect(replayText, contains(needle));
+    });
+  });
+
+  group('Phase 5 — websocket lifecycle', () {
+    testWidgets('inactive xterm session disposes websocket and reconnects when active again', (
+      tester,
+    ) async {
+      final factory = _MockWsFactory();
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-reconnect', wsFactory: factory, isActive: true),
+      );
+      await tester.pump();
+
+      final first = factory.services.single;
+      expect(first.connectCalls, 1);
+
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-reconnect', wsFactory: factory, isActive: false),
+      );
+      await tester.pump();
+
+      expect(first.disposeCalls, 1);
+
+      await tester.pumpWidget(
+        _buildHarness(sessionId: 'sess-reconnect', wsFactory: factory, isActive: true),
+      );
+      await tester.pump();
+
+      expect(factory.services, hasLength(2));
+      expect(factory.services.last.connectCalls, 1);
     });
   });
 }
