@@ -100,11 +100,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   void didUpdateWidget(covariant HomeScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final usedNativeRenameShortcut = oldWidget.backend.platformId == 'native';
-    if (usedNativeRenameShortcut == _usesNativeShellShortcuts) {
+    final usedNativeShellShortcuts = oldWidget.backend.platformId == 'native';
+    if (usedNativeShellShortcuts == _usesNativeShellShortcuts) {
       return;
     }
-    if (usedNativeRenameShortcut) {
+    if (usedNativeShellShortcuts) {
       _windowChannel.setMethodCallHandler(null);
     }
     if (_usesNativeShellShortcuts) {
