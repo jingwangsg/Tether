@@ -24,7 +24,6 @@ class NativeBackend implements TerminalBackend {
     required bool isActive,
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
-    void Function(String? title)? onTitleChanged,
     ForegroundChangedCallback? onForegroundChanged,
     Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   }) {
@@ -36,7 +35,6 @@ class NativeBackend implements TerminalBackend {
       isActive: isActive,
       imagePasteBridgeEnabled: imagePasteBridgeEnabled,
       onSessionExited: onSessionExited,
-      onTitleChanged: onTitleChanged,
       onForegroundChanged: onForegroundChanged,
       onClipboardImage: onClipboardImage,
     );

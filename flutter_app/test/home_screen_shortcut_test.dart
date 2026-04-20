@@ -416,7 +416,7 @@ void main() {
     },
   );
 
-  testWidgets('cmd+r opens Rename Project dialog on xterm backend', (
+  testWidgets('cmd+r opens Rename Session dialog on xterm backend', (
     tester,
   ) async {
     final group = _group('proj-1');
@@ -442,10 +442,11 @@ void main() {
     await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
     await tester.pumpAndSettle();
 
-    expect(find.text('Rename Project'), findsOneWidget);
+    expect(find.text('Rename Session'), findsOneWidget);
+    expect(find.widgetWithText(TextField, 'shell'), findsOneWidget);
   });
 
-  testWidgets('cmd+shift+r opens Rename Session dialog', (tester) async {
+  testWidgets('cmd+shift+r opens Rename Project dialog', (tester) async {
     final group = _group('proj-2');
     final session = _session('s2', groupId: group.id, name: 'my-session');
     final container = _container(
@@ -471,8 +472,8 @@ void main() {
     await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
     await tester.pumpAndSettle();
 
-    expect(find.text('Rename Session'), findsOneWidget);
-    expect(find.widgetWithText(TextField, 'my-session'), findsOneWidget);
+    expect(find.text('Rename Project'), findsOneWidget);
+    expect(find.widgetWithText(TextField, group.name), findsOneWidget);
   });
 
   testWidgets('cmd+t creates a session directly in the selected project', (
@@ -611,60 +612,70 @@ void main() {
     expect(container.read(sessionProvider).selectedProjectId, 'a');
   });
 
-  testWidgets('ctrl+1 selects the first session in current project', (
-    tester,
-  ) async {
-    final group = _group('proj-3');
-    final s1 = Session(
-      id: 's1',
-      groupId: group.id,
-      name: 'first',
-      shell: 'bash',
-      cols: 80,
-      rows: 24,
-      cwd: '/tmp',
-      isAlive: true,
-      createdAt: '',
-      lastActive: '',
-      sortOrder: 0,
-    );
-    final s2 = Session(
-      id: 's2',
-      groupId: group.id,
-      name: 'second',
-      shell: 'bash',
-      cols: 80,
-      rows: 24,
-      cwd: '/tmp',
-      isAlive: true,
-      createdAt: '',
-      lastActive: '',
-      sortOrder: 1,
-    );
-    final container = _container(
-      ServerState(isConnected: true, groups: [group], sessions: [s1, s2]),
-    );
-    addTearDown(container.dispose);
+  testWidgets(
+    'ctrl+1 selects the first session in current project without changing tab labels',
+    (tester) async {
+      final group = _group('proj-3');
+      final s1 = Session(
+        id: 's1',
+        groupId: group.id,
+        name: 'first',
+        shell: 'bash',
+        cols: 80,
+        rows: 24,
+        cwd: '/tmp',
+        isAlive: true,
+        createdAt: '',
+        lastActive: '',
+        sortOrder: 0,
+        foregroundProcess: 'claude',
+        oscTitle: '· Claude Code',
+      );
+      final s2 = Session(
+        id: 's2',
+        groupId: group.id,
+        name: 'second',
+        shell: 'bash',
+        cols: 80,
+        rows: 24,
+        cwd: '/tmp',
+        isAlive: true,
+        createdAt: '',
+        lastActive: '',
+        sortOrder: 1,
+      );
+      final container = _container(
+        ServerState(isConnected: true, groups: [group], sessions: [s1, s2]),
+      );
+      addTearDown(container.dispose);
 
-    container.read(sessionProvider.notifier)
-      ..selectProject(group.id)
-      ..setActiveSession(projectId: group.id, sessionId: s2.id);
-    expect(container.read(sessionProvider).activeSessionId, 's2');
+      container.read(sessionProvider.notifier)
+        ..selectProject(group.id)
+        ..setActiveSession(projectId: group.id, sessionId: s2.id);
+      expect(container.read(sessionProvider).activeSessionId, 's2');
 
-    await _pumpHomeScreen(
-      tester,
-      container,
-      const _FakeTerminalBackend(platformId: 'xterm'),
-    );
+      await _pumpHomeScreen(
+        tester,
+        container,
+        const _FakeTerminalBackend(platformId: 'xterm'),
+      );
 
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.digit1);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.digit1);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-    await tester.pump();
+      expect(find.text('first'), findsOneWidget);
+      expect(find.text('second'), findsOneWidget);
+      expect(find.text('Claude Code'), findsNothing);
 
-    expect(container.read(sessionProvider).activeSessionId, 's1');
-  });
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.digit1);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.digit1);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+
+      expect(container.read(sessionProvider).activeSessionId, 's1');
+      expect(find.text('first'), findsOneWidget);
+      expect(find.text('second'), findsOneWidget);
+      expect(find.text('Claude Code'), findsNothing);
+    },
+  );
 
   testWidgets('cmd+n opens New Group dialog', (tester) async {
     final container = _container(const ServerState(isConnected: true));
@@ -1072,7 +1083,6 @@ class _FakeTerminalBackend implements TerminalBackend {
     required bool isActive,
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
-    void Function(String? title)? onTitleChanged,
     ForegroundChangedCallback? onForegroundChanged,
     Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   }) {

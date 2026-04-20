@@ -25,7 +25,6 @@ abstract class TerminalBackend {
     required bool isActive,
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
-    void Function(String? title)? onTitleChanged,
     ForegroundChangedCallback? onForegroundChanged,
     Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   });

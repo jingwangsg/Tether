@@ -216,11 +216,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         }
         if (event.logicalKey == LogicalKeyboardKey.keyR &&
             HardwareKeyboard.instance.isShiftPressed) {
-          _performDesktopAction('renameCurrentSession');
+          _performDesktopAction('renameCurrentProject');
           return true;
         }
         if (event.logicalKey == LogicalKeyboardKey.keyR) {
-          _performDesktopAction('renameCurrentProject');
+          _performDesktopAction('renameCurrentSession');
           return true;
         }
         if (event.logicalKey == LogicalKeyboardKey.keyW) {

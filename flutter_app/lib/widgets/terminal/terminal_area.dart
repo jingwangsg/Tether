@@ -32,10 +32,6 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
   Set<String>? _pendingInteractiveSessionIds;
   bool _interactiveTabSyncScheduled = false;
   String? _warmSessionId;
-  // OSC title per session — used for tab display only, NOT persisted to server.
-  // The stored session.name stays as session-<hash> unless the user renames it.
-  final Map<String, String> _sessionTitles = {};
-  final ValueNotifier<int> _titleRevision = ValueNotifier<int>(0);
 
   @override
   void initState() {
@@ -97,7 +93,6 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
 
   @override
   void dispose() {
-    _titleRevision.dispose();
     _pasteService.dispose();
     _volumeKeys.dispose();
     super.dispose();
@@ -120,21 +115,30 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     );
 
     // Derive project sessions: filter to selected project, interactive only, sorted.
-    final projectSessions = sessions
-        .where((s) => s.groupId == selectedProjectId && isSessionInteractive(s, groups))
-        .toList()
-      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    final projectSessions =
+        sessions
+            .where(
+              (s) =>
+                  s.groupId == selectedProjectId &&
+                  isSessionInteractive(s, groups),
+            )
+            .toList()
+          ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
 
     // Derive active session id, falling back to first project session.
     var activeId = navState.activeSessionId;
     if (activeId == null || !projectSessions.any((s) => s.id == activeId)) {
       activeId = projectSessions.firstOrNull?.id;
-      if (activeId != null && activeId != navState.activeSessionId && selectedProjectId != null) {
+      if (activeId != null &&
+          activeId != navState.activeSessionId &&
+          selectedProjectId != null) {
         final fallbackId = activeId;
         final projId = selectedProjectId;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
-            ref.read(sessionProvider.notifier).setActiveSession(
+            ref
+                .read(sessionProvider.notifier)
+                .setActiveSession(
                   projectId: projId,
                   sessionId: fallbackId,
                   selectProject: false,
@@ -147,7 +151,6 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     // Prune maps for sessions that are no longer in the project to prevent unbounded growth.
     final projectIds = projectSessions.map((s) => s.id).toSet();
     _terminalControllers.removeWhere((id, _) => !projectIds.contains(id));
-    _sessionTitles.removeWhere((id, _) => !projectIds.contains(id));
     if (_warmSessionId != null && !projectIds.contains(_warmSessionId)) {
       _warmSessionId = null;
     }
@@ -189,89 +192,68 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
               projectId: selectedProjectId,
               sessions: projectSessions,
               activeSessionId: activeId,
-              sessionTitles: _sessionTitles,
-              titleRevision: _titleRevision,
             ),
             Expanded(
               child: ClipRect(
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    ...projectSessions.where((s) => retainedSessionIds.contains(s.id)).map((session) {
-                      final isActive = session.id == activeId;
-                      final group =
-                          groups
-                              .where((g) => g.id == session.groupId)
-                              .firstOrNull;
+                    ...projectSessions
+                        .where((s) => retainedSessionIds.contains(s.id))
+                        .map((session) {
+                          final isActive = session.id == activeId;
+                          final group =
+                              groups
+                                  .where((g) => g.id == session.groupId)
+                                  .firstOrNull;
 
-                      final terminalController = _terminalControllers
-                          .putIfAbsent(session.id, TerminalController.new);
+                          final terminalController = _terminalControllers
+                              .putIfAbsent(session.id, TerminalController.new);
 
-                      return Offstage(
-                        offstage: !isActive,
-                        child: widget.backend.createTerminalWidget(
-                          key: ValueKey(
-                            '${widget.backend.platformId}:${session.id}',
-                          ),
-                          sessionId: session.id,
-                          controller: terminalController,
-                          serverConfig: serverConfig,
-                          command: session.shell,
-                          cwd: session.cwd,
-                          isActive: isActive,
-                          imagePasteBridgeEnabled: shouldEnableImagePasteBridge(
-                            session: session,
-                            group: group,
-                          ),
-                          onSessionExited: () {
-                            ref.read(serverProvider.notifier).refresh();
-                          },
-                          onTitleChanged: (title) {
-                            if (title == null || title.isEmpty) return;
-                            // Strip control chars and Private Use Area (nerd font glyphs → renders as 〓)
-                            final clean =
-                                title
-                                    .replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '')
-                                    .replaceAll(RegExp(r'[\uE000-\uF8FF]'), '')
-                                    .replaceAll(
-                                      RegExp(r'[\uDB80-\uDBFF][\uDC00-\uDFFF]'),
-                                      '',
-                                    )
-                                    .trim();
-                            if (clean.isEmpty) return;
-
-                            // Store locally for tab display when no process is active.
-                            // Update map directly and bump revision to rebuild
-                            // only the tab bar, not the entire TerminalArea.
-                            if (_sessionTitles[session.id] != clean) {
-                              _sessionTitles[session.id] = clean;
-                              _titleRevision.value++;
-                            }
-                          },
-                          onForegroundChanged:
-                              (
-                                process,
-                                oscTitle,
-                                attentionSeq,
-                                attentionAckSeq,
-                              ) => _handleSessionStatusUpdate(
-                                sessionId: session.id,
-                                process: process,
-                                oscTitle: oscTitle,
-                                attentionSeq: attentionSeq,
-                                attentionAckSeq: attentionAckSeq,
-                                isActive: isActive,
+                          return Offstage(
+                            offstage: !isActive,
+                            child: widget.backend.createTerminalWidget(
+                              key: ValueKey(
+                                '${widget.backend.platformId}:${session.id}',
                               ),
-                          onClipboardImage: (data, mimeType) {
-                            return _handleClipboardImage(
                               sessionId: session.id,
-                              data: data,
-                              mimeType: mimeType,
-                            );
-                          },
-                        ),
-                      );
-                    }),
+                              controller: terminalController,
+                              serverConfig: serverConfig,
+                              command: session.shell,
+                              cwd: session.cwd,
+                              isActive: isActive,
+                              imagePasteBridgeEnabled:
+                                  shouldEnableImagePasteBridge(
+                                    session: session,
+                                    group: group,
+                                  ),
+                              onSessionExited: () {
+                                ref.read(serverProvider.notifier).refresh();
+                              },
+                              onForegroundChanged:
+                                  (
+                                    process,
+                                    oscTitle,
+                                    attentionSeq,
+                                    attentionAckSeq,
+                                  ) => _handleSessionStatusUpdate(
+                                    sessionId: session.id,
+                                    process: process,
+                                    oscTitle: oscTitle,
+                                    attentionSeq: attentionSeq,
+                                    attentionAckSeq: attentionAckSeq,
+                                    isActive: isActive,
+                                  ),
+                              onClipboardImage: (data, mimeType) {
+                                return _handleClipboardImage(
+                                  sessionId: session.id,
+                                  data: data,
+                                  mimeType: mimeType,
+                                );
+                              },
+                            ),
+                          );
+                        }),
                     // Reserve space at the bottom for the MobileKeyBar
                     // overlay (and the soft keyboard when it's up) so the
                     // draggable floating nav pad's default position never
@@ -316,9 +298,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            Positioned.fill(
-              child: Column(children: [content]),
-            ),
+            Positioned.fill(child: Column(children: [content])),
             if (uiState.showKeyBar)
               Positioned(
                 left: 0,

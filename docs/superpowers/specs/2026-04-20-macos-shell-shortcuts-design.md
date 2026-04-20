@@ -44,8 +44,8 @@ When the terminal is focused on macOS:
 
 - `Cmd+N` creates a new project and then creates its first session.
 - `Cmd+T` creates a new session in the current project, or falls back to the existing no-project flow.
-- `Cmd+R` renames the current project.
-- `Cmd+Shift+R` renames the active session.
+- `Cmd+R` renames the active session.
+- `Cmd+Shift+R` renames the current project.
 - `Cmd+1` through `Cmd+9` select projects from the sidebar using top-level project sort order.
 - `Ctrl+1` through `Ctrl+9` select session tabs for the current project using session sort order.
 

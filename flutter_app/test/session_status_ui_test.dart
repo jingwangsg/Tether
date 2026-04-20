@@ -69,7 +69,7 @@ Future<void> _pumpWithContainer(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('session tab shows yellow waiting dot for Claude Code', (
+  testWidgets('session tab keeps session name while showing waiting status', (
     tester,
   ) async {
     final group = _group('local');
@@ -98,7 +98,8 @@ void main() {
 
     final finder = find.byKey(const ValueKey('session-tab-status-session-1'));
     expect(finder, findsOneWidget);
-    expect(find.text('Claude Code'), findsOneWidget);
+    expect(find.text('agent'), findsOneWidget);
+    expect(find.text('Claude Code'), findsNothing);
     expect(
       tester.widget<SessionStatusDot>(finder).status,
       SessionIndicatorStatus.waiting,
@@ -302,7 +303,6 @@ class _FakeTerminalBackend implements TerminalBackend {
     required bool isActive,
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
-    void Function(String? title)? onTitleChanged,
     ForegroundChangedCallback? onForegroundChanged,
     Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   }) {

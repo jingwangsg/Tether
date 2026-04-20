@@ -274,8 +274,8 @@ final class RunnerUITests: XCTestCase {
         )
 
         typeShortcut(in: app, terminal: terminal, key: "r", modifierFlags: .command)
-        XCTAssertTrue(dialogTitleElement(in: app, titled: "Rename Project").waitForExistence(timeout: 5))
-        XCTAssertEqual(firstTextField(in: app).value as? String, "Project B \(runId)")
+        XCTAssertTrue(dialogTitleElement(in: app, titled: "Rename Session").waitForExistence(timeout: 5))
+        XCTAssertEqual(firstTextField(in: app).value as? String, "beta-1-\(runId)")
         app.buttons["Cancel"].click()
 
         typeShortcut(in: app, terminal: terminal, key: "1", modifierFlags: .command)
@@ -290,8 +290,8 @@ final class RunnerUITests: XCTestCase {
 
         typeShortcut(in: app, terminal: terminal, key: "2", modifierFlags: .control)
         typeShortcut(in: app, terminal: terminal, key: "r", modifierFlags: [.command, .shift])
-        XCTAssertTrue(dialogTitleElement(in: app, titled: "Rename Session").waitForExistence(timeout: 5))
-        XCTAssertEqual(firstTextField(in: app).value as? String, "alpha-2-\(runId)")
+        XCTAssertTrue(dialogTitleElement(in: app, titled: "Rename Project").waitForExistence(timeout: 5))
+        XCTAssertEqual(firstTextField(in: app).value as? String, "Project A \(runId)")
         app.buttons["Cancel"].click()
 
         typeShortcut(in: app, terminal: terminal, key: "n", modifierFlags: .command)
@@ -370,7 +370,7 @@ final class RunnerUITests: XCTestCase {
                 .waitForExistence(timeout: 5)
         )
 
-        typeShortcut(in: app, focusElement: projectATile, key: "r", modifierFlags: .command)
+        typeShortcut(in: app, focusElement: projectATile, key: "r", modifierFlags: [.command, .shift])
         XCTAssertTrue(dialogTitleElement(in: app, titled: "Rename Project").waitForExistence(timeout: 5))
         XCTAssertEqual(firstTextField(in: app).value as? String, projectAName)
         app.buttons["Cancel"].click()

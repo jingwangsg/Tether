@@ -61,79 +61,77 @@ Future<void> _pumpWithContainer(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets(
-    'terminal area excludes dead local sessions from project view',
-    (tester) async {
-      final group = _group('local');
-      final alive = _session(
-        'session-1',
-        groupId: group.id,
-        name: 'local-live',
-        isAlive: true,
-      );
-      final dead = alive.copyWith(isAlive: false);
-      final container = _container(
-        ServerState(isConnected: true, groups: [group], sessions: [alive]),
-      );
-      addTearDown(container.dispose);
+  testWidgets('terminal area excludes dead local sessions from project view', (
+    tester,
+  ) async {
+    final group = _group('local');
+    final alive = _session(
+      'session-1',
+      groupId: group.id,
+      name: 'local-live',
+      isAlive: true,
+    );
+    final dead = alive.copyWith(isAlive: false);
+    final container = _container(
+      ServerState(isConnected: true, groups: [group], sessions: [alive]),
+    );
+    addTearDown(container.dispose);
 
-      container.read(sessionProvider.notifier)
-        ..selectProject(group.id)
-        ..setActiveSession(projectId: group.id, sessionId: alive.id);
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: alive.id);
 
-      await _pumpWithContainer(
-        tester,
-        container,
-        TerminalArea(backend: const _FakeTerminalBackend()),
-      );
-      await tester.pump();
+    await _pumpWithContainer(
+      tester,
+      container,
+      TerminalArea(backend: const _FakeTerminalBackend()),
+    );
+    await tester.pump();
 
-      // Session should be visible in the top bar
-      expect(find.text('local-live'), findsOneWidget);
+    // Session should be visible in the top bar
+    expect(find.text('local-live'), findsOneWidget);
 
-      // Session dies
-      final notifier =
-          container.read(serverProvider.notifier) as _TestServerNotifier;
-      notifier.setServerState(
-        ServerState(isConnected: true, groups: [group], sessions: [dead]),
-      );
+    // Session dies
+    final notifier =
+        container.read(serverProvider.notifier) as _TestServerNotifier;
+    notifier.setServerState(
+      ServerState(isConnected: true, groups: [group], sessions: [dead]),
+    );
 
-      await tester.pump();
-      await tester.pump();
+    await tester.pump();
+    await tester.pump();
 
-      // Dead local session should be excluded
-      expect(find.text('No sessions in this project'), findsOneWidget);
-    },
-  );
+    // Dead local session should be excluded
+    expect(find.text('No sessions in this project'), findsOneWidget);
+  });
 
-  testWidgets(
-    'sidebar shows project tile but no individual session names',
-    (tester) async {
-      final group = _group('local');
-      final alive = _session(
-        'session-1',
-        groupId: group.id,
-        name: 'alive-local',
-        isAlive: true,
-      );
-      final container = _container(
-        ServerState(isConnected: true, groups: [group], sessions: [alive]),
-      );
-      addTearDown(container.dispose);
+  testWidgets('sidebar shows project tile but no individual session names', (
+    tester,
+  ) async {
+    final group = _group('local');
+    final alive = _session(
+      'session-1',
+      groupId: group.id,
+      name: 'alive-local',
+      isAlive: true,
+    );
+    final container = _container(
+      ServerState(isConnected: true, groups: [group], sessions: [alive]),
+    );
+    addTearDown(container.dispose);
 
-      await _pumpWithContainer(
-        tester,
-        container,
-        const SizedBox(width: 280, child: Sidebar()),
-      );
-      await tester.pumpAndSettle();
+    await _pumpWithContainer(
+      tester,
+      container,
+      const SizedBox(width: 280, child: Sidebar()),
+    );
+    await tester.pumpAndSettle();
 
-      // Project tile should exist
-      expect(find.text('local'), findsOneWidget);
-      // Individual session names should NOT appear in the sidebar
-      expect(find.text('alive-local'), findsNothing);
-    },
-  );
+    // Project tile should exist
+    expect(find.text('local'), findsOneWidget);
+    // Individual session names should NOT appear in the sidebar
+    expect(find.text('alive-local'), findsNothing);
+  });
 }
 
 class _TestServerNotifier extends ServerNotifier {
@@ -172,7 +170,6 @@ class _FakeTerminalBackend implements TerminalBackend {
     required bool isActive,
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
-    void Function(String? title)? onTitleChanged,
     ForegroundChangedCallback? onForegroundChanged,
     Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   }) {

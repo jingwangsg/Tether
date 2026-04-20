@@ -22,7 +22,6 @@ class TerminalView extends StatefulWidget {
   final bool isActive;
   final bool imagePasteBridgeEnabled;
   final VoidCallback? onSessionExited;
-  final void Function(String? title)? onTitleChanged;
   final ForegroundChangedCallback? onForegroundChanged;
   final Future<void> Function(Uint8List data, String mimeType)?
   onClipboardImage;
@@ -36,7 +35,6 @@ class TerminalView extends StatefulWidget {
     required this.isActive,
     this.imagePasteBridgeEnabled = false,
     this.onSessionExited,
-    this.onTitleChanged,
     this.onForegroundChanged,
     this.onClipboardImage,
     this.metadataWsFactory,
@@ -215,8 +213,6 @@ class TerminalViewState extends State<TerminalView> {
     if (event is! Map) return;
     final type = event['type'] as String?;
     switch (type) {
-      case 'title':
-        widget.onTitleChanged?.call(event['value'] as String?);
       case 'exited':
         _emitExit();
       case 'search_start':

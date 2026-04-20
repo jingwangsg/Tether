@@ -104,7 +104,7 @@ class MainFlutterWindow: NSWindow {
 
         if flags == [.command, .shift] {
             if chars == "r" {
-                return DesktopActionPayload(action: "renameCurrentSession", index: nil)
+                return DesktopActionPayload(action: "renameCurrentProject", index: nil)
             }
             if chars == "=" || typedChars == "+" {
                 return DesktopActionPayload(action: "increaseFontSize", index: nil)
@@ -122,7 +122,7 @@ class MainFlutterWindow: NSWindow {
                 return DesktopActionPayload(action: "closeCurrentSession", index: nil)
             }
             if chars == "r" {
-                return DesktopActionPayload(action: "renameCurrentProject", index: nil)
+                return DesktopActionPayload(action: "renameCurrentSession", index: nil)
             }
             if chars == "f" {
                 return DesktopActionPayload(action: "showSearch", index: nil)

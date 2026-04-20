@@ -59,7 +59,6 @@ class XtermTerminalView extends ConsumerStatefulWidget {
   final TerminalController controller;
   final bool isActive;
   final VoidCallback? onSessionExited;
-  final void Function(String? title)? onTitleChanged;
   final ForegroundChangedCallback? onForegroundChanged;
   final WebSocketService Function(String Function() urlBuilder)? wsFactory;
   final Future<Uint8List?> Function(int offset, int limit)? scrollbackFetcher;
@@ -70,7 +69,6 @@ class XtermTerminalView extends ConsumerStatefulWidget {
     required this.controller,
     required this.isActive,
     this.onSessionExited,
-    this.onTitleChanged,
     this.onForegroundChanged,
     this.wsFactory,
     this.scrollbackFetcher,
@@ -204,9 +202,6 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
 
   void _configureTerminal(xterm.Terminal terminal) {
     terminal.onOutput = _onTerminalInput;
-    terminal.onTitleChange = (title) {
-      widget.onTitleChanged?.call(title);
-    };
     terminal.onPrivateOSC =
         (code, args) => _handlePrivateOsc(terminal, code, args);
     if (_semanticPromptState.shouldUseResizeRecovery) {
@@ -828,9 +823,9 @@ class XtermTerminalViewState extends ConsumerState<XtermTerminalView>
     _decoderSub = _bytesInput.stream
         .transform(const Utf8Decoder(allowMalformed: true))
         .listen((text) {
-      _terminal.write(text);
-      _checkAltScreenTransition();
-    });
+          _terminal.write(text);
+          _checkAltScreenTransition();
+        });
   }
 
   void _resetReplayFlushTimer() {

@@ -26,7 +26,6 @@ class XtermBackend implements TerminalBackend {
     required bool isActive,
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
-    void Function(String? title)? onTitleChanged,
     ForegroundChangedCallback? onForegroundChanged,
     Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   }) {
@@ -36,7 +35,6 @@ class XtermBackend implements TerminalBackend {
       controller: controller,
       isActive: isActive,
       onSessionExited: onSessionExited,
-      onTitleChanged: onTitleChanged,
       onForegroundChanged: onForegroundChanged,
     );
   }

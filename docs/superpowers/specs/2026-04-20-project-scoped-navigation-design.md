@@ -39,8 +39,8 @@ The result should feel like a navigation-shell redesign, not a terminal/backend 
 - `Cmd+N` creates a new project, immediately creates the first session inside it, selects that project, and opens that first session.
 - `Cmd+T` creates a new session inside the current project and activates it.
 - If there is no current project, `Cmd+T` falls back to the `Cmd+N` flow.
-- `Cmd+R` renames the current project.
-- `Cmd+Shift+R` renames the current session.
+- `Cmd+R` renames the current session.
+- `Cmd+Shift+R` renames the current project.
 
 ### Numeric Navigation
 

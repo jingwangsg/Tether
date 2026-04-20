@@ -100,9 +100,7 @@ void main() {
         ),
       );
       final container = ProviderContainer();
-      final titleRevision = ValueNotifier<int>(0);
       addTearDown(container.dispose);
-      addTearDown(titleRevision.dispose);
 
       container
           .read(uiProvider.notifier)
@@ -122,8 +120,6 @@ void main() {
                   projectId: 'alpha',
                   sessions: sessions,
                   activeSessionId: 'session-0',
-                  sessionTitles: const {},
-                  titleRevision: titleRevision,
                 ),
               ),
             ),
@@ -166,9 +162,7 @@ void main() {
           ),
         ],
       );
-      final titleRevision = ValueNotifier<int>(0);
       addTearDown(container.dispose);
-      addTearDown(titleRevision.dispose);
 
       container.read(sessionProvider.notifier)
         ..selectProject(group.id)
@@ -183,8 +177,6 @@ void main() {
                 projectId: group.id,
                 sessions: sessions,
                 activeSessionId: sessions.first.id,
-                sessionTitles: const {},
-                titleRevision: titleRevision,
               ),
             ),
           ),
@@ -227,9 +219,7 @@ void main() {
           ),
         ],
       );
-      final titleRevision = ValueNotifier<int>(0);
       addTearDown(container.dispose);
-      addTearDown(titleRevision.dispose);
 
       container.read(sessionProvider.notifier)
         ..selectProject(group.id)
@@ -244,8 +234,6 @@ void main() {
                 projectId: group.id,
                 sessions: sessions,
                 activeSessionId: 'session-1',
-                sessionTitles: const {},
-                titleRevision: titleRevision,
               ),
             ),
           ),
@@ -292,9 +280,7 @@ void main() {
           ),
         ],
       );
-      final titleRevision = ValueNotifier<int>(0);
       addTearDown(container.dispose);
-      addTearDown(titleRevision.dispose);
 
       container.read(sessionProvider.notifier)
         ..selectProject(group.id)
@@ -309,8 +295,6 @@ void main() {
                 projectId: group.id,
                 sessions: sessions,
                 activeSessionId: 'session-0',
-                sessionTitles: const {},
-                titleRevision: titleRevision,
               ),
             ),
           ),
@@ -370,7 +354,6 @@ class _FakeTerminalBackend implements TerminalBackend {
     required bool isActive,
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
-    void Function(String? title)? onTitleChanged,
     ForegroundChangedCallback? onForegroundChanged,
     Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   }) {

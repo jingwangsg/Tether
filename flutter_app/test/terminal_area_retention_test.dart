@@ -14,17 +14,17 @@ import 'package:tether/widgets/terminal/terminal_controller.dart';
 Group _group(String id) => Group(id: id, name: id);
 
 Session _session(String id, String groupId) => Session(
-      id: id,
-      groupId: groupId,
-      name: id,
-      shell: 'zsh',
-      cols: 80,
-      rows: 24,
-      cwd: '/tmp/$id',
-      isAlive: true,
-      createdAt: '',
-      lastActive: '',
-    );
+  id: id,
+  groupId: groupId,
+  name: id,
+  shell: 'zsh',
+  cols: 80,
+  rows: 24,
+  cwd: '/tmp/$id',
+  isAlive: true,
+  createdAt: '',
+  lastActive: '',
+);
 
 /// Finds a terminal widget by session id, including offstage widgets.
 /// We use skipOffstage: false because we're testing widget-tree presence,
@@ -34,7 +34,9 @@ Finder _terminalFinder(String sessionId) =>
     find.byKey(ValueKey('terminal-$sessionId'), skipOffstage: false);
 
 void main() {
-  testWidgets('terminal area keeps only active and previous session mounted', (tester) async {
+  testWidgets('terminal area keeps only active and previous session mounted', (
+    tester,
+  ) async {
     final alpha = _group('alpha');
     final sessions = [
       _session('a-1', alpha.id),
@@ -73,7 +75,8 @@ void main() {
     expect(_terminalFinder('a-3'), findsNothing);
 
     // Switch to a-2: a-1 becomes warm, a-2 becomes active.
-    container.read(sessionProvider.notifier)
+    container
+        .read(sessionProvider.notifier)
         .setActiveSession(projectId: alpha.id, sessionId: 'a-2');
     await tester.pump();
 
@@ -82,7 +85,8 @@ void main() {
     expect(_terminalFinder('a-3'), findsNothing);
 
     // Switch to a-3: a-2 becomes warm, a-1 is evicted.
-    container.read(sessionProvider.notifier)
+    container
+        .read(sessionProvider.notifier)
         .setActiveSession(projectId: alpha.id, sessionId: 'a-3');
     await tester.pump();
 
@@ -112,7 +116,6 @@ class _RetentionBackend implements TerminalBackend {
     required bool isActive,
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
-    void Function(String? title)? onTitleChanged,
     ForegroundChangedCallback? onForegroundChanged,
     Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   }) {

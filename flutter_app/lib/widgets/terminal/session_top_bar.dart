@@ -5,67 +5,30 @@ import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_close.dart';
-import '../../utils/session_display.dart';
 import '../../utils/session_status.dart';
 import '../shell_shortcut_hint_badge.dart';
 import 'session_status_dot.dart';
 
-class SessionTopBar extends ConsumerStatefulWidget {
+class SessionTopBar extends ConsumerWidget {
   final String? projectId;
   final List<Session> sessions;
   final String? activeSessionId;
-  final Map<String, String> sessionTitles;
-  final ValueNotifier<int> titleRevision;
 
   const SessionTopBar({
     super.key,
     required this.projectId,
     required this.sessions,
     required this.activeSessionId,
-    required this.sessionTitles,
-    required this.titleRevision,
   });
 
   @override
-  ConsumerState<SessionTopBar> createState() => _SessionTopBarState();
-}
-
-class _SessionTopBarState extends ConsumerState<SessionTopBar> {
-  @override
-  void initState() {
-    super.initState();
-    widget.titleRevision.addListener(_onTitleRevision);
-  }
-
-  @override
-  void didUpdateWidget(covariant SessionTopBar oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.titleRevision, widget.titleRevision)) {
-      oldWidget.titleRevision.removeListener(_onTitleRevision);
-      widget.titleRevision.addListener(_onTitleRevision);
+  Widget build(BuildContext context, WidgetRef ref) {
+    Future<void> closeCurrentSession(Session session) async {
+      try {
+        await closeSession(ref, session);
+      } catch (_) {}
     }
-  }
 
-  @override
-  void dispose() {
-    widget.titleRevision.removeListener(_onTitleRevision);
-    super.dispose();
-  }
-
-  void _onTitleRevision() {
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
-  Future<void> _closeSession(Session session) async {
-    try {
-      await closeSession(ref, session);
-    } catch (_) {}
-  }
-
-  @override
-  Widget build(BuildContext context) {
     final showSessionShortcutHints = ref.watch(
       uiProvider.select((state) => state.showSessionShortcutHints),
     );
@@ -77,13 +40,13 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
         scrollDirection: Axis.horizontal,
         buildDefaultDragHandles: false,
         onReorder:
-            widget.projectId == null
+            projectId == null
                 ? (_, __) {}
                 : (oldIndex, newIndex) async {
                   if (newIndex > oldIndex) {
                     newIndex--;
                   }
-                  final reordered = List<Session>.from(widget.sessions);
+                  final reordered = List<Session>.from(sessions);
                   final moved = reordered.removeAt(oldIndex);
                   reordered.insert(newIndex, moved);
                   final payload = [
@@ -91,18 +54,17 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
                       {
                         'id': reordered[i].id,
                         'sort_order': i,
-                        'group_id': widget.projectId,
+                        'group_id': projectId,
                       },
                   ];
                   await ref
                       .read(serverProvider.notifier)
                       .reorderSessions(payload);
                 },
-        itemCount: widget.sessions.length,
+        itemCount: sessions.length,
         itemBuilder: (context, index) {
-          final session = widget.sessions[index];
-          final isActive = session.id == widget.activeSessionId;
-          final display = getDisplayInfo(session, widget.sessions);
+          final session = sessions[index];
+          final isActive = session.id == activeSessionId;
           final status = deriveSessionIndicatorStatus(
             session,
             isActive: isActive,
@@ -112,15 +74,15 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
             index: index,
             child: Semantics(
               identifier: 'session-top-tab-${session.id}',
-              label: widget.sessionTitles[session.id] ?? display.displayName,
+              label: session.name,
               selected: isActive,
               child: InkWell(
                 onTap: () {
-                  if (widget.projectId != null) {
+                  if (projectId != null) {
                     ref
                         .read(sessionProvider.notifier)
                         .setActiveSession(
-                          projectId: widget.projectId!,
+                          projectId: projectId!,
                           sessionId: session.id,
                         );
                   }
@@ -144,7 +106,7 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        widget.sessionTitles[session.id] ?? display.displayName,
+                        session.name,
                         style: TextStyle(
                           color: isActive ? Colors.white : Colors.white54,
                           fontSize: 12,
@@ -176,7 +138,7 @@ class _SessionTopBarState extends ConsumerState<SessionTopBar> {
                         ),
                         splashRadius: 12,
                         tooltip: 'Close session',
-                        onPressed: () => _closeSession(session),
+                        onPressed: () => closeCurrentSession(session),
                         icon: Icon(
                           Icons.close,
                           size: 14,

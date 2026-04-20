@@ -268,25 +268,25 @@ class RunnerTests: XCTestCase {
     )
   }
 
-  func testDesktopShortcutCmdRReturnsRenameCurrentProject() {
+  func testDesktopShortcutCmdRReturnsRenameCurrentSession() {
     let payload = MainFlutterWindow.desktopActionPayload(
       eventType: .keyDown,
       modifierFlags: .command,
       characters: "r",
       charactersIgnoringModifiers: "r",
     )
-    XCTAssertEqual(payload?.action, "renameCurrentProject")
+    XCTAssertEqual(payload?.action, "renameCurrentSession")
     XCTAssertNil(payload?.index)
   }
 
-  func testDesktopShortcutCmdShiftRReturnsRenameCurrentSession() {
+  func testDesktopShortcutCmdShiftRReturnsRenameCurrentProject() {
     let payload = MainFlutterWindow.desktopActionPayload(
       eventType: .keyDown,
       modifierFlags: [.command, .shift],
       characters: "R",
       charactersIgnoringModifiers: "R",
     )
-    XCTAssertEqual(payload?.action, "renameCurrentSession")
+    XCTAssertEqual(payload?.action, "renameCurrentProject")
     XCTAssertNil(payload?.index)
   }
 

@@ -47,9 +47,9 @@ ProviderContainer _container({
 Future<void> _pumpWithContainer(
   WidgetTester tester,
   ProviderContainer container,
-  Widget child,
-  {MediaQueryData? mediaQueryData}
-) async {
+  Widget child, {
+  MediaQueryData? mediaQueryData,
+}) async {
   await tester.pumpWidget(
     UncontrolledProviderScope(
       container: container,
@@ -57,7 +57,10 @@ Future<void> _pumpWithContainer(
         home:
             mediaQueryData == null
                 ? Scaffold(body: child)
-                : MediaQuery(data: mediaQueryData, child: Scaffold(body: child)),
+                : MediaQuery(
+                  data: mediaQueryData,
+                  child: Scaffold(body: child),
+                ),
       ),
     ),
   );
@@ -324,8 +327,8 @@ void main() {
       addTearDown(container.dispose);
 
       container.read(sessionProvider.notifier)
-      ..selectProject(group.id)
-      ..setActiveSession(projectId: group.id, sessionId: session.id);
+        ..selectProject(group.id)
+        ..setActiveSession(projectId: group.id, sessionId: session.id);
 
       await _pumpWithContainer(
         tester,
@@ -378,7 +381,6 @@ class _FakeTerminalBackend implements TerminalBackend {
     required bool isActive,
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
-    void Function(String? title)? onTitleChanged,
     ForegroundChangedCallback? onForegroundChanged,
     Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   }) {
