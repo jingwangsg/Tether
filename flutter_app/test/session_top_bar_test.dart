@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tether/models/group.dart';
@@ -358,18 +359,111 @@ void main() {
       expect(find.text('feature/refactor-shell'), findsNothing);
     },
   );
+
+  testWidgets('session top bar supports direct horizontal drag reordering', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1600, 400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final group = _group('alpha', 'Alpha');
+    final sessions = [
+      _session('session-0', group.id, 'session-0').copyWith(sortOrder: 0),
+      _session('session-1', group.id, 'session-1').copyWith(sortOrder: 1),
+    ];
+    final notifier = _SessionTopBarTestServerNotifier(
+      ServerState(isConnected: true, groups: [group], sessions: sessions),
+    );
+    final container = ProviderContainer(
+      overrides: [serverProvider.overrideWith((ref) => notifier)],
+    );
+    addTearDown(container.dispose);
+
+    container.read(sessionProvider.notifier)
+      ..selectProject(group.id)
+      ..setActiveSession(projectId: group.id, sessionId: 'session-0');
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.macOS),
+          home: Scaffold(
+            body: SizedBox(
+              width: 1200,
+              child: SessionTopBar(
+                projectId: group.id,
+                sessions: container.read(serverProvider).sessions,
+                activeSessionId: 'session-0',
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final firstCenter = tester.getCenter(
+      find.byKey(const ValueKey('session-top-tab-session-0')),
+    );
+    final gesture = await tester.startGesture(
+      firstCenter,
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump(const Duration(milliseconds: 20));
+    await gesture.moveBy(const Offset(400, 0));
+    await tester.pump(const Duration(milliseconds: 300));
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(notifier.reorderSessionPayloads, isNotEmpty);
+    expect(
+      (List<Session>.from(container.read(serverProvider).sessions)..sort(
+        (a, b) => a.sortOrder.compareTo(b.sortOrder),
+      )).map((session) => session.id),
+      ['session-1', 'session-0'],
+    );
+  });
 }
 
 class _SessionTopBarTestServerNotifier extends ServerNotifier {
   _SessionTopBarTestServerNotifier(super.state) : super.test();
 
   final List<String> deletedSessionIds = [];
+  final List<List<Map<String, dynamic>>> reorderSessionPayloads = [];
 
   @override
   Future<void> deleteSession(String id) async {
     deletedSessionIds.add(id);
     state = state.copyWith(
       sessions: state.sessions.where((session) => session.id != id).toList(),
+    );
+  }
+
+  @override
+  Future<void> reorderSessions(List<Map<String, dynamic>> items) async {
+    reorderSessionPayloads.add(items);
+    final updates = {
+      for (final item in items)
+        item['id'] as String: (
+          sortOrder: item['sort_order'] as int,
+          groupId: item['group_id'] as String?,
+        ),
+    };
+    state = state.copyWith(
+      sessions:
+          state.sessions.map((session) {
+            final update = updates[session.id];
+            if (update == null) {
+              return session;
+            }
+            return session.copyWith(
+              sortOrder: update.sortOrder,
+              groupId: update.groupId ?? session.groupId,
+            );
+          }).toList(),
     );
   }
 }

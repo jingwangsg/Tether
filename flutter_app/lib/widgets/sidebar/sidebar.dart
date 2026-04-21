@@ -12,9 +12,9 @@ import '../../utils/project_status_summary.dart';
 import '../../utils/session_interaction.dart';
 import '../../utils/session_status.dart';
 import '../../utils/shell_dialogs.dart';
+import '../reorderable/platform_reorder_drag_start_listener.dart';
 import '../shell_shortcut_hint_badge.dart';
 import '../terminal/session_status_dot.dart';
-import 'group_dialog.dart';
 import 'settings_dialog.dart';
 import 'ssh_host_list.dart';
 
@@ -60,14 +60,14 @@ class Sidebar extends ConsumerWidget {
             child:
                 isConnected
                     ? _buildContent(
-                        context,
-                        ref,
-                        groups: groups,
-                        sessions: visible,
-                        sshHosts: sshHosts,
-                        navState: navState,
-                        projectStatuses: projectStatuses,
-                      )
+                      context,
+                      ref,
+                      groups: groups,
+                      sessions: visible,
+                      sshHosts: sshHosts,
+                      navState: navState,
+                      projectStatuses: projectStatuses,
+                    )
                     : _buildDisconnected(context, ref, error),
           ),
         ],
@@ -135,23 +135,50 @@ class Sidebar extends ConsumerWidget {
   }) {
     final projects = _projects(groups);
 
-    return ListView(
-      children: [
+    return CustomScrollView(
+      slivers: [
         if (sshHosts.any((h) => h.reachable == true)) ...[
-          SshHostList(
-            hosts: sshHosts.where((h) => h.reachable == true).toList(),
+          SliverToBoxAdapter(
+            child: SshHostList(
+              hosts: sshHosts.where((h) => h.reachable == true).toList(),
+            ),
           ),
-          const Divider(height: 1, color: Colors.white12),
+          const SliverToBoxAdapter(
+            child: Divider(height: 1, color: Colors.white12),
+          ),
         ],
-        for (var index = 0; index < projects.length; index++)
-          _buildProjectTile(
-            context,
-            ref,
-            projects[index],
-            isSelected: navState.selectedProjectId == projects[index].id,
-            status: projectStatuses[projects[index].id],
-            shortcutIndex: index,
-          ),
+        SliverReorderableList(
+          itemCount: projects.length,
+          onReorder: (oldIndex, newIndex) async {
+            if (newIndex > oldIndex) {
+              newIndex--;
+            }
+            final reordered = List<Group>.from(projects);
+            final moved = reordered.removeAt(oldIndex);
+            reordered.insert(newIndex, moved);
+            final payload = [
+              for (int i = 0; i < reordered.length; i++)
+                {'id': reordered[i].id, 'sort_order': i},
+            ];
+            await ref.read(serverProvider.notifier).reorderGroups(payload);
+          },
+          itemBuilder: (context, index) {
+            final project = projects[index];
+            return PlatformReorderDragStartListener(
+              key: ValueKey('project-tile-${project.id}'),
+              index: index,
+              axis: Axis.vertical,
+              child: _buildProjectTile(
+                context,
+                ref,
+                project,
+                isSelected: navState.selectedProjectId == project.id,
+                status: projectStatuses[project.id],
+                shortcutIndex: index,
+              ),
+            );
+          },
+        ),
       ],
     );
   }
@@ -165,49 +192,76 @@ class Sidebar extends ConsumerWidget {
     required int shortcutIndex,
   }) {
     final uiState = ref.watch(uiProvider);
-    return Semantics(
-      identifier: 'project-tile-${project.id}',
-      label: project.name,
-      selected: isSelected,
-      child: InkWell(
-        onTap: () {
-          ref.read(sessionProvider.notifier).selectProject(project.id);
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          color: isSelected ? Colors.white.withValues(alpha: 0.08) : null,
-          child: Row(
-            children: [
-              const Icon(
-                Icons.folder_outlined,
-                size: 16,
-                color: Colors.white54,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  project.name,
-                  style: TextStyle(
-                    color: isSelected ? Colors.white : Colors.white70,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
+    return Material(
+      color: Colors.transparent,
+      child: Semantics(
+        identifier: 'project-tile-${project.id}',
+        label: project.name,
+        selected: isSelected,
+        child: InkWell(
+          onTap: () {
+            ref.read(sessionProvider.notifier).selectProject(project.id);
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            color: isSelected ? Colors.white.withValues(alpha: 0.08) : null,
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.folder_outlined,
+                  size: 16,
+                  color: Colors.white54,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    project.name,
+                    style: TextStyle(
+                      color: isSelected ? Colors.white : Colors.white70,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                 ),
-              ),
-              if (uiState.showProjectShortcutHints && shortcutIndex < 9) ...[
-                const SizedBox(width: 8),
-                ShellShortcutHintBadge(
-                  key: ValueKey('project-shortcut-hint-${project.id}'),
-                  label: '${shortcutIndex + 1}',
-                ),
+                if (project.normalizedSshHost != null) ...[
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Container(
+                      key: ValueKey('project-ssh-badge-${project.id}'),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 5,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        project.normalizedSshHost!,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.lightBlueAccent,
+                          fontSize: 10,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+                if (uiState.showProjectShortcutHints && shortcutIndex < 9) ...[
+                  const SizedBox(width: 8),
+                  ShellShortcutHintBadge(
+                    key: ValueKey('project-shortcut-hint-${project.id}'),
+                    label: '${shortcutIndex + 1}',
+                  ),
+                ],
+                if (status != null)
+                  SessionStatusDot(
+                    key: ValueKey('project-status-${project.id}'),
+                    status: status,
+                    semanticIdentifier: 'project-status-${project.id}',
+                  ),
               ],
-              if (status != null)
-                SessionStatusDot(
-                  key: ValueKey('project-status-${project.id}'),
-                  status: status,
-                  semanticIdentifier: 'project-status-${project.id}',
-                ),
-            ],
+            ),
           ),
         ),
       ),
