@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tether/models/group.dart';
@@ -11,24 +12,33 @@ import 'package:tether/widgets/sidebar/sidebar.dart';
 Group _group(String id, String name, int sortOrder, {String? parentId}) =>
     Group(id: id, name: name, sortOrder: sortOrder, parentId: parentId);
 
-Session _session(String id, String groupId, {int attentionSeq = 0, int attentionAckSeq = 0}) =>
-    Session(
-      id: id,
-      groupId: groupId,
-      name: id,
-      shell: 'zsh',
-      cols: 80,
-      rows: 24,
-      cwd: '/tmp',
-      isAlive: true,
-      createdAt: '',
-      lastActive: '',
-      attentionSeq: attentionSeq,
-      attentionAckSeq: attentionAckSeq,
-    );
+Group _remoteGroup(String id, String name, int sortOrder, {String? sshHost}) =>
+    Group(id: id, name: name, sortOrder: sortOrder, sshHost: sshHost);
+
+Session _session(
+  String id,
+  String groupId, {
+  int attentionSeq = 0,
+  int attentionAckSeq = 0,
+}) => Session(
+  id: id,
+  groupId: groupId,
+  name: id,
+  shell: 'zsh',
+  cols: 80,
+  rows: 24,
+  cwd: '/tmp',
+  isAlive: true,
+  createdAt: '',
+  lastActive: '',
+  attentionSeq: attentionSeq,
+  attentionAckSeq: attentionAckSeq,
+);
 
 void main() {
-  testWidgets('sidebar renders only top-level projects and no session labels', (tester) async {
+  testWidgets('sidebar renders only top-level projects and no session labels', (
+    tester,
+  ) async {
     final parent = _group('parent', 'Alpha', 0);
     final child = _group('child', 'Nested', 1, parentId: parent.id);
     final session = _session('alpha-session', parent.id);
@@ -36,7 +46,11 @@ void main() {
       overrides: [
         serverProvider.overrideWith(
           (ref) => ServerNotifier.test(
-            ServerState(isConnected: true, groups: [parent, child], sessions: [session]),
+            ServerState(
+              isConnected: true,
+              groups: [parent, child],
+              sessions: [session],
+            ),
           ),
         ),
       ],
@@ -46,7 +60,9 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: const MaterialApp(home: Scaffold(body: SizedBox(width: 280, child: Sidebar()))),
+        child: const MaterialApp(
+          home: Scaffold(body: SizedBox(width: 280, child: Sidebar())),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -63,47 +79,16 @@ void main() {
       overrides: [
         serverProvider.overrideWith(
           (ref) => ServerNotifier.test(
-            ServerState(isConnected: true, groups: [alpha, beta], sessions: const []),
+            ServerState(
+              isConnected: true,
+              groups: [alpha, beta],
+              sessions: const [],
+            ),
           ),
         ),
       ],
     );
     addTearDown(container.dispose);
-
-    await tester.pumpWidget(
-      UncontrolledProviderScope(
-        container: container,
-        child: const MaterialApp(home: Scaffold(body: SizedBox(width: 280, child: Sidebar()))),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Beta'));
-    await tester.pumpAndSettle();
-
-    expect(container.read(sessionProvider).selectedProjectId, 'beta');
-  });
-
-  testWidgets('sidebar shows cmd digit hints for only the first nine visible projects', (tester) async {
-    final groups = List.generate(
-      10,
-      (index) => _group('project-$index', 'Project ${index + 1}', index),
-    );
-    final container = ProviderContainer(
-      overrides: [
-        serverProvider.overrideWith(
-          (ref) => ServerNotifier.test(
-            ServerState(isConnected: true, groups: groups, sessions: const []),
-          ),
-        ),
-      ],
-    );
-    addTearDown(container.dispose);
-
-    container.read(uiProvider.notifier).setDesktopShortcutHints(
-          showProjectHints: true,
-          showSessionHints: false,
-        );
 
     await tester.pumpWidget(
       UncontrolledProviderScope(
@@ -115,15 +100,170 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    for (var index = 0; index < 9; index++) {
-      expect(
-        find.byKey(ValueKey('project-shortcut-hint-project-$index')),
-        findsOneWidget,
+    await tester.tap(find.text('Beta'));
+    await tester.pumpAndSettle();
+
+    expect(container.read(sessionProvider).selectedProjectId, 'beta');
+  });
+
+  testWidgets(
+    'sidebar shows cmd digit hints for only the first nine visible projects',
+    (tester) async {
+      final groups = List.generate(
+        10,
+        (index) => _group('project-$index', 'Project ${index + 1}', index),
       );
-    }
+      final container = ProviderContainer(
+        overrides: [
+          serverProvider.overrideWith(
+            (ref) => ServerNotifier.test(
+              ServerState(
+                isConnected: true,
+                groups: groups,
+                sessions: const [],
+              ),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      container
+          .read(uiProvider.notifier)
+          .setDesktopShortcutHints(
+            showProjectHints: true,
+            showSessionHints: false,
+          );
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(
+            home: Scaffold(body: SizedBox(width: 280, child: Sidebar())),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      for (var index = 0; index < 9; index++) {
+        expect(
+          find.byKey(ValueKey('project-shortcut-hint-project-$index')),
+          findsOneWidget,
+        );
+      }
+      expect(
+        find.byKey(const ValueKey('project-shortcut-hint-project-9')),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets('sidebar shows ssh host badge for remote projects only', (
+    tester,
+  ) async {
+    final local = _group('local', 'Local', 0);
+    final remote = _remoteGroup('remote', 'Remote', 1, sshHost: 'prod-box');
+    final container = ProviderContainer(
+      overrides: [
+        serverProvider.overrideWith(
+          (ref) => ServerNotifier.test(
+            ServerState(isConnected: true, groups: [local, remote]),
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: Scaffold(body: SizedBox(width: 280, child: Sidebar())),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('prod-box'), findsOneWidget);
     expect(
-      find.byKey(const ValueKey('project-shortcut-hint-project-9')),
+      find.descendant(of: find.text('Local'), matching: find.text('prod-box')),
       findsNothing,
     );
   });
+
+  testWidgets('sidebar supports direct-drag reordering on desktop', (
+    tester,
+  ) async {
+    final alpha = _group('alpha', 'Alpha', 0);
+    final beta = _group('beta', 'Beta', 1);
+    final notifier = _SidebarTestServerNotifier(
+      ServerState(isConnected: true, groups: [alpha, beta], sessions: const []),
+    );
+    final container = ProviderContainer(
+      overrides: [serverProvider.overrideWith((ref) => notifier)],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.macOS),
+          home: const Scaffold(
+            body: SizedBox(width: 280, height: 400, child: Sidebar()),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final alphaCenter = tester.getCenter(
+      find.byKey(const ValueKey('project-tile-alpha')),
+    );
+    final gesture = await tester.startGesture(
+      alphaCenter,
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump(const Duration(milliseconds: 20));
+    await gesture.moveBy(const Offset(0, 120));
+    await tester.pump(const Duration(milliseconds: 300));
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(notifier.reorderPayloads, isNotEmpty);
+    expect(
+      notifier.state.groups..sort((a, b) => a.sortOrder.compareTo(b.sortOrder)),
+      isA<List<Group>>(),
+    );
+    expect(
+      (List<Group>.from(notifier.state.groups)..sort(
+        (a, b) => a.sortOrder.compareTo(b.sortOrder),
+      )).map((group) => group.id),
+      ['beta', 'alpha'],
+    );
+  });
+}
+
+class _SidebarTestServerNotifier extends ServerNotifier {
+  _SidebarTestServerNotifier(super.state) : super.test();
+
+  final List<List<Map<String, dynamic>>> reorderPayloads = [];
+
+  @override
+  Future<void> reorderGroups(List<Map<String, dynamic>> items) async {
+    reorderPayloads.add(items);
+    final sortOrders = {
+      for (final item in items) item['id'] as String: item['sort_order'] as int,
+    };
+    state = state.copyWith(
+      groups:
+          state.groups
+              .map(
+                (group) => group.copyWith(
+                  sortOrder: sortOrders[group.id] ?? group.sortOrder,
+                ),
+              )
+              .toList(),
+    );
+  }
 }
