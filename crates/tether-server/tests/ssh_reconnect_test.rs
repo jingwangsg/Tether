@@ -600,6 +600,7 @@ async fn ws_proxy_reconnect_replays_missing_remote_history_from_disk() {
         default_shell: String::new(),
         scrollback_memory_kb: 1,
         scrollback_disk_max_mb: 50,
+        anti_flicker: true,
     });
     let session_id = Uuid::new_v4();
 

@@ -38,7 +38,7 @@ Nest sessions into named groups with their own working directories. Drag to reor
 Point a group at an SSH host. Tether deploys itself on the remote, tunnels in, and your remote sessions appear in the sidebar alongside local ones — in the same group, every time you reconnect.
 
 **AI tool awareness**
-A detected Claude Code or Codex session takes over the session tab title immediately, so the tab itself tells you which agent currently owns that session. The dot still shows what the agent is doing right now:
+When Claude Code or Codex is detected, the session tab keeps your session name and appends the live agent title (`session-name | OSC title`). The dot still shows what the agent is doing right now:
 
 - 🟢 pulsing — running
 - 🟡 static — waiting for you

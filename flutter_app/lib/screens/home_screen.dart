@@ -51,6 +51,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   bool _edgeDragActive = false;
   double _dragDistance = 0;
   bool _autoOpenedTestSession = false;
+  List<String>? _pendingProjectIds;
+  bool _projectSyncScheduled = false;
 
   bool get _usesNativeShellShortcuts => widget.backend.platformId == 'native';
 
@@ -335,6 +337,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final sessionState = ref.watch(sessionProvider);
     final uiState = ref.watch(uiProvider);
     final sidebarW = _sidebarWidth(context);
+    _scheduleProjectSync(groups);
     _maybeAutoOpenTestSession(groups, sessions, sessionState);
 
     return PopScope<void>(
@@ -458,6 +461,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         ),
       ),
     );
+  }
+
+  void _scheduleProjectSync(List<Group> groups) {
+    final projects =
+        groups
+            .where((group) => group.parentId == null)
+            .toList()
+          ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    _pendingProjectIds = projects.map((group) => group.id).toList();
+    if (_projectSyncScheduled) {
+      return;
+    }
+    _projectSyncScheduled = true;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _projectSyncScheduled = false;
+      if (!mounted) {
+        return;
+      }
+      final projectIds = _pendingProjectIds ?? const <String>[];
+      _pendingProjectIds = null;
+      ref.read(sessionProvider.notifier).syncProjects(projectIds);
+    });
   }
 
   Future<void> _performDesktopAction(String action, {int? index}) async {

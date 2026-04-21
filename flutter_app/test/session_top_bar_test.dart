@@ -321,7 +321,7 @@ void main() {
   );
 
   testWidgets(
-    'session top bar prefers detected agent title over raw session name',
+    'session top bar keeps the session name and shows the agent osc title',
     (tester) async {
       final sessions = [
         Session(
@@ -355,8 +355,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Claude Code'), findsOneWidget);
-      expect(find.text('feature/refactor-shell'), findsNothing);
+      expect(find.text('feature/refactor-shell'), findsOneWidget);
+      expect(find.text('· Claude Code'), findsOneWidget);
     },
   );
 

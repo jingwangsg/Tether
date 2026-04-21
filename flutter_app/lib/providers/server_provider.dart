@@ -9,6 +9,8 @@ import '../services/api_service.dart';
 import '../utils/test_event_logger.dart';
 import 'server_snapshot_diff.dart';
 
+typedef ApiServiceFactory = ApiService Function(ServerConfig config);
+
 class ServerConfig {
   final String host;
   final int port;
@@ -32,6 +34,7 @@ class ServerState {
   final ServerConfig? config;
   final ApiService? api;
   final bool isConnected;
+  final bool isStale;
   final String? error;
   final List<Group> groups;
   final List<Session> sessions;
@@ -41,26 +44,36 @@ class ServerState {
     this.config,
     this.api,
     this.isConnected = false,
+    this.isStale = false,
     this.error,
     this.groups = const [],
     this.sessions = const [],
     this.sshHosts = const [],
   });
 
+  static const _noChange = Object();
+
   ServerState copyWith({
     ServerConfig? config,
+    bool clearConfig = false,
     ApiService? api,
+    bool clearApi = false,
     bool? isConnected,
-    String? error,
+    bool? isStale,
+    Object? error = _noChange,
     List<Group>? groups,
     List<Session>? sessions,
     List<SshHost>? sshHosts,
   }) {
     return ServerState(
-      config: config ?? this.config,
-      api: api ?? this.api,
+      config: clearConfig ? null : (config ?? this.config),
+      api: clearApi ? null : (api ?? this.api),
       isConnected: isConnected ?? this.isConnected,
-      error: error,
+      isStale: isStale ?? this.isStale,
+      error:
+          identical(error, _noChange)
+              ? this.error
+              : error as String?,
       groups: groups ?? this.groups,
       sessions: sessions ?? this.sessions,
       sshHosts: sshHosts ?? this.sshHosts,
@@ -71,24 +84,42 @@ class ServerState {
 class ServerNotifier extends StateNotifier<ServerState> {
   static const _refreshInterval = Duration(seconds: 5);
   Timer? _refreshTimer;
+  final ApiServiceFactory _apiFactory;
   int _groupStructureVersion = 0;
   int _sessionStructureVersion = 0;
   int _connectionGeneration = 0;
 
-  ServerNotifier({bool autoConnect = true}) : super(const ServerState()) {
+  ServerNotifier({
+    bool autoConnect = true,
+    ApiServiceFactory? apiFactory,
+  }) : _apiFactory = apiFactory ?? _defaultApiFactory,
+       super(const ServerState()) {
     if (autoConnect) {
       _tryAutoConnect();
     }
   }
 
   @visibleForTesting
-  ServerNotifier.test([super.state = const ServerState()]);
+  ServerNotifier.test([ServerState initialState = const ServerState()])
+    : _apiFactory = _defaultApiFactory,
+      super(initialState);
+
+  @visibleForTesting
+  ServerNotifier.testWithApiFactory(
+    ServerState initialState, {
+    required ApiServiceFactory apiFactory,
+  }) : _apiFactory = apiFactory,
+       super(initialState);
+
+  static ApiService _defaultApiFactory(ServerConfig config) {
+    return ApiService(baseUrl: config.baseUrl, authToken: config.token);
+  }
 
   Future<void> _tryAutoConnect() async {
     try {
       final config =
           _testOverrideConfig() ?? ServerConfig(host: 'localhost', port: 7680);
-      final probe = ApiService(baseUrl: config.baseUrl);
+      final probe = _apiFactory(config);
       try {
         await probe.getInfo().timeout(const Duration(seconds: 2));
       } finally {
@@ -116,28 +147,52 @@ class ServerNotifier extends StateNotifier<ServerState> {
   }
 
   Future<void> connect(ServerConfig config) async {
-    _connectionGeneration++;
-    final api = ApiService(baseUrl: config.baseUrl, authToken: config.token);
+    final previousState = state;
+    final previousApi = previousState.api;
+    final generation = ++_connectionGeneration;
+    final api = _apiFactory(config);
 
     try {
       await api.getInfo();
-      state = state.copyWith(
+      final snapshot = await _loadSnapshot(api);
+      if (_connectionGeneration != generation) {
+        api.dispose();
+        return;
+      }
+
+      _refreshTimer?.cancel();
+      if (!identical(previousApi, api)) {
+        previousApi?.dispose();
+      }
+
+      state = previousState.copyWith(
         config: config,
         api: api,
         isConnected: true,
+        isStale: false,
         error: null,
+        groups: snapshot.groups,
+        sessions: snapshot.sessions,
+        sshHosts: snapshot.sshHosts,
       );
       TestEventLogger.instance.log('server_connected', {
         'host': config.host,
         'port': config.port,
         'use_tls': config.useTls,
       });
-      await refresh();
-
-      _refreshTimer?.cancel();
       _refreshTimer = Timer.periodic(_refreshInterval, (_) => refresh());
     } catch (e) {
-      state = state.copyWith(
+      api.dispose();
+      if (_connectionGeneration != generation) {
+        return;
+      }
+
+      if (previousState.isConnected && previousApi != null) {
+        state = previousState.copyWith(error: e.toString());
+        return;
+      }
+
+      state = ServerState(
         config: config,
         isConnected: false,
         error: e.toString(),
@@ -152,11 +207,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
     final generation = _connectionGeneration;
 
     try {
-      final results = await Future.wait([
-        api.listGroups(),
-        api.listSessions(),
-        api.listSshHosts(),
-      ]);
+      final snapshot = await _loadSnapshot(api);
 
       if (_connectionGeneration != generation) return;
 
@@ -164,12 +215,12 @@ class ServerNotifier extends StateNotifier<ServerState> {
         currentGroups: state.groups,
         currentSessions: state.sessions,
         currentSshHosts: state.sshHosts,
-        refreshedGroups: results[0] as List<Group>,
-        refreshedSessions: results[1] as List<Session>,
-        refreshedSshHosts: results[2] as List<SshHost>,
+        refreshedGroups: snapshot.groups,
+        refreshedSessions: snapshot.sessions,
+        refreshedSshHosts: snapshot.sshHosts,
       );
 
-      if (!diff.hasChanges) {
+      if (!diff.hasChanges && !state.isStale && state.error == null) {
         return;
       }
 
@@ -179,6 +230,8 @@ class ServerNotifier extends StateNotifier<ServerState> {
         sessions: diff.mergedSessions,
         sessionsStructureChanged: diff.sessionsStructureChanged,
         sshHosts: diff.sshHosts,
+        isStale: false,
+        error: null,
       );
 
       TestEventLogger.instance.log('sessions_refreshed', {
@@ -186,8 +239,9 @@ class ServerNotifier extends StateNotifier<ServerState> {
         'session_count': diff.mergedSessions.length,
         'session_names': diff.mergedSessions.map((s) => s.name).toList(),
       });
-    } catch (_) {
-      // Silently fail on refresh — data may be stale
+    } catch (error) {
+      if (_connectionGeneration != generation) return;
+      state = state.copyWith(isStale: true, error: error.toString());
     }
   }
 
@@ -400,6 +454,8 @@ class ServerNotifier extends StateNotifier<ServerState> {
     List<Session>? sessions,
     bool sessionsStructureChanged = false,
     List<SshHost>? sshHosts,
+    bool? isStale,
+    Object? error = ServerState._noChange,
   }) {
     if (groupsStructureChanged) {
       _groupStructureVersion++;
@@ -411,6 +467,8 @@ class ServerNotifier extends StateNotifier<ServerState> {
       groups: groups,
       sessions: sessions,
       sshHosts: sshHosts,
+      isStale: isStale,
+      error: error,
     );
     return _StructureVersion(
       groupVersion: _groupStructureVersion,
@@ -496,6 +554,26 @@ class ServerNotifier extends StateNotifier<ServerState> {
     _refreshTimer?.cancel();
     state.api?.dispose();
     super.dispose();
+  }
+}
+
+extension on ServerNotifier {
+  Future<({
+    List<Group> groups,
+    List<Session> sessions,
+    List<SshHost> sshHosts,
+  })> _loadSnapshot(ApiService api) async {
+    final results = await Future.wait([
+      api.listGroups(),
+      api.listSessions(),
+      api.listSshHosts(),
+    ]);
+
+    return (
+      groups: results[0] as List<Group>,
+      sessions: results[1] as List<Session>,
+      sshHosts: results[2] as List<SshHost>,
+    );
   }
 }
 

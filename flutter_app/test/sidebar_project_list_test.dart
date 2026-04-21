@@ -242,6 +242,54 @@ void main() {
       ['beta', 'alpha'],
     );
   });
+
+  testWidgets('sidebar shows stale banner and disables create actions', (
+    tester,
+  ) async {
+    final alpha = _group('alpha', 'Alpha', 0);
+    final container = ProviderContainer(
+      overrides: [
+        serverProvider.overrideWith(
+          (ref) => ServerNotifier.test(
+            ServerState(
+              isConnected: true,
+              isStale: true,
+              error: 'refresh failed',
+              groups: [alpha],
+              sessions: const [],
+            ),
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: Scaffold(body: SizedBox(width: 280, child: Sidebar())),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Showing stale data'), findsOneWidget);
+    expect(find.text('Alpha'), findsOneWidget);
+    final newGroupButton = find.ancestor(
+      of: find.byIcon(Icons.create_new_folder_outlined),
+      matching: find.byType(IconButton),
+    );
+    final newSessionButton = find.ancestor(
+      of: find.byIcon(Icons.add),
+      matching: find.byType(IconButton),
+    );
+    expect(tester.widget<IconButton>(newGroupButton).onPressed, isNull);
+    expect(
+      tester.widget<IconButton>(newSessionButton).onPressed,
+      isNull,
+    );
+  });
 }
 
 class _SidebarTestServerNotifier extends ServerNotifier {

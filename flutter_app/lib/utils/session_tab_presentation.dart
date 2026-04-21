@@ -14,21 +14,16 @@ SessionTabPresentation deriveSessionTabPresentation(
   Session session,
   Map<String, String> sessionTitles,
 ) {
-  switch (session.foregroundProcess) {
-    case 'claude':
-      return SessionTabPresentation(
-        primaryTitle: 'Claude Code',
-        secondaryLabel: sessionTitles[session.id] ?? session.name,
-      );
-    case 'codex':
-      return SessionTabPresentation(
-        primaryTitle: 'Codex',
-        secondaryLabel: sessionTitles[session.id] ?? session.name,
-      );
-    default:
-      return SessionTabPresentation(
-        primaryTitle: sessionTitles[session.id] ?? session.name,
-        secondaryLabel: null,
-      );
-  }
+  final secondary =
+      (session.foregroundProcess == 'claude' ||
+              session.foregroundProcess == 'codex') &&
+              session.oscTitle != null &&
+              session.oscTitle!.isNotEmpty
+          ? session.oscTitle
+          : null;
+
+  return SessionTabPresentation(
+    primaryTitle: session.name,
+    secondaryLabel: secondary,
+  );
 }
