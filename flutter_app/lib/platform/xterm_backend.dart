@@ -24,6 +24,7 @@ class XtermBackend implements TerminalBackend {
     String? command, // ignored: server already knows the shell from DB
     String? cwd, // ignored: server already knows the cwd from DB
     required bool isActive,
+    bool isVisibleInUI = true,
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
     ForegroundChangedCallback? onForegroundChanged,

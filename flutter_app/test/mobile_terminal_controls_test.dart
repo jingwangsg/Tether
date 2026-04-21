@@ -379,6 +379,7 @@ class _FakeTerminalBackend implements TerminalBackend {
     String? command,
     String? cwd,
     required bool isActive,
+    bool isVisibleInUI = true,
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
     ForegroundChangedCallback? onForegroundChanged,

@@ -145,6 +145,8 @@ final class TerminalView: NSView {
     private var reactivationScrollFlushWorkItem: DispatchWorkItem?
     private var loadedStartOffsetBytes: UInt64 = 0
     private var totalScrollbackBytes: UInt64 = 0
+    private var isActiveInUI = true
+    private var isVisibleInUI = true
 
     init(
         sessionId: String,
@@ -295,6 +297,8 @@ final class TerminalView: NSView {
     private func configureCurrentSurface(_ surface: TerminalSurfaceView) {
         surface.setEventSink(eventSink)
         surface.setInteractive(true)
+        surface.setVisibleInUI(isVisibleInUI)
+        surface.setActive(isActiveInUI && isVisibleInUI)
         surface.scrollbackInfoHandler = { [weak self] info in
             guard let self else { return }
             self.loadedStartOffsetBytes = info.loadedFrom
@@ -388,6 +392,7 @@ final class TerminalView: NSView {
     }
 
     func setActive(_ active: Bool) {
+        isActiveInUI = active
         reactivationScrollFlushWorkItem?.cancel()
         reactivationScrollFlushWorkItem = nil
         switch scrollbarCoordinator.setActive(active) {
@@ -395,12 +400,23 @@ final class TerminalView: NSView {
             synchronizeScrollView(forceScrollOffset: true)
             synchronizeSurfaceView()
             scheduleDeferredScrollbarFlushIfNeeded()
-            surfaceView.setActive(true)
+            surfaceView.setActive(active && isVisibleInUI)
             return
         case .deferred:
             break
         }
-        surfaceView.setActive(active)
+        surfaceView.setActive(active && isVisibleInUI)
+    }
+
+    func setVisibleInUI(_ visible: Bool) {
+        guard isVisibleInUI != visible else { return }
+        isVisibleInUI = visible
+        surfaceView.setVisibleInUI(visible)
+        surfaceView.setActive(isActiveInUI && visible)
+        if visible && isActiveInUI {
+            synchronizeScrollView(forceScrollOffset: true)
+            synchronizeSurfaceView()
+        }
     }
 
     func setImagePasteBridgeEnabled(_ enabled: Bool) {
@@ -628,6 +644,8 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     private var focused = false
     private var suppressNextLeftMouseUp = false
     private var imagePasteBridgeEnabled = false
+    private var isActiveInUI = true
+    private var isVisibleInUI = true
     private var metadataHandle: FileHandle?
     private var metadataMonitor: DispatchSourceFileSystemObject?
     private var metadataBuffer = Data()
@@ -694,6 +712,7 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         let scaledBounds = convertToBacking(bounds)
         ghostty_surface_set_size(s, UInt32(scaledBounds.width), UInt32(scaledBounds.height))
         TerminalApp.shared.registerSurface(s, userdata: surfaceUserdata)
+        applyPresentationState()
         ghostty_surface_draw(s)
         observeNotifications()
         updateEventMonitor()
@@ -813,7 +832,8 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     }
 
     private func updateEventMonitor() {
-        if interactionEnabled {
+        let shouldMonitor = interactionEnabled && isActiveInUI && isVisibleInUI
+        if shouldMonitor {
             guard eventMonitor == nil else { return }
             eventMonitor = NSEvent.addLocalMonitorForEvents(
                 matching: [.keyUp, .leftMouseDown]
@@ -1502,12 +1522,27 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     }
 
     func setActive(_ active: Bool) {
-        guard let s = surface else { return }
-        TerminalApp.shared.setSurfaceDrawable(s, drawable: active)
-        ghostty_surface_set_occlusion(s, active)
+        isActiveInUI = active
         if !active {
             focusDidChange(false)
         }
+        applyPresentationState()
+        updateEventMonitor()
+    }
+
+    func setVisibleInUI(_ visible: Bool) {
+        isVisibleInUI = visible
+        if !visible {
+            focusDidChange(false)
+        }
+        applyPresentationState()
+        updateEventMonitor()
+    }
+
+    private func applyPresentationState() {
+        guard let s = surface else { return }
+        TerminalApp.shared.setSurfaceDrawable(s, drawable: isVisibleInUI)
+        ghostty_surface_set_occlusion(s, isVisibleInUI)
     }
 
     func setImagePasteBridgeEnabled(_ enabled: Bool) {

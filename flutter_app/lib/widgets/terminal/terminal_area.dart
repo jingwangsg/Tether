@@ -1,8 +1,7 @@
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../models/session.dart';
 import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
@@ -26,7 +25,10 @@ class TerminalArea extends ConsumerStatefulWidget {
 }
 
 class TerminalAreaState extends ConsumerState<TerminalArea> {
+  static const int _maxRetainedTerminalViews = 6;
+
   final Map<String, TerminalController> _terminalControllers = {};
+  final List<String> _retainedSessionOrder = <String>[];
   final VolumeKeyService _volumeKeys = VolumeKeyService();
   final PasteService _pasteService = PasteService();
   Set<String>? _pendingInteractiveSessionIds;
@@ -84,8 +86,10 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     ) {
       if (previous != null && previous != next) {
         _warmSessionId = previous;
+        _touchRetainedSession(previous);
       }
       if (next != null) {
+        _touchRetainedSession(next);
         _ackAttentionIfNeeded(next);
       }
     });
@@ -114,14 +118,14 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       showKeyBar: uiState.showKeyBar,
     );
 
+    final interactiveSessions =
+        sessions.where((s) => isSessionInteractive(s, groups)).toList();
+    final interactiveSessionIds = interactiveSessions.map((s) => s.id).toSet();
+
     // Derive project sessions: filter to selected project, interactive only, sorted.
     final projectSessions =
-        sessions
-            .where(
-              (s) =>
-                  s.groupId == selectedProjectId &&
-                  isSessionInteractive(s, groups),
-            )
+        interactiveSessions
+            .where((s) => s.groupId == selectedProjectId)
             .toList()
           ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
 
@@ -148,19 +152,21 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       }
     }
 
-    // Prune maps for sessions that are no longer in the project to prevent unbounded growth.
-    final projectIds = projectSessions.map((s) => s.id).toSet();
-    _terminalControllers.removeWhere((id, _) => !projectIds.contains(id));
-    if (_warmSessionId != null && !projectIds.contains(_warmSessionId)) {
-      _warmSessionId = null;
-    }
-
-    // Only mount the active session and the previous ("warm") session to bound
-    // the number of live terminal views (platform views, controllers, callbacks).
-    final retainedSessionIds = <String>{
-      if (activeId != null) activeId,
-      if (_warmSessionId != null) _warmSessionId!,
+    _terminalControllers.removeWhere(
+      (id, _) => !interactiveSessionIds.contains(id),
+    );
+    final retainedSessionIds = _resolveRetainedSessionIds(
+      interactiveSessionIds: interactiveSessionIds,
+      activeSessionId: activeId,
+    );
+    final sessionsById = {
+      for (final session in interactiveSessions) session.id: session,
     };
+    final retainedSessions = _retainedSessionOrder
+        .where(retainedSessionIds.contains)
+        .map((id) => sessionsById[id])
+        .whereType<Session>()
+        .toList(growable: false);
 
     Widget content;
     if (projectSessions.isEmpty) {
@@ -198,62 +204,61 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    ...projectSessions
-                        .where((s) => retainedSessionIds.contains(s.id))
-                        .map((session) {
-                          final isActive = session.id == activeId;
-                          final group =
-                              groups
-                                  .where((g) => g.id == session.groupId)
-                                  .firstOrNull;
+                    ...retainedSessions.map((session) {
+                      final isActive = session.id == activeId;
+                      final isVisibleInUI = isActive;
+                      final group =
+                          groups
+                              .where((g) => g.id == session.groupId)
+                              .firstOrNull;
 
-                          final terminalController = _terminalControllers
-                              .putIfAbsent(session.id, TerminalController.new);
+                      final terminalController = _terminalControllers
+                          .putIfAbsent(session.id, TerminalController.new);
 
-                          return Offstage(
-                            offstage: !isActive,
-                            child: widget.backend.createTerminalWidget(
-                              key: ValueKey(
-                                '${widget.backend.platformId}:${session.id}',
+                      return Offstage(
+                        offstage: !isVisibleInUI,
+                        child: widget.backend.createTerminalWidget(
+                          key: ValueKey(
+                            '${widget.backend.platformId}:${session.id}',
+                          ),
+                          sessionId: session.id,
+                          controller: terminalController,
+                          serverConfig: serverConfig,
+                          command: session.shell,
+                          cwd: session.cwd,
+                          isActive: isActive,
+                          isVisibleInUI: isVisibleInUI,
+                          imagePasteBridgeEnabled: shouldEnableImagePasteBridge(
+                            session: session,
+                            group: group,
+                          ),
+                          onSessionExited: () {
+                            ref.read(serverProvider.notifier).refresh();
+                          },
+                          onForegroundChanged:
+                              (
+                                process,
+                                oscTitle,
+                                attentionSeq,
+                                attentionAckSeq,
+                              ) => _handleSessionStatusUpdate(
+                                sessionId: session.id,
+                                process: process,
+                                oscTitle: oscTitle,
+                                attentionSeq: attentionSeq,
+                                attentionAckSeq: attentionAckSeq,
+                                isActive: isActive,
                               ),
+                          onClipboardImage: (data, mimeType) {
+                            return _handleClipboardImage(
                               sessionId: session.id,
-                              controller: terminalController,
-                              serverConfig: serverConfig,
-                              command: session.shell,
-                              cwd: session.cwd,
-                              isActive: isActive,
-                              imagePasteBridgeEnabled:
-                                  shouldEnableImagePasteBridge(
-                                    session: session,
-                                    group: group,
-                                  ),
-                              onSessionExited: () {
-                                ref.read(serverProvider.notifier).refresh();
-                              },
-                              onForegroundChanged:
-                                  (
-                                    process,
-                                    oscTitle,
-                                    attentionSeq,
-                                    attentionAckSeq,
-                                  ) => _handleSessionStatusUpdate(
-                                    sessionId: session.id,
-                                    process: process,
-                                    oscTitle: oscTitle,
-                                    attentionSeq: attentionSeq,
-                                    attentionAckSeq: attentionAckSeq,
-                                    isActive: isActive,
-                                  ),
-                              onClipboardImage: (data, mimeType) {
-                                return _handleClipboardImage(
-                                  sessionId: session.id,
-                                  data: data,
-                                  mimeType: mimeType,
-                                );
-                              },
-                            ),
-                          );
-                        }),
+                              data: data,
+                              mimeType: mimeType,
+                            );
+                          },
+                        ),
+                      );
+                    }),
                     // Reserve space at the bottom for the MobileKeyBar
                     // overlay (and the soft keyboard when it's up) so the
                     // draggable floating nav pad's default position never
@@ -407,6 +412,57 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       _pendingInteractiveSessionIds = null;
       ref.read(sessionProvider.notifier).cleanupSessions(validIds);
     });
+  }
+
+  void _touchRetainedSession(String sessionId) {
+    _retainedSessionOrder.remove(sessionId);
+    _retainedSessionOrder.insert(0, sessionId);
+  }
+
+  void _ensureRetainedSession(String sessionId) {
+    if (_retainedSessionOrder.contains(sessionId)) return;
+    _retainedSessionOrder.insert(0, sessionId);
+  }
+
+  Set<String> _resolveRetainedSessionIds({
+    required Set<String> interactiveSessionIds,
+    required String? activeSessionId,
+  }) {
+    _retainedSessionOrder.removeWhere(
+      (id) => !interactiveSessionIds.contains(id),
+    );
+    if (_warmSessionId != null &&
+        !interactiveSessionIds.contains(_warmSessionId)) {
+      _warmSessionId = null;
+    }
+
+    if (activeSessionId != null &&
+        interactiveSessionIds.contains(activeSessionId)) {
+      _touchRetainedSession(activeSessionId);
+    }
+    if (_warmSessionId != null &&
+        interactiveSessionIds.contains(_warmSessionId)) {
+      _ensureRetainedSession(_warmSessionId!);
+    }
+
+    final pinnedIds = <String>{
+      if (activeSessionId != null &&
+          interactiveSessionIds.contains(activeSessionId))
+        activeSessionId,
+      if (_warmSessionId != null &&
+          interactiveSessionIds.contains(_warmSessionId))
+        _warmSessionId!,
+    };
+
+    while (_retainedSessionOrder.length > _maxRetainedTerminalViews) {
+      final evictionIndex = _retainedSessionOrder.lastIndexWhere(
+        (id) => !pinnedIds.contains(id),
+      );
+      if (evictionIndex == -1) break;
+      _retainedSessionOrder.removeAt(evictionIndex);
+    }
+
+    return _retainedSessionOrder.toSet();
   }
 
   void _handleSessionStatusUpdate({

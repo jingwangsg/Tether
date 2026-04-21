@@ -34,7 +34,56 @@ Finder _terminalFinder(String sessionId) =>
     find.byKey(ValueKey('terminal-$sessionId'), skipOffstage: false);
 
 void main() {
-  testWidgets('terminal area keeps only active and previous session mounted', (
+  testWidgets('terminal area keeps terminals mounted across project switches', (
+    tester,
+  ) async {
+    final alpha = _group('alpha');
+    final beta = _group('beta');
+    final sessions = [_session('a-1', alpha.id), _session('b-1', beta.id)];
+
+    final container = ProviderContainer(
+      overrides: [
+        serverProvider.overrideWith(
+          (ref) => ServerNotifier.test(
+            ServerState(
+              isConnected: true,
+              groups: [alpha, beta],
+              sessions: sessions,
+            ),
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    container.read(sessionProvider.notifier)
+      ..selectProject(alpha.id)
+      ..setActiveSession(projectId: alpha.id, sessionId: 'a-1');
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: Scaffold(body: TerminalArea(backend: _RetentionBackend())),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(_terminalFinder('a-1'), findsOneWidget);
+    expect(_terminalFinder('b-1'), findsNothing);
+
+    container.read(sessionProvider.notifier)
+      ..selectProject(beta.id)
+      ..setActiveSession(projectId: beta.id, sessionId: 'b-1');
+    await tester.pump();
+
+    // Previous project's terminal stays mounted and hidden instead of being destroyed.
+    expect(_terminalFinder('a-1'), findsOneWidget);
+    expect(_terminalFinder('b-1'), findsOneWidget);
+  });
+
+  testWidgets('terminal area evicts least-recently-used terminals after cap', (
     tester,
   ) async {
     final alpha = _group('alpha');
@@ -42,6 +91,10 @@ void main() {
       _session('a-1', alpha.id),
       _session('a-2', alpha.id),
       _session('a-3', alpha.id),
+      _session('a-4', alpha.id),
+      _session('a-5', alpha.id),
+      _session('a-6', alpha.id),
+      _session('a-7', alpha.id),
     ];
 
     final container = ProviderContainer(
@@ -69,30 +122,21 @@ void main() {
     );
     await tester.pump();
 
-    // Only active session a-1 mounted; no warm session yet.
-    expect(_terminalFinder('a-1'), findsOneWidget);
-    expect(_terminalFinder('a-2'), findsNothing);
-    expect(_terminalFinder('a-3'), findsNothing);
+    for (final session in sessions.skip(1)) {
+      container
+          .read(sessionProvider.notifier)
+          .setActiveSession(projectId: alpha.id, sessionId: session.id);
+      await tester.pump();
+    }
 
-    // Switch to a-2: a-1 becomes warm, a-2 becomes active.
-    container
-        .read(sessionProvider.notifier)
-        .setActiveSession(projectId: alpha.id, sessionId: 'a-2');
-    await tester.pump();
-
-    expect(_terminalFinder('a-1'), findsOneWidget);
-    expect(_terminalFinder('a-2'), findsOneWidget);
-    expect(_terminalFinder('a-3'), findsNothing);
-
-    // Switch to a-3: a-2 becomes warm, a-1 is evicted.
-    container
-        .read(sessionProvider.notifier)
-        .setActiveSession(projectId: alpha.id, sessionId: 'a-3');
-    await tester.pump();
-
+    // Retention cap is 6. a-1 is the oldest and should be evicted.
     expect(_terminalFinder('a-1'), findsNothing);
     expect(_terminalFinder('a-2'), findsOneWidget);
     expect(_terminalFinder('a-3'), findsOneWidget);
+    expect(_terminalFinder('a-4'), findsOneWidget);
+    expect(_terminalFinder('a-5'), findsOneWidget);
+    expect(_terminalFinder('a-6'), findsOneWidget);
+    expect(_terminalFinder('a-7'), findsOneWidget);
   });
 }
 
@@ -114,6 +158,7 @@ class _RetentionBackend implements TerminalBackend {
     String? command,
     String? cwd,
     required bool isActive,
+    bool isVisibleInUI = true,
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
     ForegroundChangedCallback? onForegroundChanged,

@@ -12,6 +12,7 @@ void main() {
   late _FakeMacosPlatformViewsController platformViews;
   final List<String> terminalActions = <String>[];
   final List<bool> activationChanges = <bool>[];
+  final List<bool> visibilityChanges = <bool>[];
 
   setUp(() {
     platformViews =
@@ -19,6 +20,7 @@ void main() {
           ..registerViewType('dev.tether/terminal_surface');
     terminalActions.clear();
     activationChanges.clear();
+    visibilityChanges.clear();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
           const MethodChannel('dev.tether/terminal_input'),
@@ -30,6 +32,10 @@ void main() {
             if (call.method == 'setActive') {
               final args = call.arguments as Map<dynamic, dynamic>;
               activationChanges.add(args['active'] as bool);
+            }
+            if (call.method == 'setVisibleInUI') {
+              final args = call.arguments as Map<dynamic, dynamic>;
+              visibilityChanges.add(args['visible'] as bool);
             }
             return null;
           },
@@ -111,6 +117,7 @@ void main() {
               controller: controller,
               serverConfig: ServerConfig(host: 'localhost', port: 7680),
               isActive: isActive,
+              isVisibleInUI: true,
               metadataWsFactory: (_) => _FakeWebSocketService(),
             ),
           ),
@@ -136,13 +143,57 @@ void main() {
     expect(activationChanges, <bool>[false, true]);
   });
 
-  testWidgets('metadata websocket disconnects while inactive and reconnects on resume', (
+  testWidgets(
+    'metadata websocket disconnects while inactive and reconnects on resume',
+    (tester) async {
+      final controller = TerminalController();
+      final factory = _TrackingMetadataFactory();
+
+      Widget buildTerminal({required bool isActive}) {
+        return MaterialApp(
+          home: Center(
+            child: SizedBox(
+              width: 640,
+              height: 480,
+              child: TerminalView(
+                sessionId: 'session-1',
+                controller: controller,
+                serverConfig: ServerConfig(host: 'localhost', port: 7680),
+                isActive: isActive,
+                isVisibleInUI: true,
+                metadataWsFactory: factory.call,
+              ),
+            ),
+          ),
+        );
+      }
+
+      await tester.pumpWidget(buildTerminal(isActive: true));
+      await tester.pump();
+
+      expect(factory.instances, hasLength(1));
+      expect(factory.instances.single.connectCalls, 1);
+
+      await tester.pumpWidget(buildTerminal(isActive: false));
+      await tester.pump();
+
+      expect(factory.instances.single.disposeCalls, 1);
+
+      await tester.pumpWidget(buildTerminal(isActive: true));
+      await tester.pump();
+
+      expect(factory.instances, hasLength(2));
+      expect(factory.instances.last.connectCalls, 1);
+      expect(platformViews.createCount, 1);
+    },
+  );
+
+  testWidgets('visibility changes do not recreate native AppKitView', (
     tester,
   ) async {
     final controller = TerminalController();
-    final factory = _TrackingMetadataFactory();
 
-    Widget buildTerminal({required bool isActive}) {
+    Widget buildTerminal({required bool isVisibleInUI}) {
       return MaterialApp(
         home: Center(
           child: SizedBox(
@@ -152,31 +203,31 @@ void main() {
               sessionId: 'session-1',
               controller: controller,
               serverConfig: ServerConfig(host: 'localhost', port: 7680),
-              isActive: isActive,
-              metadataWsFactory: factory.call,
+              isActive: true,
+              isVisibleInUI: isVisibleInUI,
+              metadataWsFactory: (_) => _FakeWebSocketService(),
             ),
           ),
         ),
       );
     }
 
-    await tester.pumpWidget(buildTerminal(isActive: true));
+    await tester.pumpWidget(buildTerminal(isVisibleInUI: true));
     await tester.pump();
 
-    expect(factory.instances, hasLength(1));
-    expect(factory.instances.single.connectCalls, 1);
-
-    await tester.pumpWidget(buildTerminal(isActive: false));
-    await tester.pump();
-
-    expect(factory.instances.single.disposeCalls, 1);
-
-    await tester.pumpWidget(buildTerminal(isActive: true));
-    await tester.pump();
-
-    expect(factory.instances, hasLength(2));
-    expect(factory.instances.last.connectCalls, 1);
     expect(platformViews.createCount, 1);
+    expect(platformViews.disposeCount, 0);
+    final initialViewId = platformViews.views.values.single.id;
+
+    await tester.pumpWidget(buildTerminal(isVisibleInUI: false));
+    await tester.pump();
+    await tester.pumpWidget(buildTerminal(isVisibleInUI: true));
+    await tester.pump();
+
+    expect(platformViews.createCount, 1);
+    expect(platformViews.disposeCount, 0);
+    expect(platformViews.views.values.single.id, initialViewId);
+    expect(visibilityChanges, <bool>[false, true]);
   });
 }
 

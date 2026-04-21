@@ -37,6 +37,7 @@ class _FakeTerminalBackend implements TerminalBackend {
     String? command,
     String? cwd,
     required bool isActive,
+    bool isVisibleInUI = true,
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
     ForegroundChangedCallback? onForegroundChanged,
@@ -99,11 +100,7 @@ void main() {
     await tester.pump();
 
     notifier.replaceState(
-      ServerState(
-        isConnected: true,
-        groups: [alpha],
-        sessions: const [],
-      ),
+      ServerState(isConnected: true, groups: [alpha], sessions: const []),
     );
     await tester.pump();
     await tester.pump();

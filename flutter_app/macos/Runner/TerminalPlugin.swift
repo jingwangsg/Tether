@@ -7,6 +7,7 @@ import Foundation
 ///   MethodChannel "dev.tether/terminal_input":
 ///     sendText({viewId, text})
 ///     setActive({viewId, active})
+///     setVisibleInUI({viewId, visible})
 ///     setImagePasteBridgeEnabled({viewId, enabled})
 ///     performAction({viewId, action})
 ///   EventChannel "dev.tether/terminal_events/{viewId}":
@@ -99,6 +100,12 @@ class TerminalPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFactory {
         case "setActive":
             if let active = args["active"] as? Bool {
                 view.setActive(active)
+            }
+            result(nil)
+
+        case "setVisibleInUI":
+            if let visible = args["visible"] as? Bool {
+                view.setVisibleInUI(visible)
             }
             result(nil)
 

@@ -267,7 +267,6 @@ class TerminalApp {
     @objc private func applicationDidBecomeActive(notification: NSNotification) {
         setAppFocus(true)
         writeTestLog(event: "app_focus_changed", fields: ["focused": true])
-        redrawDrawableSurfaces()
     }
 
     @objc private func applicationDidResignActive(notification: NSNotification) {

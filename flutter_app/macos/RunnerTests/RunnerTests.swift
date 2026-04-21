@@ -661,7 +661,7 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(completed)
   }
 
-  func testTerminalAppReactivationRestoresGhosttyFocusAndRedrawsSurfaces() {
+  func testTerminalAppReactivationRestoresGhosttyFocusWithoutForcedRedraw() {
     TerminalApp.shared.setup()
     guard let surface = ghostty_surface_t(bitPattern: 0x4321) else {
       XCTFail("failed to construct fake surface pointer")
@@ -696,7 +696,7 @@ class RunnerTests: XCTestCase {
     )
 
     XCTAssertEqual(focusValues, [false, true])
-    XCTAssertEqual(redrawCount, 1)
+    XCTAssertEqual(redrawCount, 0)
   }
 
   func testTerminalAppReactivationLogsAppFocusTransitions() throws {

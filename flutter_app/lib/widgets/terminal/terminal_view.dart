@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,6 +19,7 @@ class TerminalView extends StatefulWidget {
   final TerminalController controller;
   final ServerConfig? serverConfig;
   final bool isActive;
+  final bool isVisibleInUI;
   final bool imagePasteBridgeEnabled;
   final VoidCallback? onSessionExited;
   final ForegroundChangedCallback? onForegroundChanged;
@@ -33,6 +33,7 @@ class TerminalView extends StatefulWidget {
     required this.controller,
     required this.serverConfig,
     required this.isActive,
+    this.isVisibleInUI = true,
     this.imagePasteBridgeEnabled = false,
     this.onSessionExited,
     this.onForegroundChanged,
@@ -90,6 +91,12 @@ class TerminalViewState extends State<TerminalView> {
       _inputChannel.invokeMethod('setActive', {
         'viewId': _viewId,
         'active': widget.isActive,
+      });
+    }
+    if (oldWidget.isVisibleInUI != widget.isVisibleInUI && _viewId != null) {
+      _inputChannel.invokeMethod('setVisibleInUI', {
+        'viewId': _viewId,
+        'visible': widget.isVisibleInUI,
       });
     }
     if (oldWidget.imagePasteBridgeEnabled != widget.imagePasteBridgeEnabled &&
@@ -201,6 +208,12 @@ class TerminalViewState extends State<TerminalView> {
       _inputChannel.invokeMethod('setActive', {
         'viewId': viewId,
         'active': false,
+      });
+    }
+    if (!widget.isVisibleInUI) {
+      _inputChannel.invokeMethod('setVisibleInUI', {
+        'viewId': viewId,
+        'visible': false,
       });
     }
     _inputChannel.invokeMethod('setImagePasteBridgeEnabled', {
