@@ -33,6 +33,7 @@ class Sidebar extends ConsumerWidget {
     final sessions = ref.watch(serverProvider.select((s) => s.sessions));
     final sshHosts = ref.watch(serverProvider.select((s) => s.sshHosts));
     final isConnected = ref.watch(serverProvider.select((s) => s.isConnected));
+    final isStale = ref.watch(serverProvider.select((s) => s.isStale));
     final error = ref.watch(serverProvider.select((s) => s.error));
     final navState = ref.watch(sessionProvider);
     final uiState = ref.watch(uiProvider);
@@ -54,19 +55,26 @@ class Sidebar extends ConsumerWidget {
       child: Column(
         children: [
           if (safeTop > 0) SizedBox(height: safeTop),
-          _buildHeader(context, ref, isConnected),
+          _buildHeader(context, ref, isConnected, isStale),
           const Divider(height: 1, color: Colors.white12),
           Expanded(
             child:
                 isConnected
-                    ? _buildContent(
-                        context,
-                        ref,
-                        groups: groups,
-                        sessions: visible,
-                        sshHosts: sshHosts,
-                        navState: navState,
-                        projectStatuses: projectStatuses,
+                    ? Column(
+                        children: [
+                          if (isStale) _buildStaleBanner(error),
+                          Expanded(
+                            child: _buildContent(
+                              context,
+                              ref,
+                              groups: groups,
+                              sessions: visible,
+                              sshHosts: sshHosts,
+                              navState: navState,
+                              projectStatuses: projectStatuses,
+                            ),
+                          ),
+                        ],
                       )
                     : _buildDisconnected(context, ref, error),
           ),
@@ -75,7 +83,13 @@ class Sidebar extends ConsumerWidget {
     );
   }
 
-  Widget _buildHeader(BuildContext context, WidgetRef ref, bool isConnected) {
+  Widget _buildHeader(
+    BuildContext context,
+    WidgetRef ref,
+    bool isConnected,
+    bool isStale,
+  ) {
+    final allowMutations = isConnected && !isStale;
     return Container(
       height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -106,7 +120,10 @@ class Sidebar extends ConsumerWidget {
               icon: const Icon(Icons.create_new_folder_outlined, size: 18),
               color: Colors.white54,
               tooltip: 'New Group',
-              onPressed: () => _showCreateGroupDialog(context, ref),
+              onPressed:
+                  allowMutations
+                      ? () => _showCreateGroupDialog(context, ref)
+                      : null,
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
             ),
@@ -114,11 +131,41 @@ class Sidebar extends ConsumerWidget {
               icon: const Icon(Icons.add, size: 18),
               color: Colors.white54,
               tooltip: 'New Session',
-              onPressed: () => _createSession(context, ref),
+              onPressed:
+                  allowMutations ? () => _createSession(context, ref) : null,
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
             ),
           ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStaleBanner(String? error) {
+    return Container(
+      key: const ValueKey('sidebar-stale-banner'),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      color: const Color(0x33C48A00),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Showing stale data',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          if (error case final String message when message.isNotEmpty)
+            Text(
+              message,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white70, fontSize: 11),
+            ),
         ],
       ),
     );

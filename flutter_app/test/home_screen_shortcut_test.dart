@@ -118,9 +118,8 @@ void main() {
     tester,
   ) async {
     final group = _group('local');
-    final session = _session('session-2', groupId: group.id, name: 'beta');
     final container = _container(
-      ServerState(isConnected: true, groups: [group], sessions: [session]),
+      ServerState(isConnected: true, groups: [group], sessions: const []),
     );
     addTearDown(container.dispose);
 

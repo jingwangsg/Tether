@@ -49,6 +49,7 @@ fn test_state_with_terminal(terminal: TerminalSection) -> AppState {
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let (status_tx, _) = tokio::sync::broadcast::channel(64);
+    let (semantic_event_tx, semantic_event_rx) = tokio::sync::mpsc::channel(1024);
 
     AppState {
         inner: Arc::new(AppStateInner {
@@ -60,8 +61,8 @@ fn test_state_with_terminal(terminal: TerminalSection) -> AppState {
             remote_manager: RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
-            semantic_event_tx: tokio::sync::mpsc::unbounded_channel().0,
-            semantic_event_rx: std::sync::Mutex::new(None),
+            semantic_event_tx,
+            semantic_event_rx: std::sync::Mutex::new(Some(semantic_event_rx)),
         }),
     }
 }
@@ -200,6 +201,7 @@ async fn attach_reconnects_and_replays_missing_remote_history() {
         default_shell: String::new(),
         scrollback_memory_kb: 1,
         scrollback_disk_max_mb: 50,
+        anti_flicker: true,
     });
     let session_id = Uuid::new_v4();
 

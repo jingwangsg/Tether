@@ -22,32 +22,33 @@ Session _session({
 );
 
 void main() {
-  test('claude detection overrides cached terminal title', () {
+  test('claude detection keeps the session name and exposes osc title separately', () {
     final presentation = deriveSessionTabPresentation(
       _session(process: 'claude', oscTitle: '· Claude Code'),
       const {'s1': 'feature/refactor-shell'},
     );
 
-    expect(presentation.primaryTitle, 'Claude Code');
-    expect(presentation.secondaryLabel, 'feature/refactor-shell');
+    expect(presentation.primaryTitle, 'session-1234');
+    expect(presentation.secondaryLabel, '· Claude Code');
   });
 
-  test('codex detection overrides cached terminal title', () {
+  test('codex detection keeps the session name and exposes osc title separately', () {
     final presentation = deriveSessionTabPresentation(
       _session(process: 'codex', oscTitle: '✱ Codex'),
       const {'s1': 'server logs'},
     );
 
-    expect(presentation.primaryTitle, 'Codex');
-    expect(presentation.secondaryLabel, 'server logs');
+    expect(presentation.primaryTitle, 'session-1234');
+    expect(presentation.secondaryLabel, '✱ Codex');
   });
 
-  test('falls back to cached terminal title when no agent is active', () {
+  test('falls back to the session name when no agent is active', () {
     final presentation = deriveSessionTabPresentation(
       _session(),
       const {'s1': 'feature/refactor-shell'},
     );
 
-    expect(presentation.primaryTitle, 'feature/refactor-shell');
+    expect(presentation.primaryTitle, 'session-1234');
+    expect(presentation.secondaryLabel, isNull);
   });
 }

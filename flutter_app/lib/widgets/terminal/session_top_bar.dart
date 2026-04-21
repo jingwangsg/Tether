@@ -76,7 +76,10 @@ class SessionTopBar extends ConsumerWidget {
             index: index,
             child: Semantics(
               identifier: 'session-top-tab-${session.id}',
-              label: presentation.primaryTitle,
+              label:
+                  presentation.secondaryLabel == null
+                      ? presentation.primaryTitle
+                      : '${presentation.primaryTitle} | ${presentation.secondaryLabel}',
               selected: isActive,
               child: InkWell(
                 onTap: () {
@@ -107,13 +110,37 @@ class SessionTopBar extends ConsumerWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(
-                        presentation.primaryTitle,
-                        style: TextStyle(
-                          color: isActive ? Colors.white : Colors.white54,
-                          fontSize: 12,
+                      Flexible(
+                        child: Text(
+                          presentation.primaryTitle,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: isActive ? Colors.white : Colors.white54,
+                            fontSize: 12,
+                          ),
                         ),
                       ),
+                      if (presentation.secondaryLabel case final String secondary) ...[
+                        const SizedBox(width: 6),
+                        Text(
+                          '|',
+                          style: TextStyle(
+                            color: isActive ? Colors.white30 : Colors.white24,
+                            fontSize: 12,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            secondary,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: isActive ? Colors.white54 : Colors.white38,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
                       if (showSessionShortcutHints && index < 9) ...[
                         const SizedBox(width: 8),
                         ShellShortcutHintBadge(
