@@ -75,7 +75,6 @@ class SessionTopBar extends ConsumerWidget {
           return PlatformReorderDragStartListener(
             key: ValueKey('session-top-tab-${session.id}'),
             index: index,
-            axis: Axis.horizontal,
             child: Material(
               color: Colors.transparent,
               child: Semantics(
@@ -124,7 +123,8 @@ class SessionTopBar extends ConsumerWidget {
                             ),
                           ),
                         ),
-                        if (presentation.secondaryLabel case final String secondary) ...[
+                        if (presentation.secondaryLabel
+                            case final String secondary) ...[
                           const SizedBox(width: 6),
                           Text(
                             '|',
@@ -139,7 +139,8 @@ class SessionTopBar extends ConsumerWidget {
                               secondary,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                color: isActive ? Colors.white54 : Colors.white38,
+                                color:
+                                    isActive ? Colors.white54 : Colors.white38,
                                 fontSize: 12,
                               ),
                             ),
@@ -148,7 +149,9 @@ class SessionTopBar extends ConsumerWidget {
                         if (showSessionShortcutHints && index < 9) ...[
                           const SizedBox(width: 8),
                           ShellShortcutHintBadge(
-                            key: ValueKey('session-shortcut-hint-${session.id}'),
+                            key: ValueKey(
+                              'session-shortcut-hint-${session.id}',
+                            ),
                             label: '${index + 1}',
                           ),
                         ],

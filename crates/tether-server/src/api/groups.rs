@@ -236,27 +236,39 @@ pub async fn batch_reorder_groups(
         return StatusCode::OK;
     }
 
-    let mut host_scope: Option<Option<String>> = None;
-    for item in &items {
+    let mut remote_scopes: std::collections::BTreeMap<String, Vec<ReorderItem>> =
+        std::collections::BTreeMap::new();
+    let mut orders = Vec::with_capacity(items.len());
+
+    for item in items {
         let group = match state.inner.db.get_group(&item.id) {
             Ok(Some(group)) => group,
             _ => return StatusCode::BAD_REQUEST,
         };
-        match &host_scope {
-            Some(scope) if *scope != group.ssh_host => return StatusCode::BAD_REQUEST,
-            None => host_scope = Some(group.ssh_host.clone()),
-            _ => {}
+
+        if let Some(host_alias) = group.ssh_host {
+            remote_scopes
+                .entry(host_alias)
+                .or_default()
+                .push(ReorderItem {
+                    id: item.id.clone(),
+                    sort_order: item.sort_order,
+                });
         }
+
+        orders.push((item.id, item.sort_order));
     }
 
-    if let Some(Some(host_alias)) = host_scope {
+    let mut sync_targets = Vec::with_capacity(remote_scopes.len());
+    for (host_alias, host_items) in &remote_scopes {
         let port = match ready_tunnel_port(&state, &host_alias) {
             Ok(port) => port,
             Err(status) => return status,
         };
+
         let response = match reqwest::Client::new()
             .post(format!("http://127.0.0.1:{port}/api/groups/reorder"))
-            .json(&items)
+            .json(host_items)
             .send()
             .await
         {
@@ -266,27 +278,17 @@ pub async fn batch_reorder_groups(
         if !response.status().is_success() {
             return StatusCode::BAD_GATEWAY;
         }
-        let orders = items
-            .iter()
-            .map(|item| (item.id.clone(), item.sort_order))
-            .collect::<Vec<_>>();
-        if let Err(error) = state.inner.db.batch_reorder_groups(&orders) {
-            tracing::warn!(
-                "Remote group reorder mirror refresh failed on {}: {}",
-                host_alias,
-                error
-            );
-        }
-        best_effort_sync_remote_host(&state, &host_alias, port, "group reorder");
-        return StatusCode::OK;
+
+        sync_targets.push((host_alias.clone(), port));
     }
 
-    let orders = items
-        .into_iter()
-        .map(|item| (item.id, item.sort_order))
-        .collect::<Vec<_>>();
     match state.inner.db.batch_reorder_groups(&orders) {
-        Ok(_) => StatusCode::OK,
+        Ok(_) => {
+            for (host_alias, port) in sync_targets {
+                best_effort_sync_remote_host(&state, &host_alias, port, "group reorder");
+            }
+            StatusCode::OK
+        }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

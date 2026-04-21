@@ -546,6 +546,153 @@ async fn test_batch_reorder_groups() {
 }
 
 #[tokio::test]
+async fn test_batch_reorder_groups_accepts_mixed_local_and_remote_scopes() {
+    let state = test_state();
+    let app = test_router(state.clone());
+    let remote_port = start_mock_remote_groups_server().await;
+    state
+        .inner
+        .remote_manager
+        .inject_ready_for_testing("devbox", remote_port);
+
+    let create_local_alpha = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/groups")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "local-alpha"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_local_alpha.status(), StatusCode::CREATED);
+    let local_alpha_body = create_local_alpha
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let local_alpha: serde_json::Value = serde_json::from_slice(&local_alpha_body).unwrap();
+    let local_alpha_id = local_alpha["id"].as_str().unwrap().to_string();
+
+    let create_remote = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/groups")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "remote-shared",
+                        "ssh_host": "devbox"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_remote.status(), StatusCode::CREATED);
+    let remote_body = create_remote
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let remote_group: serde_json::Value = serde_json::from_slice(&remote_body).unwrap();
+    let remote_group_id = remote_group["id"].as_str().unwrap().to_string();
+
+    let create_local_beta = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/groups")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "local-beta"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_local_beta.status(), StatusCode::CREATED);
+    let local_beta_body = create_local_beta
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let local_beta: serde_json::Value = serde_json::from_slice(&local_beta_body).unwrap();
+    let local_beta_id = local_beta["id"].as_str().unwrap().to_string();
+
+    let reorder_payload = serde_json::json!([
+        {"id": local_beta_id, "sort_order": 0},
+        {"id": remote_group_id, "sort_order": 1},
+        {"id": local_alpha_id, "sort_order": 2}
+    ]);
+
+    let reorder_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/groups/reorder")
+                .header("content-type", "application/json")
+                .body(Body::from(reorder_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(reorder_resp.status(), StatusCode::OK);
+
+    let groups = state.inner.db.list_groups().unwrap();
+    let local_alpha_row = groups
+        .iter()
+        .find(|group| group.id == local_alpha_id)
+        .unwrap();
+    let local_beta_row = groups
+        .iter()
+        .find(|group| group.id == local_beta_id)
+        .unwrap();
+    let remote_row = groups
+        .iter()
+        .find(|group| group.id == remote_group_id)
+        .unwrap();
+    assert_eq!(local_beta_row.sort_order, 0);
+    assert_eq!(remote_row.sort_order, 1);
+    assert_eq!(local_alpha_row.sort_order, 2);
+
+    tether_server::remote::sync::sync_remote_host(
+        &state.inner.db,
+        "devbox",
+        remote_port,
+        &state.inner.ssh_fg,
+        &state.inner.ssh_live_sessions,
+        Some(&state),
+    )
+    .await
+    .unwrap();
+
+    let post_sync_remote = state.inner.db.get_group(&remote_group_id).unwrap().unwrap();
+    assert_eq!(post_sync_remote.sort_order, 1);
+
+    cleanup_state(&state);
+}
+
+#[tokio::test]
 async fn test_create_group_with_parent() {
     let state = test_state();
     let app = test_router(state.clone());

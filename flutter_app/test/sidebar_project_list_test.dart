@@ -191,6 +191,71 @@ void main() {
     );
   });
 
+  testWidgets('sidebar renders osmo_9000 ssh badge with stable key', (
+    tester,
+  ) async {
+    final local = _group('local', 'Local', 0);
+    final remote = _remoteGroup('remote', 'Remote', 1, sshHost: 'osmo_9000');
+    final container = ProviderContainer(
+      overrides: [
+        serverProvider.overrideWith(
+          (ref) => ServerNotifier.test(
+            ServerState(isConnected: true, groups: [local, remote]),
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: Scaffold(body: SizedBox(width: 280, child: Sidebar())),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('project-ssh-badge-remote')),
+      findsOneWidget,
+    );
+    expect(find.text('osmo_9000'), findsOneWidget);
+  });
+
+  testWidgets('sidebar keeps ssh host badge visible in narrow layout', (
+    tester,
+  ) async {
+    final remote = _remoteGroup('remote', 'Remote', 0, sshHost: 'osmo_9000');
+    final container = ProviderContainer(
+      overrides: [
+        serverProvider.overrideWith(
+          (ref) => ServerNotifier.test(
+            ServerState(isConnected: true, groups: [remote]),
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: Scaffold(body: SizedBox(width: 210, child: Sidebar())),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('project-ssh-badge-remote')),
+      findsOneWidget,
+    );
+    expect(find.text('osmo_9000'), findsOneWidget);
+  });
+
   testWidgets('sidebar supports direct-drag reordering on desktop', (
     tester,
   ) async {
@@ -243,6 +308,56 @@ void main() {
     );
   });
 
+  testWidgets(
+    'sidebar supports direct-drag reordering in a scrollable project list',
+    (tester) async {
+      final groups = List.generate(
+        12,
+        (index) => _group('project-$index', 'Project $index', index),
+      );
+      final notifier = _SidebarTestServerNotifier(
+        ServerState(isConnected: true, groups: groups, sessions: const []),
+      );
+      final container = ProviderContainer(
+        overrides: [serverProvider.overrideWith((ref) => notifier)],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            theme: ThemeData(platform: TargetPlatform.macOS),
+            home: const Scaffold(
+              body: SizedBox(width: 280, height: 220, child: Sidebar()),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final firstCenter = tester.getCenter(
+        find.byKey(const ValueKey('project-tile-project-0')),
+      );
+      final gesture = await tester.startGesture(
+        firstCenter,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump(const Duration(milliseconds: 20));
+      await gesture.moveBy(const Offset(0, 120));
+      await tester.pump(const Duration(milliseconds: 300));
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(notifier.reorderPayloads, isNotEmpty);
+      final latestPayload = notifier.reorderPayloads.last;
+      final movedIndex = latestPayload.indexWhere(
+        (item) => item['id'] == 'project-0',
+      );
+      expect(movedIndex, greaterThan(0));
+    },
+  );
+
   testWidgets('sidebar shows stale banner and disables create actions', (
     tester,
   ) async {
@@ -285,10 +400,37 @@ void main() {
       matching: find.byType(IconButton),
     );
     expect(tester.widget<IconButton>(newGroupButton).onPressed, isNull);
-    expect(
-      tester.widget<IconButton>(newSessionButton).onPressed,
-      isNull,
+    expect(tester.widget<IconButton>(newSessionButton).onPressed, isNull);
+  });
+
+  testWidgets('sidebar project tile close button deletes project', (
+    tester,
+  ) async {
+    final alpha = _group('alpha', 'Alpha', 0);
+    final beta = _group('beta', 'Beta', 1);
+    final notifier = _SidebarTestServerNotifier(
+      ServerState(isConnected: true, groups: [alpha, beta], sessions: const []),
     );
+    final container = ProviderContainer(
+      overrides: [serverProvider.overrideWith((ref) => notifier)],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: Scaffold(body: SizedBox(width: 280, child: Sidebar())),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('project-delete-button-beta')));
+    await tester.pumpAndSettle();
+
+    expect(notifier.deletedGroupIds, ['beta']);
+    expect(find.text('Beta'), findsNothing);
   });
 }
 
@@ -296,6 +438,7 @@ class _SidebarTestServerNotifier extends ServerNotifier {
   _SidebarTestServerNotifier(super.state) : super.test();
 
   final List<List<Map<String, dynamic>>> reorderPayloads = [];
+  final List<String> deletedGroupIds = [];
 
   @override
   Future<void> reorderGroups(List<Map<String, dynamic>> items) async {
@@ -312,6 +455,16 @@ class _SidebarTestServerNotifier extends ServerNotifier {
                 ),
               )
               .toList(),
+    );
+  }
+
+  @override
+  Future<void> deleteGroup(String id) async {
+    deletedGroupIds.add(id);
+    state = state.copyWith(
+      groups: state.groups.where((group) => group.id != id).toList(),
+      sessions:
+          state.sessions.where((session) => session.groupId != id).toList(),
     );
   }
 }

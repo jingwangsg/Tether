@@ -37,6 +37,7 @@ class Sidebar extends ConsumerWidget {
     final error = ref.watch(serverProvider.select((s) => s.error));
     final navState = ref.watch(sessionProvider);
     final uiState = ref.watch(uiProvider);
+    final allowMutations = isConnected && !isStale;
     final screenWidth = MediaQuery.of(context).size.width;
     final sidebarWidth =
         width ?? (uiState.isMobile ? min(280.0, screenWidth * 0.85) : 280.0);
@@ -61,21 +62,22 @@ class Sidebar extends ConsumerWidget {
             child:
                 isConnected
                     ? Column(
-                        children: [
-                          if (isStale) _buildStaleBanner(error),
-                          Expanded(
-                            child: _buildContent(
-                              context,
-                              ref,
-                              groups: groups,
-                              sessions: visible,
-                              sshHosts: sshHosts,
-                              navState: navState,
-                              projectStatuses: projectStatuses,
-                            ),
+                      children: [
+                        if (isStale) _buildStaleBanner(error),
+                        Expanded(
+                          child: _buildContent(
+                            context,
+                            ref,
+                            groups: groups,
+                            sessions: visible,
+                            sshHosts: sshHosts,
+                            navState: navState,
+                            projectStatuses: projectStatuses,
+                            allowMutations: allowMutations,
                           ),
-                        ],
-                      )
+                        ),
+                      ],
+                    )
                     : _buildDisconnected(context, ref, error),
           ),
         ],
@@ -179,6 +181,7 @@ class Sidebar extends ConsumerWidget {
     required List<SshHost> sshHosts,
     required SessionState navState,
     required Map<String, SessionIndicatorStatus> projectStatuses,
+    required bool allowMutations,
   }) {
     final projects = _projects(groups);
 
@@ -214,7 +217,6 @@ class Sidebar extends ConsumerWidget {
             return PlatformReorderDragStartListener(
               key: ValueKey('project-tile-${project.id}'),
               index: index,
-              axis: Axis.vertical,
               child: _buildProjectTile(
                 context,
                 ref,
@@ -222,6 +224,7 @@ class Sidebar extends ConsumerWidget {
                 isSelected: navState.selectedProjectId == project.id,
                 status: projectStatuses[project.id],
                 shortcutIndex: index,
+                allowMutations: allowMutations,
               ),
             );
           },
@@ -237,6 +240,7 @@ class Sidebar extends ConsumerWidget {
     required bool isSelected,
     required SessionIndicatorStatus? status,
     required int shortcutIndex,
+    required bool allowMutations,
   }) {
     final uiState = ref.watch(uiProvider);
     return Material(
@@ -272,7 +276,8 @@ class Sidebar extends ConsumerWidget {
                 ),
                 if (project.normalizedSshHost != null) ...[
                   const SizedBox(width: 8),
-                  Flexible(
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 120),
                     child: Container(
                       key: ValueKey('project-ssh-badge-${project.id}'),
                       padding: const EdgeInsets.symmetric(
@@ -307,6 +312,30 @@ class Sidebar extends ConsumerWidget {
                     status: status,
                     semanticIdentifier: 'project-status-${project.id}',
                   ),
+                const SizedBox(width: 2),
+                IconButton(
+                  key: ValueKey('project-delete-button-${project.id}'),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 18,
+                    height: 18,
+                  ),
+                  splashRadius: 10,
+                  tooltip: 'Delete project',
+                  onPressed:
+                      allowMutations
+                          ? () async {
+                            await ref
+                                .read(serverProvider.notifier)
+                                .deleteGroup(project.id);
+                          }
+                          : null,
+                  icon: Icon(
+                    Icons.close,
+                    size: 12,
+                    color: isSelected ? Colors.white54 : Colors.white24,
+                  ),
+                ),
               ],
             ),
           ),

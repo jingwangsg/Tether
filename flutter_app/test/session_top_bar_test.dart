@@ -426,6 +426,77 @@ void main() {
       ['session-1', 'session-0'],
     );
   });
+
+  testWidgets(
+    'session top bar supports direct drag reordering when tabs overflow',
+    (tester) async {
+      tester.view.physicalSize = const Size(1280, 400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final group = _group('alpha', 'Alpha');
+      final sessions = List.generate(
+        12,
+        (index) => _session(
+          'session-$index',
+          group.id,
+          'session-$index',
+        ).copyWith(sortOrder: index),
+      );
+      final notifier = _SessionTopBarTestServerNotifier(
+        ServerState(isConnected: true, groups: [group], sessions: sessions),
+      );
+      final container = ProviderContainer(
+        overrides: [serverProvider.overrideWith((ref) => notifier)],
+      );
+      addTearDown(container.dispose);
+
+      container.read(sessionProvider.notifier)
+        ..selectProject(group.id)
+        ..setActiveSession(projectId: group.id, sessionId: 'session-0');
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            theme: ThemeData(platform: TargetPlatform.macOS),
+            home: Scaffold(
+              body: SizedBox(
+                width: 420,
+                child: SessionTopBar(
+                  projectId: group.id,
+                  sessions: container.read(serverProvider).sessions,
+                  activeSessionId: 'session-0',
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final firstCenter = tester.getCenter(
+        find.byKey(const ValueKey('session-top-tab-session-0')),
+      );
+      final gesture = await tester.startGesture(
+        firstCenter,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump(const Duration(milliseconds: 20));
+      await gesture.moveBy(const Offset(260, 0));
+      await tester.pump(const Duration(milliseconds: 300));
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(notifier.reorderSessionPayloads, isNotEmpty);
+      final latestPayload = notifier.reorderSessionPayloads.last;
+      final movedIndex = latestPayload.indexWhere(
+        (item) => item['id'] == 'session-0',
+      );
+      expect(movedIndex, greaterThan(0));
+    },
+  );
 }
 
 class _SessionTopBarTestServerNotifier extends ServerNotifier {
