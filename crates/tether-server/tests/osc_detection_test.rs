@@ -39,6 +39,7 @@ fn spawn_session(script: &str, dir: &str) -> Arc<PtySession> {
         1,
         PtyTerminalEnv::default(),
         tx,
+        false,
     )
     .unwrap()
 }

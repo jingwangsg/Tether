@@ -69,7 +69,7 @@ Future<void> _pumpWithContainer(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('session tab keeps session name while showing waiting status', (
+  testWidgets('session tab prefers agent title while showing waiting status', (
     tester,
   ) async {
     final group = _group('local');
@@ -98,8 +98,8 @@ void main() {
 
     final finder = find.byKey(const ValueKey('session-tab-status-session-1'));
     expect(finder, findsOneWidget);
-    expect(find.text('agent'), findsOneWidget);
-    expect(find.text('Claude Code'), findsNothing);
+    expect(find.text('Claude Code'), findsOneWidget);
+    expect(find.text('agent'), findsNothing);
     expect(
       tester.widget<SessionStatusDot>(finder).status,
       SessionIndicatorStatus.waiting,
