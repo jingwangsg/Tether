@@ -168,42 +168,45 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
         .whereType<Session>()
         .toList(growable: false);
 
+    debugLog('[SWITCH:area:build] selectedProject=${selectedProjectId?.substring(0, 8)} activeId=${activeId?.substring(0, 8)} projectSessions=${projectSessions.map((s) => s.id.substring(0, 8)).toList()} retainedSessions=${retainedSessions.map((s) => s.id.substring(0, 8)).toList()} interactiveCount=${interactiveSessions.length}');
+
     Widget content;
-    if (projectSessions.isEmpty) {
-      content = const Expanded(
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.terminal, size: 64, color: Colors.white24),
-              SizedBox(height: 16),
-              Text(
-                'No sessions in this project',
-                style: TextStyle(color: Colors.white38, fontSize: 16),
-              ),
-              SizedBox(height: 8),
-              Text(
-                'Select a session from the sidebar or create a new one',
-                style: TextStyle(color: Colors.white24, fontSize: 13),
-              ),
-            ],
-          ),
-        ),
-      );
-    } else {
+    {
       content = Expanded(
         child: Column(
           children: [
-            SessionTopBar(
-              projectId: selectedProjectId,
-              sessions: projectSessions,
-              activeSessionId: activeId,
-            ),
+            if (projectSessions.isNotEmpty)
+              SessionTopBar(
+                projectId: selectedProjectId,
+                sessions: projectSessions,
+                activeSessionId: activeId,
+              ),
             Expanded(
               child: ClipRect(
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
+                    // Empty state overlay — shown when no sessions in project
+                    if (projectSessions.isEmpty && retainedSessions.every((s) => s.id != activeId))
+                      const Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.terminal, size: 64, color: Colors.white24),
+                            SizedBox(height: 16),
+                            Text(
+                              'No sessions in this project',
+                              style: TextStyle(color: Colors.white38, fontSize: 16),
+                            ),
+                            SizedBox(height: 8),
+                            Text(
+                              'Select a session from the sidebar or create a new one',
+                              style: TextStyle(color: Colors.white24, fontSize: 13),
+                            ),
+                          ],
+                        ),
+                      ),
+                    // Always render retained sessions to keep platform views alive
                     ...retainedSessions.map((session) {
                       final isActive = session.id == activeId;
                       final isVisibleInUI = isActive;
@@ -216,11 +219,11 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                           .putIfAbsent(session.id, TerminalController.new);
 
                       return Offstage(
+                        key: ValueKey(
+                          '${widget.backend.platformId}:${session.id}',
+                        ),
                         offstage: !isVisibleInUI,
                         child: widget.backend.createTerminalWidget(
-                          key: ValueKey(
-                            '${widget.backend.platformId}:${session.id}',
-                          ),
                           sessionId: session.id,
                           controller: terminalController,
                           serverConfig: serverConfig,
@@ -414,6 +417,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       if (!mounted) return;
       final validIds = _pendingInteractiveSessionIds ?? const <String>{};
       _pendingInteractiveSessionIds = null;
+      debugLog('[SWITCH:area:sync] cleanupSessions validIds=${validIds.map((id) => id.substring(0, 8)).toList()} currentActive=${ref.read(sessionProvider).activeSessionId?.substring(0, 8)}');
       ref.read(sessionProvider.notifier).cleanupSessions(validIds);
     });
   }

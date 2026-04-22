@@ -722,7 +722,6 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
 
     private func createSurface() {
         guard let app = TerminalApp.shared.app, let window = window else {
-            print("[TerminalSurfaceView] TerminalApp not ready or no window")
             return
         }
 
@@ -745,7 +744,6 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         }
 
         guard let s = surface else {
-            print("[TerminalSurfaceView] ghostty_surface_new failed")
             return
         }
 

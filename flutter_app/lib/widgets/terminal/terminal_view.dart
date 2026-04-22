@@ -68,6 +68,7 @@ class TerminalViewState extends State<TerminalView> {
   @override
   void initState() {
     super.initState();
+    debugLog('[SWITCH:flutter] initState session=${shortId(widget.sessionId)} isActive=${widget.isActive} isVisible=${widget.isVisibleInUI}');
     HardwareKeyboard.instance.addHandler(_handleSearchKey);
     widget.controller.attach(
       sendText: sendText,
@@ -81,6 +82,7 @@ class TerminalViewState extends State<TerminalView> {
   @override
   void didUpdateWidget(TerminalView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    debugLog('[SWITCH:flutter] didUpdateWidget session=${shortId(widget.sessionId)} isActive: ${oldWidget.isActive}->${widget.isActive} isVisible: ${oldWidget.isVisibleInUI}->${widget.isVisibleInUI} viewId=$_viewId');
     if (!identical(oldWidget.controller, widget.controller)) {
       oldWidget.controller.detach();
       widget.controller.attach(
@@ -91,12 +93,14 @@ class TerminalViewState extends State<TerminalView> {
       );
     }
     if (oldWidget.isActive != widget.isActive && _viewId != null) {
+      debugLog('[SWITCH:flutter] setActive(${widget.isActive}) session=${shortId(widget.sessionId)} viewId=$_viewId');
       _inputChannel.invokeMethod('setActive', {
         'viewId': _viewId,
         'active': widget.isActive,
       });
     }
     if (oldWidget.isVisibleInUI != widget.isVisibleInUI && _viewId != null) {
+      debugLog('[SWITCH:flutter] setVisibleInUI(${widget.isVisibleInUI}) session=${shortId(widget.sessionId)} viewId=$_viewId');
       _inputChannel.invokeMethod('setVisibleInUI', {
         'viewId': _viewId,
         'visible': widget.isVisibleInUI,
@@ -321,6 +325,7 @@ class TerminalViewState extends State<TerminalView> {
 
   @override
   void dispose() {
+    debugLog('[SWITCH:flutter] dispose session=${shortId(widget.sessionId)} viewId=$_viewId');
     widget.controller.detach();
     HardwareKeyboard.instance.removeHandler(_handleSearchKey);
     _searchController.dispose();

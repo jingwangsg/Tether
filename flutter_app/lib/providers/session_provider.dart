@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../utils/debug_log.dart';
 import '../utils/test_event_logger.dart';
 
 class SessionState {
@@ -86,6 +87,7 @@ class SessionNotifier extends StateNotifier<SessionState> {
       return;
     }
 
+    debugLog('[SWITCH:session] syncProjects selected: ${state.selectedProjectId?.substring(0, 8)} -> ${nextSelected?.substring(0, 8)} projectCount=${projectIds.length}');
     state = SessionState(
       selectedProjectId: nextSelected,
       activeSessionIdByProject: nextMap,
@@ -94,9 +96,12 @@ class SessionNotifier extends StateNotifier<SessionState> {
 
   void cleanupSessions(Set<String> validSessionIds) {
     final nextMap = <String, String>{};
+    final removedEntries = <String, String>{};
     for (final entry in state.activeSessionIdByProject.entries) {
       if (validSessionIds.contains(entry.value)) {
         nextMap[entry.key] = entry.value;
+      } else {
+        removedEntries[entry.key] = entry.value;
       }
     }
 
@@ -104,6 +109,7 @@ class SessionNotifier extends StateNotifier<SessionState> {
       return;
     }
 
+    debugLog('[SWITCH:session] cleanupSessions removed=$removedEntries remaining=$nextMap validCount=${validSessionIds.length} activeSessionId=${state.activeSessionId?.substring(0, 8)}');
     state = state.copyWith(activeSessionIdByProject: nextMap);
   }
 }
