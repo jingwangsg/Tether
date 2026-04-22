@@ -7,6 +7,7 @@ import '../../providers/ui_provider.dart';
 import '../../utils/session_close.dart';
 import '../../utils/session_tab_presentation.dart';
 import '../../utils/session_status.dart';
+import '../../utils/test_event_logger.dart';
 import '../reorderable/platform_reorder_drag_start_listener.dart';
 import '../shell_shortcut_hint_badge.dart';
 import 'session_status_dot.dart';
@@ -68,10 +69,23 @@ class SessionTopBar extends ConsumerWidget {
           final session = sessions[index];
           final isActive = session.id == activeSessionId;
           final presentation = deriveSessionTabPresentation(session, const {});
+          final secondaryForA11y =
+              presentation.secondaryTooltip ?? presentation.secondaryLabel;
           final status = deriveSessionIndicatorStatus(
             session,
             isActive: isActive,
           );
+          if (status != null) {
+            TestEventLogger.instance.log('session_tab_status_visible', {
+              'session_id': session.id,
+              'project_id': projectId,
+              'status': switch (status) {
+                SessionIndicatorStatus.waiting => 'waiting',
+                SessionIndicatorStatus.running => 'running',
+                SessionIndicatorStatus.attention => 'attention',
+              },
+            });
+          }
           return PlatformReorderDragStartListener(
             key: ValueKey('session-top-tab-${session.id}'),
             index: index,
@@ -80,9 +94,9 @@ class SessionTopBar extends ConsumerWidget {
               child: Semantics(
                 identifier: 'session-top-tab-${session.id}',
                 label:
-                    presentation.secondaryLabel == null
+                    secondaryForA11y == null
                         ? presentation.primaryTitle
-                        : '${presentation.primaryTitle} | ${presentation.secondaryLabel}',
+                        : '${presentation.primaryTitle} | $secondaryForA11y',
                 selected: isActive,
                 child: InkWell(
                   onTap: () {
@@ -135,15 +149,33 @@ class SessionTopBar extends ConsumerWidget {
                           ),
                           const SizedBox(width: 6),
                           Flexible(
-                            child: Text(
-                              secondary,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color:
-                                    isActive ? Colors.white54 : Colors.white38,
-                                fontSize: 12,
-                              ),
-                            ),
+                            child:
+                                presentation.secondaryTooltip == null
+                                    ? Text(
+                                      secondary,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color:
+                                            isActive
+                                                ? Colors.white54
+                                                : Colors.white38,
+                                        fontSize: 12,
+                                      ),
+                                    )
+                                    : Tooltip(
+                                      message: presentation.secondaryTooltip!,
+                                      child: Text(
+                                        secondary,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          color:
+                                              isActive
+                                                  ? Colors.white54
+                                                  : Colors.white38,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
                           ),
                         ],
                         if (showSessionShortcutHints && index < 9) ...[

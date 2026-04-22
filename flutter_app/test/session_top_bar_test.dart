@@ -360,6 +360,89 @@ void main() {
     },
   );
 
+  testWidgets(
+    'session top bar shows full secondary title tooltip when compressed',
+    (tester) async {
+      final rawTitle =
+          '✱ GEAR_SKIP_PIP_INSTALL=1 CLUSTER_TYPE=h100 NUM_GPUS=32 '
+          'python groot/vla/omni/scripts/train/n2/launch_.py --fast';
+      final sessions = [
+        Session(
+          id: 'session-0',
+          groupId: 'alpha',
+          name: 'feature/refactor-shell',
+          shell: 'bash',
+          cols: 80,
+          rows: 24,
+          cwd: '/tmp/session-0',
+          isAlive: true,
+          createdAt: '',
+          lastActive: '',
+          foregroundProcess: 'claude',
+          oscTitle: rawTitle,
+        ),
+      ];
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(
+              body: SessionTopBar(
+                projectId: 'alpha',
+                sessions: sessions,
+                activeSessionId: 'session-0',
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('feature/refactor-shell'), findsOneWidget);
+      expect(find.text('✱ python …/launch_.py…'), findsOneWidget);
+      expect(find.byTooltip(rawTitle), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'session top bar does not add tooltip when secondary title is already short',
+    (tester) async {
+      final sessions = [
+        Session(
+          id: 'session-0',
+          groupId: 'alpha',
+          name: 'feature/refactor-shell',
+          shell: 'bash',
+          cols: 80,
+          rows: 24,
+          cwd: '/tmp/session-0',
+          isAlive: true,
+          createdAt: '',
+          lastActive: '',
+          foregroundProcess: 'claude',
+          oscTitle: '· Claude Code',
+        ),
+      ];
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(
+              body: SessionTopBar(
+                projectId: 'alpha',
+                sessions: sessions,
+                activeSessionId: 'session-0',
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('· Claude Code'), findsNothing);
+    },
+  );
+
   testWidgets('session top bar supports direct horizontal drag reordering', (
     tester,
   ) async {
@@ -547,6 +630,9 @@ class _FakeTerminalBackend implements TerminalBackend {
 
   @override
   bool get isLocalPty => false;
+
+  @override
+  int get retainedTerminalViewCap => 6;
 
   @override
   Widget createTerminalWidget({

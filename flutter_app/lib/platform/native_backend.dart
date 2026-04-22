@@ -14,6 +14,9 @@ class NativeBackend implements TerminalBackend {
   String get platformId => 'native';
 
   @override
+  int get retainedTerminalViewCap => 50;
+
+  @override
   Widget createTerminalWidget({
     Key? key,
     required String sessionId,

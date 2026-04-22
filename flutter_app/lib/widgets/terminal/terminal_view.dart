@@ -204,18 +204,14 @@ class TerminalViewState extends State<TerminalView> {
       _onEvent,
     );
 
-    if (!widget.isActive) {
-      _inputChannel.invokeMethod('setActive', {
-        'viewId': viewId,
-        'active': false,
-      });
-    }
-    if (!widget.isVisibleInUI) {
-      _inputChannel.invokeMethod('setVisibleInUI', {
-        'viewId': viewId,
-        'visible': false,
-      });
-    }
+    _inputChannel.invokeMethod('setActive', {
+      'viewId': viewId,
+      'active': widget.isActive,
+    });
+    _inputChannel.invokeMethod('setVisibleInUI', {
+      'viewId': viewId,
+      'visible': widget.isVisibleInUI,
+    });
     _inputChannel.invokeMethod('setImagePasteBridgeEnabled', {
       'viewId': viewId,
       'enabled': widget.imagePasteBridgeEnabled,

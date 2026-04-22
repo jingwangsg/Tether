@@ -12,6 +12,7 @@ import '../../utils/project_status_summary.dart';
 import '../../utils/session_interaction.dart';
 import '../../utils/session_status.dart';
 import '../../utils/shell_dialogs.dart';
+import '../../utils/test_event_logger.dart';
 import '../reorderable/platform_reorder_drag_start_listener.dart';
 import '../shell_shortcut_hint_badge.dart';
 import '../terminal/session_status_dot.dart';
@@ -243,6 +244,16 @@ class Sidebar extends ConsumerWidget {
     required bool allowMutations,
   }) {
     final uiState = ref.watch(uiProvider);
+    if (status != null) {
+      TestEventLogger.instance.log('project_sidebar_status_visible', {
+        'project_id': project.id,
+        'status': switch (status) {
+          SessionIndicatorStatus.waiting => 'waiting',
+          SessionIndicatorStatus.running => 'running',
+          SessionIndicatorStatus.attention => 'attention',
+        },
+      });
+    }
     return Material(
       color: Colors.transparent,
       child: Semantics(

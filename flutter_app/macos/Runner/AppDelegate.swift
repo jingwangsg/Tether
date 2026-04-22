@@ -5,9 +5,16 @@ import UserNotifications
 final class TerminalDesktopNotificationCenter: NSObject, UNUserNotificationCenterDelegate {
   static let shared = TerminalDesktopNotificationCenter()
 
+  private var shouldRequestAuthorization: Bool {
+    let env = ProcessInfo.processInfo.environment
+    let testLogPath = env["TETHER_TERMINAL_TEST_LOG_PATH"] ?? ""
+    return testLogPath.isEmpty
+  }
+
   func installDelegate() {
     let center = UNUserNotificationCenter.current()
     center.delegate = self
+    guard shouldRequestAuthorization else { return }
     center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
   }
 

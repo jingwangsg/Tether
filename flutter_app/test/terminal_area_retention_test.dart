@@ -138,10 +138,69 @@ void main() {
     expect(_terminalFinder('a-6'), findsOneWidget);
     expect(_terminalFinder('a-7'), findsOneWidget);
   });
+
+  testWidgets('terminal area honors backend retention cap', (tester) async {
+    final alpha = _group('alpha');
+    final sessions = [
+      _session('a-1', alpha.id),
+      _session('a-2', alpha.id),
+      _session('a-3', alpha.id),
+      _session('a-4', alpha.id),
+    ];
+
+    final container = ProviderContainer(
+      overrides: [
+        serverProvider.overrideWith(
+          (ref) => ServerNotifier.test(
+            ServerState(isConnected: true, groups: [alpha], sessions: sessions),
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    container.read(sessionProvider.notifier)
+      ..selectProject(alpha.id)
+      ..setActiveSession(projectId: alpha.id, sessionId: 'a-1');
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: Scaffold(
+            body: TerminalArea(
+              backend: _RetentionBackend(retainedTerminalViewCap: 2),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    container
+        .read(sessionProvider.notifier)
+        .setActiveSession(projectId: alpha.id, sessionId: 'a-2');
+    await tester.pump();
+    container
+        .read(sessionProvider.notifier)
+        .setActiveSession(projectId: alpha.id, sessionId: 'a-3');
+    await tester.pump();
+    container
+        .read(sessionProvider.notifier)
+        .setActiveSession(projectId: alpha.id, sessionId: 'a-4');
+    await tester.pump();
+
+    expect(_terminalFinder('a-1'), findsNothing);
+    expect(_terminalFinder('a-2'), findsNothing);
+    expect(_terminalFinder('a-3'), findsOneWidget);
+    expect(_terminalFinder('a-4'), findsOneWidget);
+  });
 }
 
 class _RetentionBackend implements TerminalBackend {
-  const _RetentionBackend();
+  const _RetentionBackend({this.retainedTerminalViewCap = 6});
+
+  final int retainedTerminalViewCap;
 
   @override
   String get platformId => 'retention';

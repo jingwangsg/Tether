@@ -16,6 +16,9 @@ class XtermBackend implements TerminalBackend {
   String get platformId => 'xterm';
 
   @override
+  int get retainedTerminalViewCap => 6;
+
+  @override
   Widget createTerminalWidget({
     Key? key,
     required String sessionId,

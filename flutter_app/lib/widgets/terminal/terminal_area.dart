@@ -25,8 +25,6 @@ class TerminalArea extends ConsumerStatefulWidget {
 }
 
 class TerminalAreaState extends ConsumerState<TerminalArea> {
-  static const int _maxRetainedTerminalViews = 6;
-
   final Map<String, TerminalController> _terminalControllers = {};
   final List<String> _retainedSessionOrder = <String>[];
   final VolumeKeyService _volumeKeys = VolumeKeyService();
@@ -428,6 +426,11 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     required Set<String> interactiveSessionIds,
     required String? activeSessionId,
   }) {
+    final retentionCap =
+        widget.backend.retainedTerminalViewCap < 1
+            ? 1
+            : widget.backend.retainedTerminalViewCap;
+
     _retainedSessionOrder.removeWhere(
       (id) => !interactiveSessionIds.contains(id),
     );
@@ -454,7 +457,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
         _warmSessionId!,
     };
 
-    while (_retainedSessionOrder.length > _maxRetainedTerminalViews) {
+    while (_retainedSessionOrder.length > retentionCap) {
       final evictionIndex = _retainedSessionOrder.lastIndexWhere(
         (id) => !pinnedIds.contains(id),
       );

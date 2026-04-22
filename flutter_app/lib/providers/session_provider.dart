@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../utils/test_event_logger.dart';
 
 class SessionState {
   final String? selectedProjectId;
@@ -43,6 +44,10 @@ class SessionNotifier extends StateNotifier<SessionState> {
       selectedProjectId: projectId,
       clearSelectedProject: projectId == null,
     );
+    TestEventLogger.instance.log('project_selected', {
+      'project_id': projectId,
+      'active_session_id': state.activeSessionId,
+    });
   }
 
   void setActiveSession({
@@ -61,6 +66,11 @@ class SessionNotifier extends StateNotifier<SessionState> {
       selectedProjectId: nextSelected,
       activeSessionIdByProject: nextMap,
     );
+    TestEventLogger.instance.log('active_session_selected', {
+      'project_id': projectId,
+      'session_id': sessionId,
+      'selected_project_id': state.selectedProjectId,
+    });
   }
 
   void syncProjects(List<String> projectIds) {

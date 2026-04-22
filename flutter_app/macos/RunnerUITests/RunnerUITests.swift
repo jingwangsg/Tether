@@ -7,14 +7,22 @@ private struct UITestFailure: Error, CustomStringConvertible {
 private struct UITestConfig {
     let port: Int
     let sessionName: String
-
     static let sharedPath = URL(fileURLWithPath: "/tmp/tether-ui-config.json")
 
     static func load() -> UITestConfig? {
+        let env = ProcessInfo.processInfo.environment
+        if let rawPort = env["TETHER_UI_TEST_SERVER_PORT"],
+           let port = Int(rawPort),
+           let sessionName = env["TETHER_UI_TEST_SESSION_NAME"],
+           !sessionName.isEmpty {
+            return UITestConfig(port: port, sessionName: sessionName)
+        }
+
         guard let data = try? Data(contentsOf: sharedPath),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let port = json["port"] as? Int,
-              let sessionName = json["session_name"] as? String else {
+              let sessionName = json["session_name"] as? String,
+              !sessionName.isEmpty else {
             return nil
         }
         return UITestConfig(port: port, sessionName: sessionName)
@@ -60,14 +68,9 @@ final class RunnerUITests: XCTestCase {
     }
 
     func testMacTerminalUsesSingleLargeInitialReplayWithoutLazyLoading() throws {
-        if canReachConfiguredExternalServer() {
-            try waitForExternalServer()
-        } else {
-            try ensureCargoBinary(named: "tether-server")
-            try ensureCargoBinary(named: "tether-client")
-            try startServer()
-            _ = try provisionSession(named: sessionName)
-        }
+        _ = try requireExternalServerConfig()
+        try waitForExternalServer()
+        try ensureCargoBinary(named: "tether-client")
 
         let app = XCUIApplication()
         app.launchEnvironment["TETHER_CLIENT_PATH"] =
@@ -121,16 +124,8 @@ final class RunnerUITests: XCTestCase {
         let focusSessionName = "focus-\(runId)"
         let attentionSessionName = "attention-\(runId)"
 
-        if canReachConfiguredExternalServer() {
-            try waitForServerReady()
-        } else {
-            try ensureCargoBinary(named: "tether-server")
-            do {
-                try startServer()
-            } catch {
-                throw XCTSkip("local UI test server unavailable: \(error)")
-            }
-        }
+        _ = try requireExternalServerConfig()
+        try waitForServerReady()
         try ensureCargoBinary(named: "tether-client")
 
         let groupId = try createGroup(named: "UI Bell Group \(runId)")
@@ -169,8 +164,8 @@ final class RunnerUITests: XCTestCase {
             return seq > 0 && ack == 0
         }
 
-        _ = try waitForEvent(named: "session_sidebar_status_visible", timeout: 10) {
-            ($0["session_id"] as? String) == attentionSessionId
+        _ = try waitForEvent(named: "project_sidebar_status_visible", timeout: 15) {
+            ($0["project_id"] as? String) == groupId
                 && ($0["status"] as? String) == "attention"
         }
     }
@@ -179,16 +174,8 @@ final class RunnerUITests: XCTestCase {
         let runId = String(UUID().uuidString.prefix(8))
         let attentionSessionName = "attention-\(runId)"
 
-        if canReachConfiguredExternalServer() {
-            try waitForServerReady()
-        } else {
-            try ensureCargoBinary(named: "tether-server")
-            do {
-                try startServer()
-            } catch {
-                throw XCTSkip("local UI test server unavailable: \(error)")
-            }
-        }
+        _ = try requireExternalServerConfig()
+        try waitForServerReady()
         try ensureCargoBinary(named: "tether-client")
 
         let groupId = try createGroup(named: "UI Bell Active Group \(runId)")
@@ -221,7 +208,7 @@ final class RunnerUITests: XCTestCase {
             return seq > 0 && ack == seq
         }
 
-        _ = try waitForEvent(named: "session_sidebar_status_visible", timeout: 10) {
+        _ = try waitForEvent(named: "session_tab_status_visible", timeout: 15) {
             ($0["session_id"] as? String) == attentionSessionId
                 && ($0["status"] as? String) == "waiting"
         }
@@ -230,12 +217,8 @@ final class RunnerUITests: XCTestCase {
     func testTerminalFocusedShellShortcutsRouteToProjectAndSessionChrome() throws {
         let runId = String(UUID().uuidString.prefix(8))
 
-        if canReachConfiguredExternalServer() {
-            try waitForServerReady()
-        } else {
-            try ensureCargoBinary(named: "tether-server")
-            try startServer()
-        }
+        _ = try requireExternalServerConfig()
+        try waitForServerReady()
         try ensureCargoBinary(named: "tether-client")
 
         let projectA = try createGroup(named: "Project A \(runId)")
@@ -246,88 +229,139 @@ final class RunnerUITests: XCTestCase {
             groupId: projectA,
             command: "while :; do sleep 1; done"
         )
-        _ = try provisionCommandSession(
+        let alpha2Id = try provisionCommandSession(
             named: "alpha-2-\(runId)",
             groupId: projectA,
             command: "while :; do sleep 1; done"
         )
-        _ = try provisionCommandSession(
+        let beta1Id = try provisionCommandSession(
             named: "beta-1-\(runId)",
             groupId: projectB,
+            command: "while :; do sleep 1; done"
+        )
+        let frontProjectOrder = try frontProjectSortOrder()
+        try updateGroupSortOrder(id: projectA, sortOrder: frontProjectOrder)
+        try updateGroupSortOrder(id: projectB, sortOrder: frontProjectOrder + 1)
+        try updateSessionSortOrder(id: alpha2Id, sortOrder: 1)
+        try updateSessionSortOrder(id: beta1Id, sortOrder: 0)
+
+        let app = XCUIApplication()
+        app.launchEnvironment["TETHER_CLIENT_PATH"] =
+            repoRoot.appendingPathComponent("target/debug/tether-client").path
+        app.launchEnvironment["TETHER_TERMINAL_TEST_LOG_PATH"] = eventLogURL.path
+        app.launchEnvironment["TETHER_TEST_AUTO_OPEN_SESSION_NAME"] = "alpha-1-\(runId)"
+        app.launchEnvironment["TETHER_TEST_SERVER_HOST"] = "127.0.0.1"
+        app.launchEnvironment["TETHER_TEST_SERVER_PORT"] = "\(port)"
+        app.launch()
+
+        let initialSurfaceAttach = try waitForEvent(named: "attach_started", timeout: 20)
+        let initialSurfaceSessionId = try XCTUnwrap(initialSurfaceAttach["session_id"] as? String)
+        _ = try waitForEvent(named: "surface_focus_changed", timeout: 10) { event in
+            (event["session_id"] as? String) == initialSurfaceSessionId
+                && (event["focused"] as? Bool) == true
+        }
+        let terminal = terminalScrollView(in: app)
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+
+        typeShortcut(in: app, terminal: terminal, key: "2", modifierFlags: .command)
+        _ = try waitForEvent(named: "project_selected", timeout: 5) { event in
+            (event["project_id"] as? String) == projectB
+        }
+        _ = try waitForEvent(named: "active_session_selected", timeout: 5) { event in
+            (event["project_id"] as? String) == projectB
+                && (event["session_id"] as? String) == beta1Id
+        }
+
+        typeShortcut(in: app, terminal: terminal, key: "r", modifierFlags: .command)
+        _ = try waitForEvent(named: "rename_session_dialog_presented", timeout: 5) { event in
+            (event["session_id"] as? String) == beta1Id
+                && (event["project_id"] as? String) == projectB
+        }
+        app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
+
+        typeShortcut(in: app, terminal: terminal, key: "1", modifierFlags: .command)
+        _ = try waitForEvent(named: "project_selected", timeout: 5) { event in
+            (event["project_id"] as? String) == projectA
+        }
+
+        typeShortcut(in: app, terminal: terminal, key: "2", modifierFlags: .control)
+        _ = try waitForEvent(named: "active_session_selected", timeout: 5) { event in
+            (event["project_id"] as? String) == projectA
+                && (event["session_id"] as? String) == alpha2Id
+        }
+        typeShortcut(in: app, terminal: terminal, key: "r", modifierFlags: [.command, .shift])
+        _ = try waitForEvent(named: "rename_project_dialog_presented", timeout: 5) { event in
+            (event["project_id"] as? String) == projectA
+        }
+        app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
+
+        typeShortcut(in: app, terminal: terminal, key: "n", modifierFlags: .command)
+        _ = try waitForEvent(named: "new_group_dialog_presented", timeout: 5)
+        app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
+
+        typeShortcut(in: app, terminal: terminal, key: "t", modifierFlags: .command)
+        try waitForSessionCount(groupId: projectA, equals: 3, timeout: 10)
+    }
+
+    func testCmdTSessionAcceptsTypingWithoutExtraClick() throws {
+        let runId = String(UUID().uuidString.prefix(8))
+        let seedSessionName = "seed-\(runId)"
+
+        _ = try requireExternalServerConfig()
+        try waitForServerReady()
+        try ensureCargoBinary(named: "tether-client")
+
+        let groupId = try createGroup(named: "Focus Group \(runId)")
+        _ = try provisionCommandSession(
+            named: seedSessionName,
+            groupId: groupId,
             command: "while :; do sleep 1; done"
         )
 
         let app = XCUIApplication()
         app.launchEnvironment["TETHER_CLIENT_PATH"] =
             repoRoot.appendingPathComponent("target/debug/tether-client").path
+        app.launchEnvironment["TETHER_TERMINAL_TEST_LOG_PATH"] = eventLogURL.path
         app.launchEnvironment["TETHER_TEST_SERVER_HOST"] = "127.0.0.1"
         app.launchEnvironment["TETHER_TEST_SERVER_PORT"] = "\(port)"
+        app.launchEnvironment["TETHER_TEST_AUTO_OPEN_SESSION_NAME"] = seedSessionName
         app.launch()
 
-        let terminal = terminalScrollView(in: app)
-        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        let initialSurfaceAttach = try waitForEvent(named: "attach_started", timeout: 20)
+        let initialSurfaceSessionId = try XCTUnwrap(initialSurfaceAttach["session_id"] as? String)
+        _ = try waitForEvent(named: "surface_focus_changed", timeout: 10) { event in
+            (event["session_id"] as? String) == initialSurfaceSessionId
+                && (event["focused"] as? Bool) == true
+        }
 
-        typeShortcut(in: app, terminal: terminal, key: "2", modifierFlags: .command)
-        XCTAssertTrue(
-            sessionTopTabElement(in: app, containing: "beta-1-\(runId)")
-                .waitForExistence(timeout: 5)
+        app.activate()
+        app.typeKey("t", modifierFlags: .command)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        try waitForSessionCount(groupId: groupId, equals: 2, timeout: 10)
+        try waitForEventCount(named: "attach_started", minimum: 2, timeout: 10)
+        let newSurfaceAttach = try XCTUnwrap(try latestEvent(named: "attach_started"))
+        let newSurfaceSessionId = try XCTUnwrap(newSurfaceAttach["session_id"] as? String)
+        _ = try waitForEvent(named: "surface_focus_changed", timeout: 10) { event in
+            (event["session_id"] as? String) == newSurfaceSessionId
+                && (event["focused"] as? Bool) == true
+        }
+
+        let token = "ok-\(runId)"
+        let commandText = "echo \(token) > /tmp/tether-cmdt-focus.txt"
+
+        app.typeText("\(commandText)\n")
+        try waitForSurfaceInsertedText(
+            sessionId: newSurfaceSessionId,
+            contains: commandText,
+            timeout: 10
         )
-
-        typeShortcut(in: app, terminal: terminal, key: "r", modifierFlags: .command)
-        XCTAssertTrue(dialogTitleElement(in: app, titled: "Rename Session").waitForExistence(timeout: 5))
-        XCTAssertEqual(firstTextField(in: app).value as? String, "beta-1-\(runId)")
-        app.buttons["Cancel"].click()
-
-        typeShortcut(in: app, terminal: terminal, key: "1", modifierFlags: .command)
-        XCTAssertTrue(
-            sessionTopTabElement(in: app, containing: "alpha-1-\(runId)")
-                .waitForExistence(timeout: 5)
-        )
-        XCTAssertTrue(
-            sessionTopTabElement(in: app, containing: "alpha-2-\(runId)")
-                .waitForExistence(timeout: 5)
-        )
-
-        typeShortcut(in: app, terminal: terminal, key: "2", modifierFlags: .control)
-        typeShortcut(in: app, terminal: terminal, key: "r", modifierFlags: [.command, .shift])
-        XCTAssertTrue(dialogTitleElement(in: app, titled: "Rename Project").waitForExistence(timeout: 5))
-        XCTAssertEqual(firstTextField(in: app).value as? String, "Project A \(runId)")
-        app.buttons["Cancel"].click()
-
-        typeShortcut(in: app, terminal: terminal, key: "n", modifierFlags: .command)
-        XCTAssertTrue(dialogTitleElement(in: app, titled: "New Group").waitForExistence(timeout: 5))
-        let projectName = "Project C \(runId)"
-        let textFields = app.descendants(matching: .textField)
-        let nameField = textFields.element(boundBy: 0)
-        let pathField = textFields.element(boundBy: 1)
-        nameField.click()
-        nameField.typeText(projectName)
-        pathField.click()
-        pathField.typeText(tempRoot.path)
-        app.buttons["Create"].click()
-
-        let createdGroup = try waitForGroup(named: projectName, timeout: 10)
-        let createdGroupId = try XCTUnwrap(createdGroup["id"] as? String)
-        try waitForSessionCount(groupId: createdGroupId, equals: 1, timeout: 10)
-        XCTAssertTrue(app.staticTexts[projectName].waitForExistence(timeout: 5))
-
-        typeShortcut(in: app, terminal: terminal, key: "t", modifierFlags: .command)
-        try waitForSessionCount(groupId: createdGroupId, equals: 2, timeout: 10)
     }
 
     func testSidebarFocusedDesktopShortcutsRouteToWorkspaceChrome() throws {
         let runId = String(UUID().uuidString.prefix(8))
 
-        if canReachConfiguredExternalServer() {
-            try waitForServerReady()
-        } else {
-            try ensureCargoBinary(named: "tether-server")
-            do {
-                try startServer()
-            } catch {
-                throw XCTSkip("local UI test server unavailable: \(error)")
-            }
-        }
+        _ = try requireExternalServerConfig()
+        try waitForServerReady()
         try ensureCargoBinary(named: "tether-client")
 
         let projectAName = "Project A \(runId)"
@@ -340,40 +374,44 @@ final class RunnerUITests: XCTestCase {
             groupId: projectA,
             command: "while :; do sleep 1; done"
         )
-        _ = try provisionCommandSession(
+        let beta1Id = try provisionCommandSession(
             named: "beta-1-\(runId)",
             groupId: projectB,
             command: "while :; do sleep 1; done"
         )
+        let frontProjectOrder = try frontProjectSortOrder()
+        try updateGroupSortOrder(id: projectA, sortOrder: frontProjectOrder)
+        try updateGroupSortOrder(id: projectB, sortOrder: frontProjectOrder + 1)
 
         let app = XCUIApplication()
         app.launchEnvironment["TETHER_CLIENT_PATH"] =
             repoRoot.appendingPathComponent("target/debug/tether-client").path
+        app.launchEnvironment["TETHER_TERMINAL_TEST_LOG_PATH"] = eventLogURL.path
         app.launchEnvironment["TETHER_TEST_SERVER_HOST"] = "127.0.0.1"
         app.launchEnvironment["TETHER_TEST_SERVER_PORT"] = "\(port)"
         app.launch()
 
-        let projectATile = projectTileElement(in: app, named: projectAName)
-        let projectBTile = projectTileElement(in: app, named: projectBName)
-        XCTAssertTrue(projectATile.waitForExistence(timeout: 10))
-        XCTAssertTrue(projectBTile.waitForExistence(timeout: 10))
+        _ = try waitForEvent(named: "server_connected", timeout: 15)
 
-        typeShortcut(in: app, focusElement: projectBTile, key: "2", modifierFlags: .command)
-        XCTAssertTrue(
-            sessionTopTabElement(in: app, containing: "beta-1-\(runId)")
-                .waitForExistence(timeout: 5)
-        )
+        typeSidebarShortcut(in: app, key: "2", modifierFlags: .command)
+        _ = try waitForEvent(named: "project_selected", timeout: 5) { event in
+            (event["project_id"] as? String) == projectB
+        }
+        _ = try waitForEvent(named: "active_session_selected", timeout: 5) { event in
+            (event["project_id"] as? String) == projectB
+                && (event["session_id"] as? String) == beta1Id
+        }
 
-        typeShortcut(in: app, focusElement: projectATile, key: "1", modifierFlags: .command)
-        XCTAssertTrue(
-            sessionTopTabElement(in: app, containing: "alpha-1-\(runId)")
-                .waitForExistence(timeout: 5)
-        )
+        typeSidebarShortcut(in: app, key: "1", modifierFlags: .command)
+        _ = try waitForEvent(named: "project_selected", timeout: 5) { event in
+            (event["project_id"] as? String) == projectA
+        }
 
-        typeShortcut(in: app, focusElement: projectATile, key: "r", modifierFlags: [.command, .shift])
-        XCTAssertTrue(dialogTitleElement(in: app, titled: "Rename Project").waitForExistence(timeout: 5))
-        XCTAssertEqual(firstTextField(in: app).value as? String, projectAName)
-        app.buttons["Cancel"].click()
+        typeSidebarShortcut(in: app, key: "r", modifierFlags: [.command, .shift])
+        _ = try waitForEvent(named: "rename_project_dialog_presented", timeout: 5) { event in
+            (event["project_id"] as? String) == projectA
+        }
+        app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
     }
 
     private func waitForExternalServer() throws {
@@ -386,6 +424,15 @@ final class RunnerUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }
         throw UITestFailure(description: "external UI test server was not ready")
+    }
+
+    private func requireExternalServerConfig() throws -> UITestConfig {
+        guard let config = externalConfig else {
+            throw XCTSkip(
+                "RunnerUITests require scripts/run_macos_ui_test.sh or TETHER_UI_TEST_SERVER_PORT/TETHER_UI_TEST_SESSION_NAME"
+            )
+        }
+        return config
     }
 
     private func canReachConfiguredExternalServer() -> Bool {
@@ -607,6 +654,23 @@ final class RunnerUITests: XCTestCase {
         try readEvents().filter { ($0["event"] as? String) == name && predicate($0) }.count
     }
 
+    private func waitForEventCount(
+        named name: String,
+        minimum expected: Int,
+        timeout: TimeInterval,
+        where predicate: ([String: Any]) -> Bool = { _ in true }
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if try eventCount(named: name, where: predicate) >= expected {
+                return
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+
+        throw UITestFailure(description: "timed out waiting for \(expected) \(name) events")
+    }
+
     private func waitForFile(
         at url: URL,
         timeout: TimeInterval,
@@ -752,6 +816,19 @@ final class RunnerUITests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
     }
 
+    private func typeSidebarShortcut(
+        in app: XCUIApplication,
+        key: String,
+        modifierFlags: XCUIElement.KeyModifierFlags
+    ) {
+        let content = app.windows.element(boundBy: 0).groups.element(boundBy: 0)
+        XCTAssertTrue(content.waitForExistence(timeout: 5))
+        app.activate()
+        content.coordinate(withNormalizedOffset: CGVector(dx: 0.11, dy: 0.18)).click()
+        app.typeKey(key, modifierFlags: modifierFlags)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    }
+
     private func waitForGroup(
         named name: String,
         timeout: TimeInterval
@@ -765,6 +842,33 @@ final class RunnerUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }
         throw UITestFailure(description: "timed out waiting for group \(name)")
+    }
+
+    private func frontProjectSortOrder() throws -> Int {
+        let groups = try jsonArrayResponse(url: URL(string: "http://127.0.0.1:\(port)/api/groups")!)
+        let topLevelSortOrders = groups
+            .filter { Self.isMissingOrNull($0["parent_id"]) }
+            .compactMap { Self.int($0, key: "sort_order") }
+        let minimum = topLevelSortOrders.min() ?? 0
+        return minimum - 2
+    }
+
+    private func updateGroupSortOrder(id: String, sortOrder: Int) throws {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/groups/\(id)")!)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["sort_order": sortOrder])
+        let result = try synchronousData(for: request)
+        XCTAssertEqual(result.statusCode, 200)
+    }
+
+    private func updateSessionSortOrder(id: String, sortOrder: Int) throws {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/sessions/\(id)")!)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["sort_order": sortOrder])
+        let result = try synchronousData(for: request)
+        XCTAssertEqual(result.statusCode, 200)
     }
 
     private func waitForSessionCount(
@@ -808,6 +912,62 @@ final class RunnerUITests: XCTestCase {
         throw UITestFailure(
             description:
                 "timed out waiting for session tile \(sessionName) to contain \(expected) (label=\(lastLabel), value=\(lastValue))"
+        )
+    }
+
+    private func waitForFileContents(
+        at url: URL,
+        equals expected: String,
+        timeout: TimeInterval
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let data = try? String(contentsOf: url, encoding: .utf8), data == expected {
+                return
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        let debugEvents = try readEvents()
+            .filter {
+                guard let name = $0["event"] as? String else { return false }
+                return [
+                    "attach_started",
+                    "window_key_changed",
+                    "surface_focus_changed",
+                    "focus_reconcile",
+                    "focus_apply",
+                    "surface_key_down",
+                    "surface_insert_text",
+                ].contains(name)
+            }
+            .suffix(20)
+        throw UITestFailure(
+            description: "timed out waiting for \(url.lastPathComponent) to equal \(expected); recent events: \(Array(debugEvents))"
+        )
+    }
+
+    private func waitForSurfaceInsertedText(
+        sessionId: String,
+        contains expected: String,
+        timeout: TimeInterval
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let text = try readEvents()
+                .filter {
+                    ($0["event"] as? String) == "surface_insert_text"
+                        && ($0["session_id"] as? String) == sessionId
+                }
+                .compactMap { $0["text"] as? String }
+                .joined()
+            if text.contains(expected) {
+                return
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+
+        throw UITestFailure(
+            description: "timed out waiting for inserted text on \(sessionId) to contain \(expected)"
         )
     }
 

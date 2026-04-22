@@ -32,4 +32,8 @@ abstract class TerminalBackend {
 
   bool get isLocalPty;
   String get platformId;
+
+  /// Maximum number of mounted terminal views the shell keeps in memory.
+  /// Backends can raise this when they prioritize instant tab switches.
+  int get retainedTerminalViewCap => 6;
 }

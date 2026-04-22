@@ -623,6 +623,12 @@ protocol TerminalShortcutFocusable {}
 
 /// NSView embedding a Ghostty surface whose child process is `tether-client attach`.
 final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
+    enum InteractiveFocusDisposition: Equatable {
+        case focusNow
+        case retryOnNextRunLoop
+        case blocked
+    }
+
     private let sessionId: String
     private let serverBaseUrl: String?
     private let authToken: String?
@@ -643,12 +649,34 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     private var isComposing = false
     private var focused = false
     private var suppressNextLeftMouseUp = false
+    private var interactiveFocusRetryWorkItem: DispatchWorkItem?
     private var imagePasteBridgeEnabled = false
     private var isActiveInUI = true
     private var isVisibleInUI = true
     private var metadataHandle: FileHandle?
     private var metadataMonitor: DispatchSourceFileSystemObject?
     private var metadataBuffer = Data()
+    private var windowDidBecomeKeyObserver: NSObjectProtocol?
+
+    static func interactiveFocusDisposition(
+        isActiveInUI: Bool,
+        isVisibleInUI: Bool,
+        bounds: NSRect,
+        firstResponder: NSResponder?,
+        hasAttachedSheet: Bool,
+        windowIsKey: Bool,
+        windowExists: Bool
+    ) -> InteractiveFocusDisposition {
+        guard isActiveInUI, isVisibleInUI else { return .blocked }
+        guard windowExists else { return .retryOnNextRunLoop }
+        guard bounds.width > 1, bounds.height > 1 else { return .retryOnNextRunLoop }
+        guard !hasAttachedSheet else { return .blocked }
+        guard !MainFlutterWindow.isEditableTextResponder(firstResponder) else {
+            return .blocked
+        }
+        guard windowIsKey else { return .retryOnNextRunLoop }
+        return .focusNow
+    }
 
     init(
         sessionId: String,
@@ -675,8 +703,21 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard window != nil, surface == nil else { return }
-        createSurface()
+        clearWindowDidBecomeKeyObserver()
+
+        guard let window else {
+            interactiveFocusRetryWorkItem?.cancel()
+            interactiveFocusRetryWorkItem = nil
+            return
+        }
+
+        installWindowDidBecomeKeyObserver(for: window)
+
+        if surface == nil {
+            createSurface()
+        } else {
+            ensureInteractiveFocusIfEligible(reason: "viewDidMoveToWindow")
+        }
     }
 
     private func createSurface() {
@@ -716,6 +757,7 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         ghostty_surface_draw(s)
         observeNotifications()
         updateEventMonitor()
+        ensureInteractiveFocusIfEligible(reason: "createSurface")
         testLogger.write(
             event: "attach_started",
             fields: [
@@ -1048,6 +1090,9 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         ghostty_surface_set_size(s, UInt32(scaled.width), UInt32(scaled.height))
         ghostty_surface_draw(s)
         inputContext?.invalidateCharacterCoordinates()
+        if isActiveInUI && isVisibleInUI {
+            ensureInteractiveFocusIfEligible(reason: "layout")
+        }
     }
 
     override func viewDidChangeBackingProperties() {
@@ -1109,6 +1154,118 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         if let surface {
             ghostty_surface_set_focus(surface, newValue)
         }
+    }
+
+    private func installWindowDidBecomeKeyObserver(for window: NSWindow) {
+        windowDidBecomeKeyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.ensureInteractiveFocusIfEligible(reason: "windowDidBecomeKey")
+        }
+    }
+
+    private func clearWindowDidBecomeKeyObserver() {
+        if let windowDidBecomeKeyObserver {
+            NotificationCenter.default.removeObserver(windowDidBecomeKeyObserver)
+            self.windowDidBecomeKeyObserver = nil
+        }
+    }
+
+    private func ensureInteractiveFocusIfEligible(reason: String, allowRetry: Bool = true) {
+        guard let window else {
+            testLogger.write(
+                event: "focus_reconcile",
+                fields: ["role": attachOptions.role, "reason": reason, "disposition": "retry_missing_window"]
+            )
+            if allowRetry {
+                scheduleInteractiveFocusRetry(reason: reason)
+            }
+            return
+        }
+        guard window.firstResponder !== self else { return }
+
+        let firstResponderType = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+
+        switch Self.interactiveFocusDisposition(
+            isActiveInUI: isActiveInUI,
+            isVisibleInUI: isVisibleInUI,
+            bounds: bounds,
+            firstResponder: window.firstResponder,
+            hasAttachedSheet: window.attachedSheet != nil,
+            windowIsKey: window.isKeyWindow,
+            windowExists: true
+        ) {
+        case .focusNow:
+            testLogger.write(
+                event: "focus_reconcile",
+                fields: [
+                    "role": attachOptions.role,
+                    "reason": reason,
+                    "disposition": "focus_now",
+                    "first_responder_type": firstResponderType,
+                    "is_key_window": window.isKeyWindow,
+                ]
+            )
+            interactiveFocusRetryWorkItem?.cancel()
+            interactiveFocusRetryWorkItem = nil
+            let result = window.makeFirstResponder(self)
+            testLogger.write(
+                event: "focus_apply",
+                fields: [
+                    "role": attachOptions.role,
+                    "reason": reason,
+                    "result": result,
+                    "first_responder_type": window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil",
+                ]
+            )
+            if allowRetry && (!result || window.firstResponder !== self) {
+                scheduleInteractiveFocusRetry(reason: reason)
+            }
+        case .retryOnNextRunLoop:
+            testLogger.write(
+                event: "focus_reconcile",
+                fields: [
+                    "role": attachOptions.role,
+                    "reason": reason,
+                    "disposition": "retry_on_next_runloop",
+                    "first_responder_type": firstResponderType,
+                    "is_key_window": window.isKeyWindow,
+                    "width": bounds.width,
+                    "height": bounds.height,
+                ]
+            )
+            if allowRetry {
+                scheduleInteractiveFocusRetry(reason: reason)
+            }
+        case .blocked:
+            testLogger.write(
+                event: "focus_reconcile",
+                fields: [
+                    "role": attachOptions.role,
+                    "reason": reason,
+                    "disposition": "blocked",
+                    "first_responder_type": firstResponderType,
+                    "is_key_window": window.isKeyWindow,
+                    "has_attached_sheet": window.attachedSheet != nil,
+                ]
+            )
+            interactiveFocusRetryWorkItem?.cancel()
+            interactiveFocusRetryWorkItem = nil
+        }
+    }
+
+    private func scheduleInteractiveFocusRetry(reason: String) {
+        guard interactiveFocusRetryWorkItem == nil else { return }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.interactiveFocusRetryWorkItem = nil
+            self.ensureInteractiveFocusIfEligible(reason: "\(reason).retry", allowRetry: false)
+        }
+        interactiveFocusRetryWorkItem = workItem
+        DispatchQueue.main.async(execute: workItem)
     }
 
     func debugSetFocusForTesting(_ newValue: Bool) {
@@ -1331,6 +1488,16 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
 
     override func keyDown(with event: NSEvent) {
         guard let s = surface else { return }
+        testLogger.write(
+            event: "surface_key_down",
+            fields: [
+                "role": attachOptions.role,
+                "characters": event.characters as Any,
+                "characters_ignoring_modifiers": event.charactersIgnoringModifiers as Any,
+                "is_key_window": window?.isKeyWindow as Any,
+                "first_responder_is_self": window?.firstResponder === self,
+            ]
+        )
 
         if TerminalView.keyboardPasteRoutingAction(
             eventType: event.type,
@@ -1524,19 +1691,35 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
     func setActive(_ active: Bool) {
         isActiveInUI = active
         if !active {
+            interactiveFocusRetryWorkItem?.cancel()
+            interactiveFocusRetryWorkItem = nil
+            if window?.firstResponder === self {
+                window?.makeFirstResponder(nil)
+            }
             focusDidChange(false)
         }
         applyPresentationState()
         updateEventMonitor()
+        if active && isVisibleInUI {
+            ensureInteractiveFocusIfEligible(reason: "setActive")
+        }
     }
 
     func setVisibleInUI(_ visible: Bool) {
         isVisibleInUI = visible
         if !visible {
+            interactiveFocusRetryWorkItem?.cancel()
+            interactiveFocusRetryWorkItem = nil
+            if window?.firstResponder === self {
+                window?.makeFirstResponder(nil)
+            }
             focusDidChange(false)
         }
         applyPresentationState()
         updateEventMonitor()
+        if visible && isActiveInUI {
+            ensureInteractiveFocusIfEligible(reason: "setVisibleInUI")
+        }
     }
 
     private func applyPresentationState() {
@@ -1557,12 +1740,17 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
         interactionEnabled = interactive
         if !interactive {
             suppressNextLeftMouseUp = false
+            if window?.firstResponder === self {
+                window?.makeFirstResponder(nil)
+            }
             focusDidChange(false)
         }
         updateEventMonitor()
     }
 
     deinit {
+        interactiveFocusRetryWorkItem?.cancel()
+        clearWindowDidBecomeKeyObserver()
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         if let eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
@@ -1616,6 +1804,11 @@ extension TerminalSurfaceView: NSTextInputClient {
         } else {
             return
         }
+
+        testLogger.write(
+            event: "surface_insert_text",
+            fields: ["role": attachOptions.role, "text": chars]
+        )
 
         if keyTextAccumulator != nil {
             keyTextAccumulator?.append(chars)
