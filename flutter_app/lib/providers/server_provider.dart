@@ -245,6 +245,55 @@ class ServerNotifier extends StateNotifier<ServerState> {
     }
   }
 
+  /// Fast refresh that only fetches groups and sessions, skipping the slow
+  /// SSH host reachability check. Used after session/group mutations where
+  /// the caller needs the updated list immediately.
+  Future<void> _refreshSessionsAndGroups() async {
+    final api = state.api;
+    if (api == null) return;
+    final generation = _connectionGeneration;
+
+    try {
+      final results = await Future.wait([
+        api.listGroups(),
+        api.listSessions(),
+      ]);
+      if (_connectionGeneration != generation) return;
+
+      final diff = diffServerSnapshot(
+        currentGroups: state.groups,
+        currentSessions: state.sessions,
+        currentSshHosts: state.sshHosts,
+        refreshedGroups: results[0] as List<Group>,
+        refreshedSessions: results[1] as List<Session>,
+        refreshedSshHosts: state.sshHosts,
+      );
+
+      if (!diff.hasChanges && !state.isStale && state.error == null) {
+        return;
+      }
+
+      _replaceState(
+        groups: diff.groups,
+        groupsStructureChanged: diff.groupsStructureChanged,
+        sessions: diff.mergedSessions,
+        sessionsStructureChanged: diff.sessionsStructureChanged,
+        sshHosts: diff.sshHosts,
+        isStale: false,
+        error: null,
+      );
+
+      TestEventLogger.instance.log('sessions_refreshed', {
+        'group_count': diff.groups.length,
+        'session_count': diff.mergedSessions.length,
+        'session_names': diff.mergedSessions.map((s) => s.name).toList(),
+      });
+    } catch (error) {
+      if (_connectionGeneration != generation) return;
+      state = state.copyWith(isStale: true, error: error.toString());
+    }
+  }
+
   Future<Group> createGroup({
     required String name,
     String? parentId,
@@ -294,7 +343,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
       cwd: cwd,
       local: false,
     );
-    await refresh();
+    await _refreshSessionsAndGroups();
     return session;
   }
 

@@ -1184,7 +1184,9 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
             }
             return
         }
-        guard window.firstResponder !== self else { return }
+        guard window.firstResponder !== self else {
+            return
+        }
 
         let firstResponderType = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
 

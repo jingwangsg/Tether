@@ -1,3 +1,4 @@
+import 'package:characters/characters.dart';
 import '../models/session.dart';
 
 class SessionTabPresentation {
@@ -36,7 +37,6 @@ SessionTabPresentation deriveSessionTabPresentation(
   if (!isAgent || rawTitle == null) {
     return null;
   }
-
   final normalized = _normalizeWhitespace(rawTitle);
   if (normalized.isEmpty) {
     return null;
@@ -53,20 +53,22 @@ String _normalizeWhitespace(String value) {
 }
 
 String _compactSecondary(String value) {
-  final runes = value.runes.toList();
-  var index = 0;
+  final chars = value.characters;
+  var charIndex = 0;
   var statusPrefix = '';
 
-  if (runes.isNotEmpty && _isStatusPrefix(runes.first)) {
-    statusPrefix = String.fromCharCode(runes.first);
-    index = 1;
-    while (index < runes.length &&
-        String.fromCharCode(runes[index]).trim().isEmpty) {
-      index++;
+  if (chars.isNotEmpty && _isStatusPrefix(chars.first.runes.first)) {
+    statusPrefix = chars.first;
+    charIndex = 1;
+    final charList = chars.toList();
+    while (charIndex < charList.length && charList[charIndex].trim().isEmpty) {
+      charIndex++;
     }
   }
 
-  final body = value.substring(index).trimLeft();
+  // Convert character index to code-unit offset for substring
+  final codeUnitOffset = value.characters.take(charIndex).string.length;
+  final body = value.substring(codeUnitOffset).trimLeft();
   if (body.isEmpty) {
     return statusPrefix;
   }

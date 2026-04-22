@@ -43,11 +43,13 @@ SessionIndicatorStatus? deriveSessionIndicatorStatus(
     return SessionIndicatorStatus.attention;
   }
 
-  return switch (deriveSessionToolStatus(session)) {
+  final toolStatus = deriveSessionToolStatus(session);
+  final result = switch (toolStatus) {
     SessionToolStatus.waiting => SessionIndicatorStatus.waiting,
     SessionToolStatus.running => SessionIndicatorStatus.running,
     null => null,
   };
+  return result;
 }
 
 bool _isSupportedTool(String? process) {

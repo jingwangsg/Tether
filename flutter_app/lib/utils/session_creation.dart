@@ -41,6 +41,7 @@ Future<Session?> createSessionInCurrentProject(
   final session = await ref
       .read(serverProvider.notifier)
       .createSession(groupId: project.id);
+
   if (!context.mounted) {
     return session;
   }

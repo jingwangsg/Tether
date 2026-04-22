@@ -14,7 +14,9 @@ final class TerminalDesktopNotificationCenter: NSObject, UNUserNotificationCente
   func installDelegate() {
     let center = UNUserNotificationCenter.current()
     center.delegate = self
-    guard shouldRequestAuthorization else { return }
+    guard shouldRequestAuthorization else {
+      return
+    }
     center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
   }
 
@@ -57,8 +59,8 @@ final class TerminalDesktopNotificationCenter: NSObject, UNUserNotificationCente
 
 @main
 class AppDelegate: FlutterAppDelegate {
-  override func applicationDidFinishLaunching(_ notification: Notification) {
-    super.applicationDidFinishLaunching(notification)
+  override func applicationWillFinishLaunching(_ notification: Notification) {
+    super.applicationWillFinishLaunching(notification)
     TerminalDesktopNotificationCenter.shared.installDelegate()
   }
 
