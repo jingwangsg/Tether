@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -27,12 +29,12 @@ class _CreateSessionCall {
 }
 
 Group _group(String id) {
-  return Group(id: id, name: id);
+  return Group(id: _stableTestId('group', id), name: id);
 }
 
 Session _session(String id, {required String groupId, required String name}) {
   return Session(
-    id: id,
+    id: _stableTestId('session', id),
     groupId: groupId,
     name: name,
     shell: 'bash',
@@ -43,6 +45,14 @@ Session _session(String id, {required String groupId, required String name}) {
     createdAt: '',
     lastActive: '',
   );
+}
+
+String _stableTestId(String prefix, String id) {
+  final normalized = '${prefix}_$id'.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+  if (normalized.length >= 8) {
+    return normalized;
+  }
+  return normalized.padRight(8, '_');
 }
 
 ProviderContainer _container(ServerState serverState) {
@@ -279,7 +289,7 @@ void main() {
 
     final notifier =
         container.read(serverProvider.notifier) as _TestServerNotifier;
-    expect(notifier.deletedSessionIds, ['close-b']);
+    expect(notifier.deletedSessionIds, [sessionB.id]);
     expect(container.read(sessionProvider).activeSessionId, sessionA.id);
     expect(
       container.read(serverProvider).sessions.map((session) => session.id),
@@ -337,6 +347,104 @@ void main() {
     expect(container.read(uiProvider).sidebarOpen, isFalse);
   });
 
+  testWidgets('mobile closed sidebar shows explicit opener controls', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final container = _container(const ServerState());
+    addTearDown(container.dispose);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'xterm'),
+    );
+    await tester.pump();
+
+    expect(container.read(uiProvider).sidebarOpen, isFalse);
+    expect(find.byKey(const ValueKey('mobile-sidebar-open-button')), findsOne);
+    expect(
+      find.byKey(const ValueKey('mobile-sidebar-open-drag-strip')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('mobile opener button opens sidebar', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final container = _container(const ServerState());
+    addTearDown(container.dispose);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'xterm'),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('mobile-sidebar-open-button')));
+    await tester.pumpAndSettle();
+
+    expect(container.read(uiProvider).sidebarOpen, isTrue);
+  });
+
+  testWidgets('mobile opener drag strip opens sidebar', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final container = _container(const ServerState());
+    addTearDown(container.dispose);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'xterm'),
+    );
+    await tester.pump();
+
+    final strip = tester.getCenter(
+      find.byKey(const ValueKey('mobile-sidebar-open-drag-strip')),
+    );
+    await tester.dragFrom(strip, const Offset(140, 0));
+    await tester.pumpAndSettle();
+
+    expect(container.read(uiProvider).sidebarOpen, isTrue);
+  });
+
+  testWidgets('mobile backdrop tap closes sidebar', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final container = _container(const ServerState());
+    addTearDown(container.dispose);
+
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'xterm'),
+    );
+    await tester.pump();
+
+    container.read(uiProvider.notifier).setSidebarOpen(true);
+    await tester.pumpAndSettle();
+
+    await tester.tapAt(const Offset(360, 300));
+    await tester.pumpAndSettle();
+
+    expect(container.read(uiProvider).sidebarOpen, isFalse);
+  });
+
   testWidgets('mobile drag from left half but not edge does not open sidebar', (
     tester,
   ) async {
@@ -387,33 +495,38 @@ void main() {
     expect(container.read(uiProvider).sidebarOpen, isTrue);
   });
 
-  testWidgets(
-    'mobile left-edge drag does not open sidebar during selection gesture',
-    (tester) async {
-      tester.view.devicePixelRatio = 1;
-      tester.view.physicalSize = const Size(390, 844);
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
+  testWidgets('mobile opener controls stay inactive during selection gesture', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
 
-      final container = _container(const ServerState());
-      addTearDown(container.dispose);
+    final container = _container(const ServerState());
+    addTearDown(container.dispose);
 
-      await _pumpHomeScreen(
-        tester,
-        container,
-        const _FakeTerminalBackend(platformId: 'xterm'),
-      );
-      await tester.pump();
+    await _pumpHomeScreen(
+      tester,
+      container,
+      const _FakeTerminalBackend(platformId: 'xterm'),
+    );
+    await tester.pump();
 
-      container.read(uiProvider.notifier).setSelectionGestureActive(true);
-      await tester.pump();
+    container.read(uiProvider.notifier).setSelectionGestureActive(true);
+    await tester.pump();
 
-      await tester.dragFrom(const Offset(8, 300), const Offset(140, 0));
-      await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('mobile-sidebar-open-button')));
+    await tester.pumpAndSettle();
 
-      expect(container.read(uiProvider).sidebarOpen, isFalse);
-    },
-  );
+    final strip = tester.getCenter(
+      find.byKey(const ValueKey('mobile-sidebar-open-drag-strip')),
+    );
+    await tester.dragFrom(strip, const Offset(140, 0));
+    await tester.pumpAndSettle();
+
+    expect(container.read(uiProvider).sidebarOpen, isFalse);
+  });
 
   testWidgets('cmd+r opens Rename Session dialog on xterm backend', (
     tester,
@@ -518,14 +631,22 @@ void main() {
   testWidgets('cmd+t falls back to the first top-level project', (
     tester,
   ) async {
-    final child = Group(
-      id: 'child',
-      name: 'Child',
-      parentId: 'alpha',
+    final alpha = Group(
+      id: _stableTestId('group', 'alpha'),
+      name: 'Alpha',
       sortOrder: 0,
     );
-    final beta = Group(id: 'beta', name: 'Beta', sortOrder: 1);
-    final alpha = Group(id: 'alpha', name: 'Alpha', sortOrder: 0);
+    final beta = Group(
+      id: _stableTestId('group', 'beta'),
+      name: 'Beta',
+      sortOrder: 1,
+    );
+    final child = Group(
+      id: _stableTestId('group', 'child'),
+      name: 'Child',
+      parentId: alpha.id,
+      sortOrder: 0,
+    );
     final container = _container(
       ServerState(
         isConnected: true,
@@ -580,8 +701,16 @@ void main() {
   });
 
   testWidgets('cmd+1 selects the first project', (tester) async {
-    final groupA = Group(id: 'a', name: 'Alpha', sortOrder: 0);
-    final groupB = Group(id: 'b', name: 'Beta', sortOrder: 1);
+    final groupA = Group(
+      id: _stableTestId('group', 'a'),
+      name: 'Alpha',
+      sortOrder: 0,
+    );
+    final groupB = Group(
+      id: _stableTestId('group', 'b'),
+      name: 'Beta',
+      sortOrder: 1,
+    );
     final sA = _session('sA', groupId: groupA.id, name: 'sA');
     final sB = _session('sB', groupId: groupB.id, name: 'sB');
     final container = _container(
@@ -594,7 +723,7 @@ void main() {
     addTearDown(container.dispose);
 
     container.read(sessionProvider.notifier).selectProject(groupB.id);
-    expect(container.read(sessionProvider).selectedProjectId, 'b');
+    expect(container.read(sessionProvider).selectedProjectId, groupB.id);
 
     await _pumpHomeScreen(
       tester,
@@ -608,7 +737,7 @@ void main() {
     await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
     await tester.pump();
 
-    expect(container.read(sessionProvider).selectedProjectId, 'a');
+    expect(container.read(sessionProvider).selectedProjectId, groupA.id);
   });
 
   testWidgets(
@@ -616,7 +745,7 @@ void main() {
     (tester) async {
       final group = _group('proj-3');
       final s1 = Session(
-        id: 's1',
+        id: _stableTestId('session', 's1'),
         groupId: group.id,
         name: 'first',
         shell: 'bash',
@@ -631,7 +760,7 @@ void main() {
         oscTitle: '· Claude Code',
       );
       final s2 = Session(
-        id: 's2',
+        id: _stableTestId('session', 's2'),
         groupId: group.id,
         name: 'second',
         shell: 'bash',
@@ -651,7 +780,7 @@ void main() {
       container.read(sessionProvider.notifier)
         ..selectProject(group.id)
         ..setActiveSession(projectId: group.id, sessionId: s2.id);
-      expect(container.read(sessionProvider).activeSessionId, 's2');
+      expect(container.read(sessionProvider).activeSessionId, s2.id);
 
       await _pumpHomeScreen(
         tester,
@@ -669,7 +798,7 @@ void main() {
       await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
       await tester.pump();
 
-      expect(container.read(sessionProvider).activeSessionId, 's1');
+      expect(container.read(sessionProvider).activeSessionId, s1.id);
       expect(find.text('first'), findsOneWidget);
       expect(find.text('second'), findsOneWidget);
       expect(find.text('Claude Code'), findsNothing);
@@ -699,8 +828,16 @@ void main() {
   testWidgets('sidebar New Session creates directly in the selected project', (
     tester,
   ) async {
-    final alpha = Group(id: 'alpha', name: 'Alpha', sortOrder: 0);
-    final beta = Group(id: 'beta', name: 'Beta', sortOrder: 1);
+    final alpha = Group(
+      id: _stableTestId('group', 'alpha'),
+      name: 'Alpha',
+      sortOrder: 0,
+    );
+    final beta = Group(
+      id: _stableTestId('group', 'beta'),
+      name: 'Beta',
+      sortOrder: 1,
+    );
     final existing = _session('existing', groupId: beta.id, name: 'shell');
     final container = _container(
       ServerState(
@@ -771,8 +908,16 @@ void main() {
   testWidgets(
     'native performShellAction payload selects projects and sessions by index',
     (tester) async {
-      final alpha = Group(id: 'alpha', name: 'Alpha', sortOrder: 0);
-      final beta = Group(id: 'beta', name: 'Beta', sortOrder: 1);
+      final alpha = Group(
+        id: _stableTestId('group', 'alpha'),
+        name: 'Alpha',
+        sortOrder: 0,
+      );
+      final beta = Group(
+        id: _stableTestId('group', 'beta'),
+        name: 'Beta',
+        sortOrder: 1,
+      );
       final alphaSession = _session(
         'alpha-1',
         groupId: alpha.id,
@@ -780,7 +925,7 @@ void main() {
       );
       final betaSessionA = _session('beta-1', groupId: beta.id, name: 'beta-1');
       final betaSessionB = Session(
-        id: 'beta-2',
+        id: _stableTestId('session', 'beta-2'),
         groupId: beta.id,
         name: 'beta-2',
         shell: 'bash',
@@ -1069,6 +1214,9 @@ class _FakeTerminalBackend implements TerminalBackend {
   final void Function(String action)? onPerformAction;
 
   @override
+  int get retainedTerminalViewCap => 1;
+
+  @override
   final String platformId;
 
   @override
@@ -1084,6 +1232,7 @@ class _FakeTerminalBackend implements TerminalBackend {
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
     ForegroundChangedCallback? onForegroundChanged,
+    void Function(String title, String body)? onBell,
     Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   }) {
     return _FakeTerminalWidget(

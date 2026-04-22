@@ -47,6 +47,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   static const _windowChannel = MethodChannel('dev.tether/window');
   static const _sidebarOpenEdgeWidth = 24.0;
+  static const _mobileSidebarOpenButtonKey = ValueKey(
+    'mobile-sidebar-open-button',
+  );
+  static const _mobileSidebarOpenDragStripKey = ValueKey(
+    'mobile-sidebar-open-drag-strip',
+  );
+  static const _mobileSidebarBackdropKey = ValueKey('mobile-sidebar-backdrop');
   final _terminalAreaKey = GlobalKey<TerminalAreaState>();
   bool _edgeDragActive = false;
   double _dragDistance = 0;
@@ -199,10 +206,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         final session =
             serverState.sessions.where((s) => s.id == sessionId).firstOrNull;
         if (session != null) {
-          ref.read(sessionProvider.notifier).setActiveSession(
-            projectId: session.groupId,
-            sessionId: session.id,
-          );
+          ref
+              .read(sessionProvider.notifier)
+              .setActiveSession(
+                projectId: session.groupId,
+                sessionId: session.id,
+              );
         }
         return null;
       default:
@@ -330,6 +339,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     return min(280.0, screenWidth * 0.85);
   }
 
+  void _openSidebar() {
+    ref.read(uiProvider.notifier).setSidebarOpen(true);
+  }
+
+  void _closeSidebar() {
+    ref.read(uiProvider.notifier).setSidebarOpen(false);
+  }
+
   @override
   Widget build(BuildContext context) {
     final groups = ref.watch(serverProvider.select((s) => s.groups));
@@ -354,109 +371,107 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         // so the terminal, floating nav pad, and MobileKeyBar all agree on
         // the same bottom obstruction.
         resizeToAvoidBottomInset: false,
-        body: GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onHorizontalDragStart:
-              uiState.isMobile
-                  ? (details) {
-                    final currentUiState = ref.read(uiProvider);
-                    if (currentUiState.selectionGestureActive) {
-                      _edgeDragActive = false;
-                      _dragDistance = 0;
-                      return;
-                    }
-                    final dx = details.globalPosition.dx;
-                    if (!currentUiState.sidebarOpen &&
-                        dx <= _sidebarOpenEdgeWidth) {
-                      _edgeDragActive = true;
-                      _dragDistance = 0;
-                    } else if (currentUiState.sidebarOpen) {
-                      _edgeDragActive = true;
-                      _dragDistance = 0;
-                    } else {
-                      _edgeDragActive = false;
-                    }
-                  }
-                  : null,
-          onHorizontalDragUpdate:
-              uiState.isMobile
-                  ? (details) {
-                    if (!_edgeDragActive) return;
-                    if (ref.read(uiProvider).selectionGestureActive) {
-                      _edgeDragActive = false;
-                      _dragDistance = 0;
-                      return;
-                    }
-                    _dragDistance += details.delta.dx;
-                  }
-                  : null,
-          onHorizontalDragEnd:
-              uiState.isMobile
-                  ? (details) {
-                    if (!_edgeDragActive) return;
-                    final currentUiState = ref.read(uiProvider);
-                    _edgeDragActive = false;
-                    if (currentUiState.selectionGestureActive) {
-                      _dragDistance = 0;
-                      return;
-                    }
-                    if (!currentUiState.sidebarOpen && _dragDistance > 80) {
-                      ref.read(uiProvider.notifier).setSidebarOpen(true);
-                    } else if (currentUiState.sidebarOpen &&
-                        _dragDistance < -80) {
-                      ref.read(uiProvider.notifier).setSidebarOpen(false);
-                    }
-                    _dragDistance = 0;
-                  }
-                  : null,
-          child: Padding(
-            padding: EdgeInsets.only(
-              left: MediaQuery.of(context).padding.left,
-              right: MediaQuery.of(context).padding.right,
-            ),
-            child: Stack(
-              children: [
-                Row(
-                  children: [
-                    if (!uiState.isMobile && uiState.sidebarOpen) ...[
-                      Sidebar(width: ref.watch(sidebarWidthProvider)),
-                      const SidebarResizer(),
-                    ],
-                    Expanded(
-                      child: TerminalArea(
-                        key: _terminalAreaKey,
-                        backend: widget.backend,
-                      ),
-                    ),
+        body: Padding(
+          padding: EdgeInsets.only(
+            left: MediaQuery.of(context).padding.left,
+            right: MediaQuery.of(context).padding.right,
+          ),
+          child: Stack(
+            children: [
+              Row(
+                children: [
+                  if (!uiState.isMobile && uiState.sidebarOpen) ...[
+                    Sidebar(width: ref.watch(sidebarWidthProvider)),
+                    const SidebarResizer(),
                   ],
-                ),
-                if (uiState.isMobile) ...[
-                  IgnorePointer(
-                    ignoring: !uiState.sidebarOpen,
-                    child: GestureDetector(
-                      onTap:
-                          () => ref
-                              .read(uiProvider.notifier)
-                              .setSidebarOpen(false),
-                      child: AnimatedOpacity(
-                        opacity: uiState.sidebarOpen ? 1.0 : 0.0,
-                        duration: const Duration(milliseconds: 250),
-                        curve: Curves.easeOutCubic,
-                        child: Container(color: Colors.black54),
-                      ),
+                  Expanded(
+                    child: TerminalArea(
+                      key: _terminalAreaKey,
+                      backend: widget.backend,
                     ),
-                  ),
-                  AnimatedPositioned(
-                    left: uiState.sidebarOpen ? 0 : -sidebarW,
-                    top: 0,
-                    bottom: 0,
-                    duration: const Duration(milliseconds: 250),
-                    curve: Curves.easeOutCubic,
-                    child: const Sidebar(),
                   ),
                 ],
+              ),
+              if (uiState.isMobile) ...[
+                if (!uiState.sidebarOpen)
+                  Positioned(
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: _sidebarOpenEdgeWidth,
+                    child: IgnorePointer(
+                      ignoring: uiState.selectionGestureActive,
+                      child: GestureDetector(
+                        key: _mobileSidebarOpenDragStripKey,
+                        behavior: HitTestBehavior.opaque,
+                        onHorizontalDragStart: (_) {
+                          _edgeDragActive = true;
+                          _dragDistance = 0;
+                        },
+                        onHorizontalDragUpdate: (details) {
+                          if (!_edgeDragActive) return;
+                          _dragDistance += details.delta.dx;
+                        },
+                        onHorizontalDragEnd: (_) {
+                          if (!_edgeDragActive) return;
+                          _edgeDragActive = false;
+                          if (_dragDistance > 80) {
+                            _openSidebar();
+                          }
+                          _dragDistance = 0;
+                        },
+                        onHorizontalDragCancel: () {
+                          _edgeDragActive = false;
+                          _dragDistance = 0;
+                        },
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
+                  ),
+                if (!uiState.sidebarOpen)
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    child: SafeArea(
+                      minimum: const EdgeInsets.all(8),
+                      child: IconButton(
+                        key: _mobileSidebarOpenButtonKey,
+                        onPressed:
+                            uiState.selectionGestureActive
+                                ? null
+                                : _openSidebar,
+                        style: IconButton.styleFrom(
+                          backgroundColor: const Color(0xCC1E1E1E),
+                          foregroundColor: Colors.white,
+                        ),
+                        icon: const Icon(Icons.menu),
+                        tooltip: 'Open sidebar',
+                      ),
+                    ),
+                  ),
+                IgnorePointer(
+                  ignoring: !uiState.sidebarOpen,
+                  child: GestureDetector(
+                    key: _mobileSidebarBackdropKey,
+                    onTap: _closeSidebar,
+                    child: AnimatedOpacity(
+                      opacity: uiState.sidebarOpen ? 1.0 : 0.0,
+                      duration: const Duration(milliseconds: 250),
+                      curve: Curves.easeOutCubic,
+                      child: Container(color: Colors.black54),
+                    ),
+                  ),
+                ),
+                AnimatedPositioned(
+                  left: uiState.sidebarOpen ? 0 : -sidebarW,
+                  top: 0,
+                  bottom: 0,
+                  duration: const Duration(milliseconds: 250),
+                  curve: Curves.easeOutCubic,
+                  child: const Sidebar(),
+                ),
               ],
-            ),
+            ],
           ),
         ),
       ),
@@ -465,9 +480,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   void _scheduleProjectSync(List<Group> groups) {
     final projects =
-        groups
-            .where((group) => group.parentId == null)
-            .toList()
+        groups.where((group) => group.parentId == null).toList()
           ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
     _pendingProjectIds = projects.map((group) => group.id).toList();
     if (_projectSyncScheduled) {
