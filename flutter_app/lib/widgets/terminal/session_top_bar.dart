@@ -98,7 +98,16 @@ class SessionTopBar extends ConsumerWidget {
                         ? presentation.primaryTitle
                         : '${presentation.primaryTitle} | $secondaryForA11y',
                 selected: isActive,
-                child: InkWell(
+                child: GestureDetector(
+                  onSecondaryTapUp: (details) {
+                    _showTabContextMenu(
+                      context,
+                      ref,
+                      session,
+                      details.globalPosition,
+                    );
+                  },
+                  child: InkWell(
                   onTap: () {
                     if (projectId != null) {
                       ref
@@ -218,10 +227,63 @@ class SessionTopBar extends ConsumerWidget {
                   ),
                 ),
               ),
+              ),
             ),
           );
         },
       ),
     );
+  }
+
+  void _showTabContextMenu(
+    BuildContext context,
+    WidgetRef ref,
+    Session session,
+    Offset position,
+  ) {
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        position.dx,
+        position.dy,
+        position.dx,
+        position.dy,
+      ),
+      color: const Color(0xFF252525),
+      items: [
+        PopupMenuItem<String>(
+          value: 'mark_unread',
+          height: 36,
+          child: Row(
+            children: [
+              Icon(
+                session.hasAttention
+                    ? Icons.mark_email_read
+                    : Icons.mark_email_unread,
+                size: 14,
+                color: Colors.white54,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                session.hasAttention ? 'Mark as Read' : 'Mark as Unread',
+                style: const TextStyle(color: Colors.white, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ).then((value) {
+      if (value == 'mark_unread') {
+        if (session.hasAttention) {
+          ref
+              .read(serverProvider.notifier)
+              .ackSessionAttention(session.id);
+        } else {
+          ref
+              .read(serverProvider.notifier)
+              .markSessionBell(session.id);
+        }
+      }
+    });
   }
 }

@@ -6,6 +6,7 @@ import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../platform/paste_service.dart';
+import '../../utils/debug_log.dart';
 import '../../platform/volume_keys.dart';
 import '../../platform/terminal_backend.dart';
 import '../../utils/session_interaction.dart';
@@ -82,6 +83,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       previous,
       next,
     ) {
+      debugLog('[BELL:3:area] activeSessionId changed: ${previous?.substring(0, 8)} -> ${next?.substring(0, 8)}');
       if (previous != null && previous != next) {
         _warmSessionId = previous;
         _touchRetainedSession(previous);
@@ -247,6 +249,10 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                                 attentionAckSeq: attentionAckSeq,
                                 isActive: isActive,
                               ),
+                          onBell: (title, body) {
+                            debugLog('[BELL:3:area] BELL from session=${session.id.substring(0, 8)} title=$title');
+                            _handleBell(sessionId: session.id);
+                          },
                           onClipboardImage: (data, mimeType) {
                             return _handleClipboardImage(
                               sessionId: session.id,
@@ -476,6 +482,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     required int attentionAckSeq,
     required bool isActive,
   }) {
+    debugLog('[BELL:3:area] _handleSessionStatusUpdate session=${sessionId.substring(0, 8)} process=$process osc=$oscTitle attSeq=$attentionSeq ackSeq=$attentionAckSeq isActive=$isActive');
     ref
         .read(serverProvider.notifier)
         .updateForegroundProcess(
@@ -486,6 +493,7 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
           attentionAckSeq: attentionAckSeq,
         );
     if (isActive && attentionSeq > attentionAckSeq) {
+      debugLog('[BELL:3:area] auto-ack: active session has unacked attention, acking');
       _ackAttentionIfNeeded(sessionId);
     }
   }
@@ -497,13 +505,29 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
             .sessions
             .where((item) => item.id == sessionId)
             .firstOrNull;
+    debugLog('[BELL:3:area] _ackAttentionIfNeeded session=${sessionId.substring(0, 8)} found=${session != null} hasAttention=${session?.hasAttention} attSeq=${session?.attentionSeq} ackSeq=${session?.attentionAckSeq}');
     if (session == null || !session.hasAttention) {
       return;
     }
+    debugLog('[BELL:3:area] sending ack to server for session=${sessionId.substring(0, 8)}');
     ref.read(serverProvider.notifier).ackSessionAttention(sessionId).catchError(
       (_) {
         return null;
       },
     );
+  }
+
+  void _handleBell({required String sessionId}) {
+    // Bell from Ghostty (BEL char or OSC notification).
+    // Mark the session as needing attention — the sidebar/tab will show the bell icon.
+    // If this session is currently active and focused, auto-ack immediately.
+    final navState = ref.read(sessionProvider);
+    final isActive = navState.activeSessionId == sessionId;
+    if (isActive) {
+      debugLog('[BELL:3:area] bell for active session ${sessionId.substring(0, 8)}, ignoring');
+      return;
+    }
+    debugLog('[BELL:3:area] bell for background session ${sessionId.substring(0, 8)}, marking attention');
+    ref.read(serverProvider.notifier).markSessionBell(sessionId);
   }
 }

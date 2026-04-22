@@ -1043,6 +1043,9 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
             guard let title = note.userInfo?["title"] as? String,
                   let body = note.userInfo?["body"] as? String else { return }
 
+            // Emit bell event to Flutter so the UI can show attention indicators
+            self.eventSink?(["type": "bell", "title": title, "body": body])
+
             let shouldDeliver = TerminalDesktopNotificationCenter.shared
                 .shouldDeliverDesktopNotification(
                     appIsActive: NSApp.isActive,
@@ -1056,6 +1059,13 @@ final class TerminalSurfaceView: NSView, TerminalShortcutFocusable {
                     body: body
                 )
             }
+        })
+
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .terminalRingBell, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, self.matchesSurface(note) else { return }
+            self.eventSink?(["type": "bell", "title": "Bell", "body": ""])
         })
     }
 

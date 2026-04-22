@@ -391,6 +391,18 @@ class TerminalApp {
                 ]
             )
 
+        case GHOSTTY_ACTION_RING_BELL:
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface
+            else { return }
+            NotificationCenter.default.post(
+                name: .terminalRingBell,
+                object: nil,
+                userInfo: [
+                    "surface": OpaquePointer(surface),
+                ]
+            )
+
         default:
             break
         }
@@ -412,4 +424,5 @@ extension Notification.Name {
     static let terminalScrollbarChanged = Notification.Name("TerminalScrollbarChanged")
     static let terminalDesktopNotification = Notification.Name("TerminalDesktopNotification")
     static let terminalDesktopNotificationActivated = Notification.Name("TerminalDesktopNotificationActivated")
+    static let terminalRingBell = Notification.Name("TerminalRingBell")
 }

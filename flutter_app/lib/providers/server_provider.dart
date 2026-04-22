@@ -6,6 +6,7 @@ import '../models/group.dart';
 import '../models/session.dart';
 import '../models/ssh_host.dart';
 import '../services/api_service.dart';
+import '../utils/debug_log.dart';
 import '../utils/test_event_logger.dart';
 import 'server_snapshot_diff.dart';
 
@@ -440,6 +441,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
           current.attentionAckSeq == newAttnAckSeq) {
         return;
       }
+      debugLog('[BELL:4:provider] updateForegroundProcess session=${sessionId.substring(0, 8)} old(fg=${current.foregroundProcess} osc=${current.oscTitle} att=${current.attentionSeq}/${current.attentionAckSeq}) -> new(fg=$newFg osc=$newOsc att=$newAttnSeq/$newAttnAckSeq)');
     }
 
     final sessions =
@@ -456,6 +458,18 @@ class ServerNotifier extends StateNotifier<ServerState> {
           return s;
         }).toList();
     _replaceState(sessions: sessions);
+  }
+
+  /// Mark a session as needing attention due to a bell event from Ghostty.
+  /// This is a client-side only operation — no server call needed since the
+  /// bell originated from the local PTY surface.
+  void markSessionBell(String sessionId) {
+    final sessions = state.sessions.map((s) {
+      if (s.id != sessionId) return s;
+      return s.copyWith(attentionSeq: s.attentionSeq + 1);
+    }).toList();
+    _replaceState(sessions: sessions);
+    debugLog('[BELL:4:provider] markSessionBell session=${sessionId.substring(0, 8)} new attSeq=${sessions.firstWhere((s) => s.id == sessionId).attentionSeq}');
   }
 
   Future<void> ackSessionAttention(String sessionId) async {

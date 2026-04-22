@@ -1,4 +1,5 @@
 import '../models/session.dart';
+import 'debug_log.dart';
 
 enum SessionToolStatus { waiting, running }
 
@@ -40,6 +41,7 @@ SessionIndicatorStatus? deriveSessionIndicatorStatus(
   required bool isActive,
 }) {
   if (session.hasAttention && !isActive) {
+    debugLog('[BELL:5:status] session=${session.id.substring(0, 8)} -> ATTENTION (attSeq=${session.attentionSeq} ackSeq=${session.attentionAckSeq} isActive=$isActive)');
     return SessionIndicatorStatus.attention;
   }
 
@@ -49,6 +51,9 @@ SessionIndicatorStatus? deriveSessionIndicatorStatus(
     SessionToolStatus.running => SessionIndicatorStatus.running,
     null => null,
   };
+  if (result != null) {
+    debugLog('[BELL:5:status] session=${session.id.substring(0, 8)} -> $result (fg=${session.foregroundProcess} osc=${session.oscTitle} attSeq=${session.attentionSeq} ackSeq=${session.attentionAckSeq} isActive=$isActive)');
+  }
   return result;
 }
 

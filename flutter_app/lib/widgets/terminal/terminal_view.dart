@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../platform/terminal_backend.dart';
+import '../../utils/debug_log.dart';
 import '../../providers/server_provider.dart';
 import '../../services/websocket_service.dart';
 import 'terminal_controller.dart';
@@ -23,6 +24,7 @@ class TerminalView extends StatefulWidget {
   final bool imagePasteBridgeEnabled;
   final VoidCallback? onSessionExited;
   final ForegroundChangedCallback? onForegroundChanged;
+  final void Function(String title, String body)? onBell;
   final Future<void> Function(Uint8List data, String mimeType)?
   onClipboardImage;
   final WebSocketService Function(String url)? metadataWsFactory;
@@ -37,6 +39,7 @@ class TerminalView extends StatefulWidget {
     this.imagePasteBridgeEnabled = false,
     this.onSessionExited,
     this.onForegroundChanged,
+    this.onBell,
     this.onClipboardImage,
     this.metadataWsFactory,
   });
@@ -141,12 +144,16 @@ class TerminalViewState extends State<TerminalView> {
 
   void _syncMetadataConnection() {
     if (!widget.isActive || widget.serverConfig == null) {
+      if (_metadataWs != null) {
+        debugLog('[BELL:2:tv] session=${widget.sessionId.substring(0, 8)} disconnecting metadata ws (isActive=${widget.isActive})');
+      }
       _disconnectMetadata();
       return;
     }
     if (_metadataWs != null) {
       return;
     }
+    debugLog('[BELL:2:tv] session=${widget.sessionId.substring(0, 8)} connecting metadata ws');
     _connectMetadata();
   }
 
@@ -167,6 +174,7 @@ class TerminalViewState extends State<TerminalView> {
     _metadataSubscription = ws.messages.listen((message) {
       switch (message) {
         case ForegroundChangedMessage():
+          debugLog('[BELL:2:tv] session=${widget.sessionId.substring(0, 8)} onForegroundChanged process=${message.process} osc=${message.oscTitle} attSeq=${message.attentionSeq} ackSeq=${message.attentionAckSeq} isActive=${widget.isActive}');
           widget.onForegroundChanged?.call(
             message.process,
             message.oscTitle,
@@ -236,6 +244,11 @@ class TerminalViewState extends State<TerminalView> {
         setState(() {
           _searchSelected = event['value'] as int?;
         });
+      case 'bell':
+        final title = event['title'] as String? ?? '';
+        final body = event['body'] as String? ?? '';
+        debugLog('[BELL:2:tv] session=${widget.sessionId.substring(0, 8)} BELL event title=$title body=$body');
+        widget.onBell?.call(title, body);
       case 'clipboard_image':
         final data = event['data'];
         final mimeType = event['mimeType'] as String?;

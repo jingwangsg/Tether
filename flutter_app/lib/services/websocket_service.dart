@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show visibleForTesting;
+import '../utils/debug_log.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// Message types sent by the server
@@ -196,13 +197,13 @@ class WebSocketService {
         case 'pong':
           _messageController.add(PongMessage());
         case 'foreground_changed':
+          final fgProcess = json['process'] as String?;
+          final fgOsc = json['osc_title'] as String?;
+          final fgAttSeq = (json['attention_seq'] as num?)?.toInt() ?? 0;
+          final fgAckSeq = (json['attention_ack_seq'] as num?)?.toInt() ?? 0;
+          debugLog('[BELL:1:ws] foreground_changed process=$fgProcess osc=$fgOsc attSeq=$fgAttSeq ackSeq=$fgAckSeq');
           _messageController.add(
-            ForegroundChangedMessage(
-              json['process'] as String?,
-              json['osc_title'] as String?,
-              (json['attention_seq'] as num?)?.toInt() ?? 0,
-              (json['attention_ack_seq'] as num?)?.toInt() ?? 0,
-            ),
+            ForegroundChangedMessage(fgProcess, fgOsc, fgAttSeq, fgAckSeq),
           );
         case 'scrollback_info':
           _messageController.add(

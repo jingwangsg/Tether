@@ -9,7 +9,9 @@ import '../../providers/session_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_creation.dart';
 import '../../utils/project_status_summary.dart';
+import '../../utils/debug_log.dart';
 import '../../utils/session_interaction.dart';
+import 'notification_bell.dart';
 import '../../utils/session_status.dart';
 import '../../utils/shell_dialogs.dart';
 import '../../utils/test_event_logger.dart';
@@ -50,6 +52,9 @@ class Sidebar extends ConsumerWidget {
       selectedProjectId: navState.selectedProjectId,
       activeSessionId: navState.activeSessionId,
     );
+    if (projectStatuses.isNotEmpty) {
+      debugLog('[BELL:6:sidebar] projectStatuses=$projectStatuses selected=${navState.selectedProjectId} active=${navState.activeSessionId}');
+    }
 
     return Container(
       width: sidebarWidth,
@@ -110,6 +115,7 @@ class Sidebar extends ConsumerWidget {
               ),
             ),
           ),
+          if (isConnected) const NotificationBell(),
           IconButton(
             icon: const Icon(Icons.settings, size: 18),
             color: Colors.white54,

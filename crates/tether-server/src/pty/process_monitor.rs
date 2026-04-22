@@ -19,6 +19,25 @@ fn full_session_update(state: &AppState, session: &Arc<PtySession>, source_label
     }
 
     let mut attention_state = session.tool_attention_state();
+
+    // Log every tool status transition for debugging
+    if old_tool_status != new_tool_status || old_fg.process != new_fg.process || old_fg.osc_title != new_fg.osc_title {
+        let elapsed = attention_state.running_since.map(|t| t.elapsed().as_secs());
+        tracing::info!(
+            session_id = %session.id,
+            source = source_label,
+            old_status = ?old_tool_status,
+            new_status = ?new_tool_status,
+            old_process = ?old_fg.process,
+            new_process = ?new_fg.process,
+            old_osc = ?old_fg.osc_title,
+            new_osc = ?new_fg.osc_title,
+            is_known_tool = PtySession::is_known_tool(new_fg.process.as_deref()),
+            running_elapsed_secs = ?elapsed,
+            "[BELL] tool status transition"
+        );
+    }
+
     if new_tool_status == ToolStatus::Running {
         if attention_state.status != ToolStatus::Running {
             attention_state.running_since = Some(std::time::Instant::now());
@@ -38,19 +57,31 @@ fn full_session_update(state: &AppState, session: &Arc<PtySession>, source_label
             }
         }
     } else {
-        if old_tool_status == ToolStatus::Running
-            && new_tool_status == ToolStatus::Waiting
+        let should_trigger = old_tool_status == ToolStatus::Running
+            && (new_tool_status == ToolStatus::Waiting || new_tool_status == ToolStatus::None)
+            && PtySession::is_known_tool(new_fg.process.as_deref())
             && attention_state
                 .running_since
                 .map(|running_since| running_since.elapsed() > Duration::from_secs(5))
-                .unwrap_or(false)
-        {
+                .unwrap_or(false);
+        if old_tool_status == ToolStatus::Running {
+            tracing::info!(
+                session_id = %session.id,
+                should_trigger,
+                new_tool_status = ?new_tool_status,
+                is_known_tool = PtySession::is_known_tool(new_fg.process.as_deref()),
+                running_elapsed = ?attention_state.running_since.map(|t| t.elapsed()),
+                "[BELL] Running ended — attention check"
+            );
+        }
+        if should_trigger {
             match state
                 .inner
                 .db
                 .increment_session_attention_seq(&session.id.to_string())
             {
                 Ok(Some(next_seq)) => {
+                    tracing::info!(session_id = %session.id, next_seq, "[BELL] attention_seq incremented!");
                     new_fg.attention_seq = next_seq;
                 }
                 Ok(None) => {}
