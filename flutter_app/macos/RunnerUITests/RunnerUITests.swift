@@ -357,6 +357,98 @@ final class RunnerUITests: XCTestCase {
         )
     }
 
+    func testCmdTDoesNotLoseNewSessionDuringOverlappingSlowRefresh() throws {
+        let runId = String(UUID().uuidString.prefix(8))
+        let seedSessionName = "race-seed-\(runId)"
+
+        _ = try requireExternalServerConfig()
+        try waitForServerReady()
+        try ensureCargoBinary(named: "tether-client")
+
+        let groupId = try createGroup(named: "Race Group \(runId)")
+        let seedSessionId = try provisionCommandSession(
+            named: seedSessionName,
+            groupId: groupId,
+            command: "while :; do sleep 1; done"
+        )
+
+        let app = XCUIApplication()
+        app.launchEnvironment["TETHER_CLIENT_PATH"] =
+            repoRoot.appendingPathComponent("target/debug/tether-client").path
+        app.launchEnvironment["TETHER_TERMINAL_TEST_LOG_PATH"] = eventLogURL.path
+        app.launchEnvironment["TETHER_TEST_SERVER_HOST"] = "127.0.0.1"
+        app.launchEnvironment["TETHER_TEST_SERVER_PORT"] = "\(port)"
+        app.launchEnvironment["TETHER_TEST_AUTO_OPEN_SESSION_NAME"] = seedSessionName
+        app.launchEnvironment["TETHER_TEST_REFRESH_ALWAYS_INCLUDES_SSH"] = "1"
+        app.launchEnvironment["TETHER_TEST_LIST_SSH_HOSTS_DELAY_MS"] = "1500"
+        app.launch()
+        defer { try? printRaceEventTrail() }
+
+        let initialSurfaceAttach = try waitForEvent(named: "attach_started", timeout: 20)
+        let initialSurfaceSessionId = try XCTUnwrap(initialSurfaceAttach["session_id"] as? String)
+        XCTAssertEqual(initialSurfaceSessionId, seedSessionId)
+        XCTAssertTrue(terminalScrollView(in: app).waitForExistence(timeout: 10))
+
+        let fullRefreshStart = try waitForEvent(named: "server_refresh_started", timeout: 12) {
+            ($0["kind"] as? String) == "full"
+        }
+        let fullRefreshGen = try XCTUnwrap(Self.int(fullRefreshStart, key: "refresh_gen"))
+
+        app.activate()
+        app.typeKey("t", modifierFlags: .command)
+
+        let createReturned = try waitForEvent(named: "server_create_session_returned", timeout: 10) {
+            guard let sessionId = $0["session_id"] as? String else { return false }
+            return sessionId != seedSessionId
+        }
+        let newSessionId = try XCTUnwrap(createReturned["session_id"] as? String)
+        _ = try waitForSession(id: newSessionId, timeout: 10)
+
+        let fastApply = try waitForEvent(named: "server_refresh_applied", timeout: 10) {
+            ($0["kind"] as? String) == "sessions_groups"
+                && Self.stringArray($0, key: "session_ids").contains(newSessionId)
+        }
+        let fastRefreshGen = try XCTUnwrap(Self.int(fastApply, key: "refresh_gen"))
+        XCTAssertGreaterThan(fastRefreshGen, fullRefreshGen)
+
+        let fullLoaded = try waitForEvent(named: "server_refresh_loaded", timeout: 5) {
+            Self.int($0, key: "refresh_gen") == fullRefreshGen
+                && ($0["kind"] as? String) == "full"
+        }
+        XCTAssertFalse(
+            Self.stringArray(fullLoaded, key: "session_ids").contains(newSessionId),
+            "The old full refresh should have loaded the pre-Cmd+T session list"
+        )
+
+        _ = try waitForEvent(named: "server_refresh_discarded", timeout: 5) {
+            Self.int($0, key: "refresh_gen") == fullRefreshGen
+                && ($0["kind"] as? String) == "full"
+                && ($0["reason"] as? String) == "refresh_generation"
+                && (Self.int($0, key: "current_refresh_gen") ?? 0) > fullRefreshGen
+        }
+        try assertNoEvent(named: "server_refresh_applied", timeout: 0.5) {
+            Self.int($0, key: "refresh_gen") == fullRefreshGen
+                && ($0["kind"] as? String) == "full"
+        }
+
+        try waitForEventCount(named: "attach_started", minimum: 2, timeout: 10)
+        let newSurfaceAttach = try XCTUnwrap(try latestEvent(named: "attach_started"))
+        let newSurfaceSessionId = try XCTUnwrap(newSurfaceAttach["session_id"] as? String)
+        XCTAssertEqual(newSurfaceSessionId, newSessionId)
+        _ = try waitForEvent(named: "surface_focus_changed", timeout: 10) { event in
+            (event["session_id"] as? String) == newSessionId
+                && (event["focused"] as? Bool) == true
+        }
+
+        let typedToken = "z"
+        app.typeKey(typedToken, modifierFlags: [])
+        try waitForSurfaceInsertedText(
+            sessionId: newSessionId,
+            contains: typedToken,
+            timeout: 10
+        )
+    }
+
     func testSidebarFocusedDesktopShortcutsRouteToWorkspaceChrome() throws {
         let runId = String(UUID().uuidString.prefix(8))
 
@@ -724,6 +816,41 @@ final class RunnerUITests: XCTestCase {
                 }
                 return json
             }
+    }
+
+    private func printRaceEventTrail() throws {
+        let interestingEvents: Set<String> = [
+            "server_refresh_started",
+            "server_refresh_loaded",
+            "server_refresh_applied",
+            "server_refresh_discarded",
+            "server_create_session_requested",
+            "server_create_session_returned",
+            "active_session_selected",
+            "attach_started",
+            "surface_focus_changed",
+        ]
+        let trail = try readEvents()
+            .filter {
+                guard let event = $0["event"] as? String else { return false }
+                return interestingEvents.contains(event)
+            }
+            .map { event -> String in
+                let name = event["event"] as? String ?? "<unknown>"
+                let kind = event["kind"] as? String ?? "-"
+                let gen = Self.int(event, key: "refresh_gen")
+                    .map(String.init) ?? "-"
+                let reason = event["reason"] as? String ?? "-"
+                let groupId = (event["group_id"] as? String)
+                    .map { String($0.prefix(8)) } ?? "-"
+                let sessionId = (event["session_id"] as? String)
+                    .map { String($0.prefix(8)) } ?? "-"
+                let ids = Self.stringArray(event, key: "session_ids")
+                    .map { String($0.prefix(8)) }
+                return "\(name) kind=\(kind) gen=\(gen) reason=\(reason) group=\(groupId) session=\(sessionId) ids=\(ids)"
+            }
+            .joined(separator: "\n")
+        print("TETHER_RACE_EVENT_TRAIL\n\(trail)")
     }
 
     private func terminalScrollView(in app: XCUIApplication) -> XCUIElement {
@@ -1122,6 +1249,13 @@ final class RunnerUITests: XCTestCase {
             return UInt64(value)
         }
         return nil
+    }
+
+    private static func stringArray(_ payload: [String: Any], key: String) -> [String] {
+        guard let values = payload[key] as? [Any] else {
+            return []
+        }
+        return values.compactMap { $0 as? String }
     }
 
     private static func isMissingOrNull(_ value: Any?) -> Bool {

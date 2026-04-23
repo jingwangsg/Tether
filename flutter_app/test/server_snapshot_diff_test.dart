@@ -60,7 +60,10 @@ void main() {
 
       expect(diff.sessionsChanged, isTrue);
       expect(diff.sessionsStructureChanged, isFalse);
-      expect(diff.sshHostsChanged, isTrue);
+      // Reachability hysteresis: previously reachable host stays reachable
+      // even when server reports unreachable (transient failure protection).
+      expect(diff.sshHostsChanged, isFalse);
+      expect(diff.sshHosts.single.reachable, isTrue);
       expect(diff.mergedSessions.single.foregroundProcess, 'claude');
       expect(diff.mergedSessions.single.oscTitle, '* thinking');
       expect(diff.mergedSessions.single.attentionSeq, 2);
@@ -79,6 +82,48 @@ void main() {
 
       expect(diff.sessionsChanged, isTrue);
       expect(diff.sessionsStructureChanged, isTrue);
+    });
+
+    test('SSH host that was never reachable stays unreachable', () {
+      final diff = diffServerSnapshot(
+        currentGroups: [],
+        currentSessions: [],
+        currentSshHosts: [_ssh('down', reachable: false)],
+        refreshedGroups: [],
+        refreshedSessions: [],
+        refreshedSshHosts: [_ssh('down', reachable: false)],
+      );
+
+      expect(diff.sshHosts.single.reachable, isFalse);
+      expect(diff.sshHostsChanged, isFalse);
+    });
+
+    test('SSH host that becomes reachable updates correctly', () {
+      final diff = diffServerSnapshot(
+        currentGroups: [],
+        currentSessions: [],
+        currentSshHosts: [_ssh('waking', reachable: false)],
+        refreshedGroups: [],
+        refreshedSessions: [],
+        refreshedSshHosts: [_ssh('waking', reachable: true)],
+      );
+
+      expect(diff.sshHosts.single.reachable, isTrue);
+      expect(diff.sshHostsChanged, isTrue);
+    });
+
+    test('SSH host with null reachable becoming false is not preserved', () {
+      final diff = diffServerSnapshot(
+        currentGroups: [],
+        currentSessions: [],
+        currentSshHosts: [_ssh('unknown')],
+        refreshedGroups: [],
+        refreshedSessions: [],
+        refreshedSshHosts: [_ssh('unknown', reachable: false)],
+      );
+
+      expect(diff.sshHosts.single.reachable, isFalse);
+      expect(diff.sshHostsChanged, isTrue);
     });
 
     test('unchanged snapshots produce no work', () {

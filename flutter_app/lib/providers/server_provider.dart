@@ -84,11 +84,14 @@ class ServerState {
 
 class ServerNotifier extends StateNotifier<ServerState> {
   static const _refreshInterval = Duration(seconds: 5);
+  static const _sshRefreshEveryN = 6;
   Timer? _refreshTimer;
   final ApiServiceFactory _apiFactory;
   int _groupStructureVersion = 0;
   int _sessionStructureVersion = 0;
   int _connectionGeneration = 0;
+  int _refreshGeneration = 0;
+  int _refreshCount = 0;
 
   ServerNotifier({
     bool autoConnect = true,
@@ -206,19 +209,76 @@ class ServerNotifier extends StateNotifier<ServerState> {
     if (api == null) return;
 
     final generation = _connectionGeneration;
+    final refreshGen = ++_refreshGeneration;
+    final refreshCount = ++_refreshCount;
+    final includeSsh =
+        _testRefreshAlwaysIncludesSsh() ||
+        (refreshCount % _sshRefreshEveryN) == 0;
+    final refreshKind = includeSsh ? 'full' : 'sessions_groups';
+    _logRefreshEvent(
+      'server_refresh_started',
+      kind: refreshKind,
+      connectionGen: generation,
+      refreshGen: refreshGen,
+      sessions: state.sessions,
+    );
 
     try {
-      final snapshot = await _loadSnapshot(api);
+      final List<Group> groups;
+      final List<Session> sessions;
+      final List<SshHost> sshHosts;
 
-      if (_connectionGeneration != generation) return;
+      if (includeSsh) {
+        final snapshot = await _loadSnapshot(api);
+        groups = snapshot.groups;
+        sessions = snapshot.sessions;
+        sshHosts = snapshot.sshHosts;
+      } else {
+        final results = await Future.wait([
+          api.listGroups(),
+          api.listSessions(),
+        ]);
+        groups = results[0] as List<Group>;
+        sessions = results[1] as List<Session>;
+        sshHosts = state.sshHosts;
+      }
+
+      _logRefreshEvent(
+        'server_refresh_loaded',
+        kind: refreshKind,
+        connectionGen: generation,
+        refreshGen: refreshGen,
+        sessions: sessions,
+      );
+
+      if (_connectionGeneration != generation) {
+        _logRefreshDiscarded(
+          kind: refreshKind,
+          connectionGen: generation,
+          refreshGen: refreshGen,
+          reason: 'connection_generation',
+          sessions: sessions,
+        );
+        return;
+      }
+      if (_refreshGeneration != refreshGen) {
+        _logRefreshDiscarded(
+          kind: refreshKind,
+          connectionGen: generation,
+          refreshGen: refreshGen,
+          reason: 'refresh_generation',
+          sessions: sessions,
+        );
+        return;
+      }
 
       final diff = diffServerSnapshot(
         currentGroups: state.groups,
         currentSessions: state.sessions,
         currentSshHosts: state.sshHosts,
-        refreshedGroups: snapshot.groups,
-        refreshedSessions: snapshot.sessions,
-        refreshedSshHosts: snapshot.sshHosts,
+        refreshedGroups: groups,
+        refreshedSessions: sessions,
+        refreshedSshHosts: sshHosts,
       );
 
       if (!diff.hasChanges && !state.isStale && state.error == null) {
@@ -235,13 +295,51 @@ class ServerNotifier extends StateNotifier<ServerState> {
         error: null,
       );
 
+      _logRefreshEvent(
+        'server_refresh_applied',
+        kind: refreshKind,
+        connectionGen: generation,
+        refreshGen: refreshGen,
+        sessions: diff.mergedSessions,
+        extra: {
+          'group_count': diff.groups.length,
+          'ssh_host_count': diff.sshHosts.length,
+        },
+      );
       TestEventLogger.instance.log('sessions_refreshed', {
         'group_count': diff.groups.length,
         'session_count': diff.mergedSessions.length,
         'session_names': diff.mergedSessions.map((s) => s.name).toList(),
       });
     } catch (error) {
-      if (_connectionGeneration != generation) return;
+      if (_connectionGeneration != generation) {
+        _logRefreshDiscarded(
+          kind: refreshKind,
+          connectionGen: generation,
+          refreshGen: refreshGen,
+          reason: 'connection_generation',
+          sessions: state.sessions,
+        );
+        return;
+      }
+      if (_refreshGeneration != refreshGen) {
+        _logRefreshDiscarded(
+          kind: refreshKind,
+          connectionGen: generation,
+          refreshGen: refreshGen,
+          reason: 'refresh_generation',
+          sessions: state.sessions,
+        );
+        return;
+      }
+      _logRefreshEvent(
+        'server_refresh_failed',
+        kind: refreshKind,
+        connectionGen: generation,
+        refreshGen: refreshGen,
+        sessions: state.sessions,
+        extra: {'error': error.toString()},
+      );
       state = state.copyWith(isStale: true, error: error.toString());
     }
   }
@@ -253,20 +351,53 @@ class ServerNotifier extends StateNotifier<ServerState> {
     final api = state.api;
     if (api == null) return;
     final generation = _connectionGeneration;
+    final refreshGen = ++_refreshGeneration;
+    const refreshKind = 'sessions_groups';
+    _logRefreshEvent(
+      'server_refresh_started',
+      kind: refreshKind,
+      connectionGen: generation,
+      refreshGen: refreshGen,
+      sessions: state.sessions,
+    );
 
     try {
-      final results = await Future.wait([
-        api.listGroups(),
-        api.listSessions(),
-      ]);
-      if (_connectionGeneration != generation) return;
+      final results = await Future.wait([api.listGroups(), api.listSessions()]);
+      final sessions = results[1] as List<Session>;
+      _logRefreshEvent(
+        'server_refresh_loaded',
+        kind: refreshKind,
+        connectionGen: generation,
+        refreshGen: refreshGen,
+        sessions: sessions,
+      );
+      if (_connectionGeneration != generation) {
+        _logRefreshDiscarded(
+          kind: refreshKind,
+          connectionGen: generation,
+          refreshGen: refreshGen,
+          reason: 'connection_generation',
+          sessions: sessions,
+        );
+        return;
+      }
+      if (_refreshGeneration != refreshGen) {
+        _logRefreshDiscarded(
+          kind: refreshKind,
+          connectionGen: generation,
+          refreshGen: refreshGen,
+          reason: 'refresh_generation',
+          sessions: sessions,
+        );
+        return;
+      }
 
       final diff = diffServerSnapshot(
         currentGroups: state.groups,
         currentSessions: state.sessions,
         currentSshHosts: state.sshHosts,
         refreshedGroups: results[0] as List<Group>,
-        refreshedSessions: results[1] as List<Session>,
+        refreshedSessions: sessions,
         refreshedSshHosts: state.sshHosts,
       );
 
@@ -284,13 +415,51 @@ class ServerNotifier extends StateNotifier<ServerState> {
         error: null,
       );
 
+      _logRefreshEvent(
+        'server_refresh_applied',
+        kind: refreshKind,
+        connectionGen: generation,
+        refreshGen: refreshGen,
+        sessions: diff.mergedSessions,
+        extra: {
+          'group_count': diff.groups.length,
+          'ssh_host_count': diff.sshHosts.length,
+        },
+      );
       TestEventLogger.instance.log('sessions_refreshed', {
         'group_count': diff.groups.length,
         'session_count': diff.mergedSessions.length,
         'session_names': diff.mergedSessions.map((s) => s.name).toList(),
       });
     } catch (error) {
-      if (_connectionGeneration != generation) return;
+      if (_connectionGeneration != generation) {
+        _logRefreshDiscarded(
+          kind: refreshKind,
+          connectionGen: generation,
+          refreshGen: refreshGen,
+          reason: 'connection_generation',
+          sessions: state.sessions,
+        );
+        return;
+      }
+      if (_refreshGeneration != refreshGen) {
+        _logRefreshDiscarded(
+          kind: refreshKind,
+          connectionGen: generation,
+          refreshGen: refreshGen,
+          reason: 'refresh_generation',
+          sessions: state.sessions,
+        );
+        return;
+      }
+      _logRefreshEvent(
+        'server_refresh_failed',
+        kind: refreshKind,
+        connectionGen: generation,
+        refreshGen: refreshGen,
+        sessions: state.sessions,
+        extra: {'error': error.toString()},
+      );
       state = state.copyWith(isStale: true, error: error.toString());
     }
   }
@@ -337,6 +506,12 @@ class ServerNotifier extends StateNotifier<ServerState> {
     String? command,
     String? cwd,
   }) async {
+    TestEventLogger.instance.log('server_create_session_requested', {
+      'group_id': groupId,
+      'session_count': state.sessions.length,
+      'session_ids': state.sessions.map((s) => s.id).toList(),
+      'session_names': state.sessions.map((s) => s.name).toList(),
+    });
     final session = await state.api!.createSession(
       groupId: groupId,
       name: name,
@@ -345,6 +520,13 @@ class ServerNotifier extends StateNotifier<ServerState> {
       local: false,
     );
     await _refreshSessionsAndGroups();
+    TestEventLogger.instance.log('server_create_session_returned', {
+      'group_id': groupId,
+      'session_id': session.id,
+      'session_count': state.sessions.length,
+      'session_ids': state.sessions.map((s) => s.id).toList(),
+      'session_names': state.sessions.map((s) => s.name).toList(),
+    });
     return session;
   }
 
@@ -617,6 +799,52 @@ class ServerNotifier extends StateNotifier<ServerState> {
     _refreshTimer?.cancel();
     state.api?.dispose();
     super.dispose();
+  }
+
+  bool _testRefreshAlwaysIncludesSsh() {
+    final value =
+        Platform.environment['TETHER_TEST_REFRESH_ALWAYS_INCLUDES_SSH'];
+    return value != null && value.isNotEmpty && value != '0';
+  }
+
+  void _logRefreshDiscarded({
+    required String kind,
+    required int connectionGen,
+    required int refreshGen,
+    required String reason,
+    required List<Session> sessions,
+  }) {
+    _logRefreshEvent(
+      'server_refresh_discarded',
+      kind: kind,
+      connectionGen: connectionGen,
+      refreshGen: refreshGen,
+      sessions: sessions,
+      extra: {
+        'reason': reason,
+        'current_connection_gen': _connectionGeneration,
+        'current_refresh_gen': _refreshGeneration,
+      },
+    );
+  }
+
+  void _logRefreshEvent(
+    String event, {
+    required String kind,
+    required int connectionGen,
+    required int refreshGen,
+    required List<Session> sessions,
+    Map<String, Object?> extra = const {},
+  }) {
+    TestEventLogger.instance.log(event, {
+      'kind': kind,
+      'connection_gen': connectionGen,
+      'refresh_gen': refreshGen,
+      'session_count': sessions.length,
+      'session_ids': sessions.map((s) => s.id).toList(),
+      'session_names': sessions.map((s) => s.name).toList(),
+      ...extra,
+    });
   }
 }
 
