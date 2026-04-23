@@ -84,12 +84,14 @@ class ServerState {
 
 class ServerNotifier extends StateNotifier<ServerState> {
   static const _refreshInterval = Duration(seconds: 5);
+  static const _sshRefreshEveryN = 6;
   Timer? _refreshTimer;
   final ApiServiceFactory _apiFactory;
   int _groupStructureVersion = 0;
   int _sessionStructureVersion = 0;
   int _connectionGeneration = 0;
   int _refreshGeneration = 0;
+  int _refreshCount = 0;
 
   ServerNotifier({
     bool autoConnect = true,
@@ -208,9 +210,27 @@ class ServerNotifier extends StateNotifier<ServerState> {
 
     final generation = _connectionGeneration;
     final refreshGen = ++_refreshGeneration;
+    final includeSsh = (++_refreshCount % _sshRefreshEveryN) == 0;
 
     try {
-      final snapshot = await _loadSnapshot(api);
+      final List<Group> groups;
+      final List<Session> sessions;
+      final List<SshHost> sshHosts;
+
+      if (includeSsh) {
+        final snapshot = await _loadSnapshot(api);
+        groups = snapshot.groups;
+        sessions = snapshot.sessions;
+        sshHosts = snapshot.sshHosts;
+      } else {
+        final results = await Future.wait([
+          api.listGroups(),
+          api.listSessions(),
+        ]);
+        groups = results[0] as List<Group>;
+        sessions = results[1] as List<Session>;
+        sshHosts = state.sshHosts;
+      }
 
       if (_connectionGeneration != generation) return;
       if (_refreshGeneration != refreshGen) return;
@@ -219,9 +239,9 @@ class ServerNotifier extends StateNotifier<ServerState> {
         currentGroups: state.groups,
         currentSessions: state.sessions,
         currentSshHosts: state.sshHosts,
-        refreshedGroups: snapshot.groups,
-        refreshedSessions: snapshot.sessions,
-        refreshedSshHosts: snapshot.sshHosts,
+        refreshedGroups: groups,
+        refreshedSessions: sessions,
+        refreshedSshHosts: sshHosts,
       );
 
       if (!diff.hasChanges && !state.isStale && state.error == null) {
