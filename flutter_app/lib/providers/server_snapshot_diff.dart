@@ -65,16 +65,30 @@ ServerSnapshotDiff diffServerSnapshot({
         return merged;
       }).toList();
 
+  // Merge SSH host reachability: if a host was reachable in the current state
+  // but the server now reports it as unreachable, preserve reachable=true to
+  // prevent UI flicker from transient network failures.
+  final currentSshHostMap = {for (final h in currentSshHosts) h.host: h};
+  final mergedSshHosts = refreshedSshHosts.map((refreshed) {
+    final current = currentSshHostMap[refreshed.host];
+    if (current != null &&
+        current.reachable == true &&
+        refreshed.reachable == false) {
+      return refreshed.copyWith(reachable: true);
+    }
+    return refreshed;
+  }).toList();
+
   final groupsChanged = !_groupsEqual(currentGroups, refreshedGroups);
   final sessionsChanged = !_sessionsRenderEqual(currentSessions, refreshedSessions);
   final sessionsStructureChanged =
       !_sessionsStructureEqual(currentSessions, mergedSessions);
-  final sshHostsChanged = !_sshHostsEqual(currentSshHosts, refreshedSshHosts);
+  final sshHostsChanged = !_sshHostsEqual(currentSshHosts, mergedSshHosts);
 
   return ServerSnapshotDiff(
     groups: refreshedGroups,
     mergedSessions: mergedSessions,
-    sshHosts: refreshedSshHosts,
+    sshHosts: mergedSshHosts,
     groupsChanged: groupsChanged,
     groupsStructureChanged: groupsChanged,
     sessionsChanged: sessionsChanged,

@@ -26,6 +26,24 @@ class SshHost {
     );
   }
 
+  SshHost copyWith({
+    String? host,
+    String? hostname,
+    String? user,
+    int? port,
+    String? identityFile,
+    bool? reachable,
+  }) {
+    return SshHost(
+      host: host ?? this.host,
+      hostname: hostname ?? this.hostname,
+      user: user ?? this.user,
+      port: port ?? this.port,
+      identityFile: identityFile ?? this.identityFile,
+      reachable: reachable ?? this.reachable,
+    );
+  }
+
   String get displayString {
     final parts = <String>[];
     if (user != null) {
