@@ -89,6 +89,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
   int _groupStructureVersion = 0;
   int _sessionStructureVersion = 0;
   int _connectionGeneration = 0;
+  int _refreshGeneration = 0;
 
   ServerNotifier({
     bool autoConnect = true,
@@ -206,11 +207,13 @@ class ServerNotifier extends StateNotifier<ServerState> {
     if (api == null) return;
 
     final generation = _connectionGeneration;
+    final refreshGen = ++_refreshGeneration;
 
     try {
       final snapshot = await _loadSnapshot(api);
 
       if (_connectionGeneration != generation) return;
+      if (_refreshGeneration != refreshGen) return;
 
       final diff = diffServerSnapshot(
         currentGroups: state.groups,
@@ -253,6 +256,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
     final api = state.api;
     if (api == null) return;
     final generation = _connectionGeneration;
+    final refreshGen = ++_refreshGeneration;
 
     try {
       final results = await Future.wait([
@@ -260,6 +264,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
         api.listSessions(),
       ]);
       if (_connectionGeneration != generation) return;
+      if (_refreshGeneration != refreshGen) return;
 
       final diff = diffServerSnapshot(
         currentGroups: state.groups,
