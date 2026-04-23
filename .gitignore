@@ -36,3 +36,10 @@ demos/demo3_nsview/demo3
 # libghostty binaries (too large for git, regenerate with build_libghostty.sh)
 **/ghostty/libghostty.a
 **/ghostty/libghostty.dylib
+
+# Tool configs
+.codeman/
+.superpowers/
+
+# Notes
+macos-terminal-focus-reconciliation-issues.md
