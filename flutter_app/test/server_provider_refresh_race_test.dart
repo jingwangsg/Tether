@@ -45,8 +45,9 @@ class _RaceApiService extends ApiService {
   Future<Map<String, dynamic>> getInfo() async => {'version': '0.0.0'};
 
   @override
-  Future<List<Group>> listGroups() async =>
-      [Group(id: 'g1', name: 'TestGroup')];
+  Future<List<Group>> listGroups() async => [
+    Group(id: 'g1', name: 'TestGroup'),
+  ];
 
   @override
   Future<List<Session>> listSessions() async {
@@ -68,6 +69,74 @@ class _RaceApiService extends ApiService {
     }
     return [];
   }
+
+  @override
+  Future<Session> createSession({
+    required String groupId,
+    String? name,
+    String? command,
+    String? cwd,
+    bool local = false,
+  }) async {
+    return _newSession;
+  }
+
+  @override
+  void dispose() {}
+}
+
+class _FailingStaleRefreshApiService extends ApiService {
+  _FailingStaleRefreshApiService() : super(baseUrl: 'http://unused');
+
+  final Completer<void> firstCallGate = Completer<void>();
+  int _listSessionsCalls = 0;
+
+  final _existingSession = Session(
+    id: 's1',
+    groupId: 'g1',
+    name: 'existing',
+    shell: 'bash',
+    cols: 80,
+    rows: 24,
+    cwd: '/tmp',
+    isAlive: true,
+    createdAt: '',
+    lastActive: '',
+  );
+
+  final _newSession = Session(
+    id: 'new-1',
+    groupId: 'g1',
+    name: 'new-session',
+    shell: 'bash',
+    cols: 80,
+    rows: 24,
+    cwd: '/tmp',
+    isAlive: true,
+    createdAt: '',
+    lastActive: '',
+  );
+
+  @override
+  Future<Map<String, dynamic>> getInfo() async => {'version': '0.0.0'};
+
+  @override
+  Future<List<Group>> listGroups() async => [
+    Group(id: 'g1', name: 'TestGroup'),
+  ];
+
+  @override
+  Future<List<Session>> listSessions() async {
+    _listSessionsCalls++;
+    if (_listSessionsCalls == 1) {
+      await firstCallGate.future;
+      throw StateError('stale refresh failed');
+    }
+    return [_existingSession, _newSession];
+  }
+
+  @override
+  Future<List<SshHost>> listSshHosts() async => [];
 
   @override
   Future<Session> createSession({
@@ -124,4 +193,32 @@ void main() {
       );
     },
   );
+
+  test('stale refresh failure does not mark newer state as stale', () async {
+    final api = _FailingStaleRefreshApiService();
+    final notifier = ServerNotifier.test(
+      ServerState(
+        config: ServerConfig(host: 'localhost', port: 7680),
+        api: api,
+        isConnected: true,
+        sessions: [api._existingSession],
+        groups: [Group(id: 'g1', name: 'TestGroup')],
+      ),
+    );
+
+    final refreshFuture = notifier.refresh();
+
+    await notifier.createSession(groupId: 'g1');
+
+    expect(notifier.state.sessions.any((s) => s.id == 'new-1'), isTrue);
+    expect(notifier.state.isStale, isFalse);
+    expect(notifier.state.error, isNull);
+
+    api.firstCallGate.complete();
+    await refreshFuture;
+
+    expect(notifier.state.sessions.any((s) => s.id == 'new-1'), isTrue);
+    expect(notifier.state.isStale, isFalse);
+    expect(notifier.state.error, isNull);
+  });
 }

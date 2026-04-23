@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import '../models/group.dart';
@@ -216,6 +217,7 @@ class ApiService {
   }
 
   Future<List<SshHost>> listSshHosts() async {
+    await _applyTestListSshHostsDelay();
     final response = await _client.get(
       _uri('/api/ssh/hosts'),
       headers: _headers,
@@ -235,6 +237,15 @@ class ApiService {
 
   void dispose() {
     _client.close();
+  }
+
+  Future<void> _applyTestListSshHostsDelay() async {
+    final raw = Platform.environment['TETHER_TEST_LIST_SSH_HOSTS_DELAY_MS'];
+    final milliseconds = int.tryParse(raw ?? '');
+    if (milliseconds == null || milliseconds <= 0) {
+      return;
+    }
+    await Future<void>.delayed(Duration(milliseconds: milliseconds));
   }
 }
 
