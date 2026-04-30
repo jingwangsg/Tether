@@ -11,6 +11,7 @@ fn full_session_update(state: &AppState, session: &Arc<PtySession>, source_label
     let old_tool_status = PtySession::derive_tool_status(&old_fg);
     let mut new_fg = session.detect_foreground();
     let new_tool_status = PtySession::derive_tool_status(&new_fg);
+    let pending_notifications = session.take_pending_agent_notifications();
     let in_alt = session.is_in_alternate_screen();
     if PtySession::is_known_tool(new_fg.process.as_deref()) && in_alt {
         session.set_last_detected_alt_screen_tool(new_fg.process.clone());
@@ -21,7 +22,10 @@ fn full_session_update(state: &AppState, session: &Arc<PtySession>, source_label
     let mut attention_state = session.tool_attention_state();
 
     // Log every tool status transition for debugging
-    if old_tool_status != new_tool_status || old_fg.process != new_fg.process || old_fg.osc_title != new_fg.osc_title {
+    if old_tool_status != new_tool_status
+        || old_fg.process != new_fg.process
+        || old_fg.osc_title != new_fg.osc_title
+    {
         let elapsed = attention_state.running_since.map(|t| t.elapsed().as_secs());
         tracing::info!(
             session_id = %session.id,
@@ -33,11 +37,13 @@ fn full_session_update(state: &AppState, session: &Arc<PtySession>, source_label
             old_osc = ?old_fg.osc_title,
             new_osc = ?new_fg.osc_title,
             is_known_tool = PtySession::is_known_tool(new_fg.process.as_deref()),
+            pending_notifications,
             running_elapsed_secs = ?elapsed,
             "[BELL] tool status transition"
         );
     }
 
+    let mut marked_attention = false;
     if new_tool_status == ToolStatus::Running {
         if attention_state.status != ToolStatus::Running {
             attention_state.running_since = Some(std::time::Instant::now());
@@ -91,8 +97,33 @@ fn full_session_update(state: &AppState, session: &Arc<PtySession>, source_label
                     "failed to mark session attention: {error}"
                 ),
             }
+            marked_attention = true;
         }
         attention_state.running_since = None;
+    }
+    if pending_notifications > 0 && !marked_attention {
+        tracing::info!(
+            session_id = %session.id,
+            source = source_label,
+            pending_notifications,
+            "[BELL] marking attention from OSC notification"
+        );
+        match state
+            .inner
+            .db
+            .increment_session_attention_seq(&session.id.to_string())
+        {
+            Ok(Some(next_seq)) => {
+                tracing::info!(session_id = %session.id, next_seq, "[BELL] attention_seq incremented!");
+                new_fg.attention_seq = next_seq;
+            }
+            Ok(None) => {}
+            Err(error) => tracing::warn!(
+                session_id = %session.id,
+                source = source_label,
+                "failed to mark session attention: {error}"
+            ),
+        }
     }
     attention_state.status = new_tool_status;
     session.set_tool_attention_state(attention_state);

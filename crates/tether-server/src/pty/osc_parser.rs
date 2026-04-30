@@ -1,10 +1,16 @@
-/// Stateful streaming parser that extracts window titles from OSC escape sequences.
+/// Stateful streaming parser that extracts useful OSC escape sequences.
 ///
 /// Terminal applications set window titles via `\x1b]0;title\x07` (or `\x1b]2;title\x07`).
 /// These sequences pass transparently through SSH, enabling detection of remote
 /// foreground processes (e.g. Claude Code running on a remote machine).
 
-const MAX_TITLE_LEN: usize = 256;
+const MAX_OSC_PAYLOAD_LEN: usize = 512;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OscEvent {
+    Title(String),
+    Notify { title: String, body: String },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -17,7 +23,7 @@ enum State {
 
 pub struct OscParser {
     state: State,
-    param: u8,
+    param: u16,
     buf: Vec<u8>,
 }
 
@@ -30,10 +36,10 @@ impl OscParser {
         }
     }
 
-    /// Feed a chunk of PTY output. Returns the last complete OSC title found
-    /// in this chunk, or None if no title sequence was completed.
-    pub fn feed(&mut self, data: &[u8]) -> Option<String> {
-        let mut latest: Option<String> = None;
+    /// Feed a chunk of PTY output. Returns every useful OSC event completed in
+    /// this chunk, preserving order.
+    pub fn feed_events(&mut self, data: &[u8]) -> Vec<OscEvent> {
+        let mut events = Vec::new();
         for &b in data {
             match self.state {
                 State::Normal => {
@@ -52,13 +58,16 @@ impl OscParser {
                 }
                 State::ParamAccum => {
                     if b == b';' {
-                        if self.param == 0 || self.param == 2 {
+                        if matches!(self.param, 0 | 2 | 777) {
                             self.state = State::TitleAccum;
                         } else {
                             self.state = State::Normal;
                         }
                     } else if b.is_ascii_digit() {
-                        self.param = self.param.saturating_mul(10).saturating_add(b - b'0');
+                        self.param = self
+                            .param
+                            .saturating_mul(10)
+                            .saturating_add(u16::from(b - b'0'));
                     } else {
                         self.state = State::Normal;
                     }
@@ -66,22 +75,18 @@ impl OscParser {
                 State::TitleAccum => {
                     if b == 0x07 {
                         // BEL terminator
-                        latest = Some(String::from_utf8_lossy(&self.buf).into_owned());
-                        self.buf.clear();
-                        self.state = State::Normal;
+                        self.finish_event(&mut events);
                     } else if b == 0x1b {
                         // Potential ST terminator (\x1b\\)
                         self.state = State::StPending;
-                    } else if self.buf.len() < MAX_TITLE_LEN {
+                    } else if self.buf.len() < MAX_OSC_PAYLOAD_LEN {
                         self.buf.push(b);
                     }
                 }
                 State::StPending => {
                     if b == b'\\' {
                         // ST terminator complete
-                        latest = Some(String::from_utf8_lossy(&self.buf).into_owned());
-                        self.buf.clear();
-                        self.state = State::Normal;
+                        self.finish_event(&mut events);
                     } else {
                         // Not ST — the \x1b starts a new escape sequence
                         self.buf.clear();
@@ -96,8 +101,48 @@ impl OscParser {
                 }
             }
         }
+        events
+    }
+
+    /// Feed a chunk of PTY output. Returns the last complete OSC title found
+    /// in this chunk, or None if no title sequence was completed.
+    #[cfg(test)]
+    pub fn feed(&mut self, data: &[u8]) -> Option<String> {
+        let mut latest: Option<String> = None;
+        for event in self.feed_events(data) {
+            if let OscEvent::Title(title) = event {
+                latest = Some(title);
+            }
+        }
         latest
     }
+
+    fn finish_event(&mut self, events: &mut Vec<OscEvent>) {
+        if let Some(event) = self.current_event() {
+            events.push(event);
+        }
+        self.buf.clear();
+        self.state = State::Normal;
+    }
+
+    fn current_event(&self) -> Option<OscEvent> {
+        let value = String::from_utf8_lossy(&self.buf).into_owned();
+        match self.param {
+            0 | 2 => Some(OscEvent::Title(value)),
+            777 => parse_osc777_notify(&value),
+            _ => None,
+        }
+    }
+}
+
+fn parse_osc777_notify(value: &str) -> Option<OscEvent> {
+    let mut parts = value.splitn(3, ';');
+    if parts.next()? != "notify" {
+        return None;
+    }
+    let title = parts.next().unwrap_or_default().to_string();
+    let body = parts.next().unwrap_or_default().to_string();
+    Some(OscEvent::Notify { title, body })
 }
 
 #[cfg(test)]
@@ -174,10 +219,10 @@ mod tests {
     fn truncation_at_max_len() {
         let mut p = OscParser::new();
         let mut input = vec![0x1b, b']', b'0', b';'];
-        input.extend_from_slice(&[b'A'; MAX_TITLE_LEN + 50]);
+        input.extend_from_slice(&[b'A'; MAX_OSC_PAYLOAD_LEN + 50]);
         input.push(0x07);
         let result = p.feed(&input).unwrap();
-        assert_eq!(result.len(), MAX_TITLE_LEN);
+        assert_eq!(result.len(), MAX_OSC_PAYLOAD_LEN);
     }
 
     #[test]
@@ -242,5 +287,35 @@ mod tests {
         assert_eq!(p.feed(b"\x1b[0;32mhello\x1b[0m"), None);
         // Parser should still work after CSI sequences
         assert_eq!(p.feed(b"\x1b]0;after csi\x07"), Some("after csi".into()));
+    }
+
+    #[test]
+    fn osc777_notify_event() {
+        let mut p = OscParser::new();
+        assert_eq!(
+            p.feed_events(b"\x1b]777;notify;Codex;needs input\x07"),
+            vec![OscEvent::Notify {
+                title: "Codex".into(),
+                body: "needs input".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn feed_events_preserves_title_and_notify_order() {
+        let mut p = OscParser::new();
+        assert_eq!(
+            p.feed_events(
+                b"\x1b]2;\xe2\x9c\xb1 Codex\x07\x1b]777;notify;Codex;done\x07\x1b]2;/tmp\x07"
+            ),
+            vec![
+                OscEvent::Title("✱ Codex".into()),
+                OscEvent::Notify {
+                    title: "Codex".into(),
+                    body: "done".into()
+                },
+                OscEvent::Title("/tmp".into()),
+            ]
+        );
     }
 }

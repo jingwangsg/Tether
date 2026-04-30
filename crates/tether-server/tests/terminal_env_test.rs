@@ -20,6 +20,12 @@ fn test_state() -> AppState {
 }
 
 fn test_state_with_shell(default_shell: &str) -> AppState {
+    test_state_with_shell_and_semantic_rx(default_shell).0
+}
+
+fn test_state_with_shell_and_semantic_rx(
+    default_shell: &str,
+) -> (AppState, tokio::sync::mpsc::Receiver<Uuid>) {
     let data_dir = std::env::temp_dir()
         .join(format!("tether-terminal-env-test-{}", Uuid::new_v4()))
         .to_string_lossy()
@@ -48,8 +54,9 @@ fn test_state_with_shell(default_shell: &str) -> AppState {
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let (status_tx, _) = tokio::sync::broadcast::channel(64);
+    let (semantic_event_tx, semantic_event_rx) = tokio::sync::mpsc::channel(1024);
 
-    AppState {
+    let state = AppState {
         inner: Arc::new(AppStateInner {
             config,
             sessions: DashMap::new(),
@@ -59,10 +66,18 @@ fn test_state_with_shell(default_shell: &str) -> AppState {
             remote_manager: RemoteManager::new(),
             ssh_fg: DashMap::new(),
             ssh_live_sessions: DashMap::new(),
-            semantic_event_tx: tokio::sync::mpsc::channel(1024).0,
+            semantic_event_tx,
             semantic_event_rx: std::sync::Mutex::new(None),
         }),
-    }
+    };
+    (state, semantic_event_rx)
+}
+
+fn init_test_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("tether_server::pty=debug,tool-state=debug")
+        .with_test_writer()
+        .try_init();
 }
 
 fn cleanup(state: &AppState) {
@@ -126,6 +141,24 @@ async fn wait_for_shell_integration(session: &Arc<PtySession>) {
             "shell integration never became active; latest snapshot: {:?}",
             snapshot
         );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn attention_eventually(session: &Arc<PtySession>) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let fg = session.get_foreground();
+        if fg.attention_seq > fg.attention_ack_seq {
+            return Ok(());
+        }
+        let snapshot = scrollback_snapshot(session);
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "session never became attention; latest foreground: {:?}; latest snapshot: {:?}",
+                fg, snapshot
+            ));
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -373,7 +406,10 @@ async fn local_session_claude_wrapper_injects_hooks_and_prefers_runtime_bundle()
 
     let argv = wait_for_file_contains(&argv_log, "--settings").await;
     assert!(argv.contains("hello"), "expected original arg in {argv:?}");
-    assert!(argv.contains("--settings"), "expected injected settings in {argv:?}");
+    assert!(
+        argv.contains("--settings"),
+        "expected injected settings in {argv:?}"
+    );
 
     session.kill();
     cleanup(&state);
@@ -456,6 +492,55 @@ async fn local_session_terminal_notifier_shim_emits_osc777() {
 }
 
 #[tokio::test]
+async fn local_session_agent_notify_osc777_marks_attention_without_runtime_threshold() {
+    init_test_tracing();
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let home = tempdir().unwrap();
+    let old_home = std::env::var_os("HOME");
+    std::env::set_var("HOME", home.path());
+
+    let (state, semantic_event_rx) = test_state_with_shell_and_semantic_rx("/bin/bash");
+    let monitor = tokio::spawn(tether_server::pty::process_monitor::run_process_monitor(
+        state.clone(),
+        semantic_event_rx,
+    ));
+    let group = state.inner.db.create_group("g", "~", None, None).unwrap();
+
+    let session = state
+        .create_session(
+            Uuid::parse_str(&group.id).unwrap(),
+            Some("shell".to_string()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    wait_for_shell_integration(&session).await;
+    session
+        .write_input(
+            b"tether-agent-notify codex-running; printf '{\"last_assistant_message\":\"needs input\"}' | tether-agent-notify codex-waiting\n",
+        )
+        .unwrap();
+    wait_for_scrollback_contains(&session, "]777;notify;Codex;needs input").await;
+    let attention_result = attention_eventually(&session).await;
+
+    monitor.abort();
+    session.kill();
+    cleanup(&state);
+    if let Some(home) = old_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
+    assert!(
+        attention_result.is_ok(),
+        "{}",
+        attention_result.unwrap_err()
+    );
+}
+
+#[tokio::test]
 async fn nested_interactive_ssh_bootstraps_remote_agent_bundle() {
     let _guard = ENV_MUTEX.lock().unwrap();
     let home = tempdir().unwrap();
@@ -472,14 +557,13 @@ async fn nested_interactive_ssh_bootstraps_remote_agent_bundle() {
     let ssh_log = temp.path().join("ssh.log");
     std::fs::write(
         fake_bin.join("ssh"),
-        format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", ssh_log.display()),
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
+            ssh_log.display()
+        ),
     )
     .unwrap();
-    std::fs::set_permissions(
-        fake_bin.join("ssh"),
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+    std::fs::set_permissions(fake_bin.join("ssh"), std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let path_with_fake = match &old_path {
         Some(path) => format!("{}:{}", fake_bin.display(), path.to_string_lossy()),
@@ -545,14 +629,13 @@ async fn nested_port_forward_ssh_bypasses_bootstrap() {
     let ssh_log = temp.path().join("ssh.log");
     std::fs::write(
         fake_bin.join("ssh"),
-        format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", ssh_log.display()),
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
+            ssh_log.display()
+        ),
     )
     .unwrap();
-    std::fs::set_permissions(
-        fake_bin.join("ssh"),
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+    std::fs::set_permissions(fake_bin.join("ssh"), std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let path_with_fake = match &old_path {
         Some(path) => format!("{}:{}", fake_bin.display(), path.to_string_lossy()),

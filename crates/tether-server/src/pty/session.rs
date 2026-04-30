@@ -1,11 +1,12 @@
 use crate::persistence::scrollback::ScrollbackBuffer;
 use crate::pty::anti_flicker::{self, OutputSender};
-use crate::pty::osc_parser::OscParser;
+use crate::pty::osc_parser::{OscEvent, OscParser};
 use crate::pty::semantic_prompt_parser::{SemanticPromptKind, SemanticPromptParser};
 use bytes::Bytes;
 use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::{broadcast, mpsc};
@@ -114,6 +115,9 @@ pub struct PtySession {
     command_phase: Mutex<Option<CommandPhase>>,
     /// Local task-attention tracking derived from tool title/process transitions.
     tool_attention_state: Mutex<ToolAttentionState>,
+    /// OSC 777 notifications seen by the reader and awaiting process-monitor
+    /// persistence into attention_seq.
+    pending_agent_notifications: std::sync::atomic::AtomicI64,
     /// Becomes true after we observe any OSC 133 shell-integration marker.
     has_shell_integration: std::sync::atomic::AtomicBool,
     /// Channel to notify the process monitor when a semantic prompt event
@@ -209,6 +213,7 @@ impl PtySession {
             last_alt_screen_exit_time: Mutex::new(None),
             command_phase: Mutex::new(None),
             tool_attention_state: Mutex::new(ToolAttentionState::default()),
+            pending_agent_notifications: std::sync::atomic::AtomicI64::new(0),
             has_shell_integration: std::sync::atomic::AtomicBool::new(false),
             semantic_event_tx,
         });
@@ -234,11 +239,7 @@ impl PtySession {
         Ok(session)
     }
 
-    fn reader_loop(
-        mut reader: Box<dyn Read + Send>,
-        tx: OutputSender,
-        session: Arc<PtySession>,
-    ) {
+    fn reader_loop(mut reader: Box<dyn Read + Send>, tx: OutputSender, session: Arc<PtySession>) {
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
@@ -251,20 +252,42 @@ impl PtySession {
                     }
                     // Parse OSC title sequences for remote process detection
                     let mut had_title_change = false;
+                    let mut had_notification = false;
                     if let Ok(mut parser) = session.osc_parser.lock() {
-                        if let Some(title) = parser.feed(&buf[..n]) {
-                            if let Ok(mut t) = session.osc_title.lock() {
-                                let new_val = if title.is_empty() {
-                                    None
-                                } else {
-                                    Some(title.clone())
-                                };
-                                if *t != new_val {
-                                    had_title_change = true;
+                        for event in parser.feed_events(&buf[..n]) {
+                            match event {
+                                OscEvent::Title(title) => {
+                                    tracing::debug!(
+                                        session_id = %session.id,
+                                        title = %title,
+                                        "[BELL] OSC title parsed"
+                                    );
+                                    if let Ok(mut t) = session.osc_title.lock() {
+                                        let new_val = if title.is_empty() {
+                                            None
+                                        } else {
+                                            Some(title.clone())
+                                        };
+                                        if *t != new_val {
+                                            had_title_change = true;
+                                        }
+                                        *t = new_val;
+                                    }
+                                    Self::update_sticky_osc_tool(&session, &title);
                                 }
-                                *t = new_val;
+                                OscEvent::Notify { title, body } => {
+                                    had_notification = true;
+                                    session
+                                        .pending_agent_notifications
+                                        .fetch_add(1, Ordering::AcqRel);
+                                    tracing::info!(
+                                        session_id = %session.id,
+                                        title = %title,
+                                        body_len = body.len(),
+                                        "[BELL] OSC notification parsed"
+                                    );
+                                }
                             }
-                            Self::update_sticky_osc_tool(&session, &title);
                         }
                     }
                     let mut had_semantic_event = false;
@@ -280,7 +303,7 @@ impl PtySession {
                     // Notify the process monitor AFTER all per-chunk state is settled.
                     // Title changes also trigger re-evaluation because tools like
                     // Claude Code signal their Running/Waiting state via the title.
-                    if had_semantic_event || had_title_change {
+                    if had_semantic_event || had_title_change || had_notification {
                         let _ = session.semantic_event_tx.try_send(session.id);
                     }
                     tx.send(data);
@@ -406,6 +429,10 @@ impl PtySession {
         if let Ok(mut state) = self.tool_attention_state.lock() {
             *state = next;
         }
+    }
+
+    pub(crate) fn take_pending_agent_notifications(&self) -> i64 {
+        self.pending_agent_notifications.swap(0, Ordering::AcqRel)
     }
 
     pub fn derive_tool_status(foreground: &SessionForeground) -> ToolStatus {

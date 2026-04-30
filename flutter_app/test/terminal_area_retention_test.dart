@@ -221,6 +221,7 @@ class _RetentionBackend implements TerminalBackend {
     bool imagePasteBridgeEnabled = false,
     VoidCallback? onSessionExited,
     ForegroundChangedCallback? onForegroundChanged,
+    void Function(String title, String body)? onBell,
     Future<void> Function(Uint8List data, String mimeType)? onClipboardImage,
   }) {
     return Container(
