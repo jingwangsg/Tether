@@ -18,7 +18,9 @@ class SessionState {
   }) {
     return SessionState(
       selectedProjectId:
-          clearSelectedProject ? null : (selectedProjectId ?? this.selectedProjectId),
+          clearSelectedProject
+              ? null
+              : (selectedProjectId ?? this.selectedProjectId),
       activeSessionIdByProject:
           activeSessionIdByProject ?? this.activeSessionIdByProject,
     );
@@ -77,17 +79,23 @@ class SessionNotifier extends StateNotifier<SessionState> {
   void syncProjects(List<String> projectIds) {
     final validIds = projectIds.toSet();
     final nextMap = Map<String, String>.fromEntries(
-      state.activeSessionIdByProject.entries.where((entry) => validIds.contains(entry.key)),
+      state.activeSessionIdByProject.entries.where(
+        (entry) => validIds.contains(entry.key),
+      ),
     );
     final nextSelected =
-        validIds.contains(state.selectedProjectId) ? state.selectedProjectId : projectIds.firstOrNull;
+        validIds.contains(state.selectedProjectId)
+            ? state.selectedProjectId
+            : projectIds.firstOrNull;
 
     if (nextSelected == state.selectedProjectId &&
         _sameRememberedSessions(nextMap, state.activeSessionIdByProject)) {
       return;
     }
 
-    debugLog('[SWITCH:session] syncProjects selected: ${state.selectedProjectId?.substring(0, 8)} -> ${nextSelected?.substring(0, 8)} projectCount=${projectIds.length}');
+    debugLog(
+      '[SWITCH:session] syncProjects selected: ${state.selectedProjectId == null ? null : shortId(state.selectedProjectId!)} -> ${nextSelected == null ? null : shortId(nextSelected)} projectCount=${projectIds.length}',
+    );
     state = SessionState(
       selectedProjectId: nextSelected,
       activeSessionIdByProject: nextMap,
@@ -109,7 +117,9 @@ class SessionNotifier extends StateNotifier<SessionState> {
       return;
     }
 
-    debugLog('[SWITCH:session] cleanupSessions removed=$removedEntries remaining=$nextMap validCount=${validSessionIds.length} activeSessionId=${state.activeSessionId?.substring(0, 8)}');
+    debugLog(
+      '[SWITCH:session] cleanupSessions removed=$removedEntries remaining=$nextMap validCount=${validSessionIds.length} activeSessionId=${state.activeSessionId == null ? null : shortId(state.activeSessionId!)}',
+    );
     state = state.copyWith(activeSessionIdByProject: nextMap);
   }
 }
@@ -122,5 +132,6 @@ bool _sameRememberedSessions(Map<String, String> a, Map<String, String> b) {
   return true;
 }
 
-final sessionProvider =
-    StateNotifierProvider<SessionNotifier, SessionState>((ref) => SessionNotifier());
+final sessionProvider = StateNotifierProvider<SessionNotifier, SessionState>(
+  (ref) => SessionNotifier(),
+);

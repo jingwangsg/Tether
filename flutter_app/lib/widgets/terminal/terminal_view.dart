@@ -68,7 +68,9 @@ class TerminalViewState extends State<TerminalView> {
   @override
   void initState() {
     super.initState();
-    debugLog('[SWITCH:flutter] initState session=${shortId(widget.sessionId)} isActive=${widget.isActive} isVisible=${widget.isVisibleInUI}');
+    debugLog(
+      '[SWITCH:flutter] initState session=${shortId(widget.sessionId)} isActive=${widget.isActive} isVisible=${widget.isVisibleInUI}',
+    );
     HardwareKeyboard.instance.addHandler(_handleSearchKey);
     widget.controller.attach(
       sendText: sendText,
@@ -82,7 +84,9 @@ class TerminalViewState extends State<TerminalView> {
   @override
   void didUpdateWidget(TerminalView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    debugLog('[SWITCH:flutter] didUpdateWidget session=${shortId(widget.sessionId)} isActive: ${oldWidget.isActive}->${widget.isActive} isVisible: ${oldWidget.isVisibleInUI}->${widget.isVisibleInUI} viewId=$_viewId');
+    debugLog(
+      '[SWITCH:flutter] didUpdateWidget session=${shortId(widget.sessionId)} isActive: ${oldWidget.isActive}->${widget.isActive} isVisible: ${oldWidget.isVisibleInUI}->${widget.isVisibleInUI} viewId=$_viewId',
+    );
     if (!identical(oldWidget.controller, widget.controller)) {
       oldWidget.controller.detach();
       widget.controller.attach(
@@ -93,14 +97,18 @@ class TerminalViewState extends State<TerminalView> {
       );
     }
     if (oldWidget.isActive != widget.isActive && _viewId != null) {
-      debugLog('[SWITCH:flutter] setActive(${widget.isActive}) session=${shortId(widget.sessionId)} viewId=$_viewId');
+      debugLog(
+        '[SWITCH:flutter] setActive(${widget.isActive}) session=${shortId(widget.sessionId)} viewId=$_viewId',
+      );
       _inputChannel.invokeMethod('setActive', {
         'viewId': _viewId,
         'active': widget.isActive,
       });
     }
     if (oldWidget.isVisibleInUI != widget.isVisibleInUI && _viewId != null) {
-      debugLog('[SWITCH:flutter] setVisibleInUI(${widget.isVisibleInUI}) session=${shortId(widget.sessionId)} viewId=$_viewId');
+      debugLog(
+        '[SWITCH:flutter] setVisibleInUI(${widget.isVisibleInUI}) session=${shortId(widget.sessionId)} viewId=$_viewId',
+      );
       _inputChannel.invokeMethod('setVisibleInUI', {
         'viewId': _viewId,
         'visible': widget.isVisibleInUI,
@@ -149,7 +157,9 @@ class TerminalViewState extends State<TerminalView> {
   void _syncMetadataConnection() {
     if (!widget.isActive || widget.serverConfig == null) {
       if (_metadataWs != null) {
-        debugLog('[BELL:2:tv] session=${widget.sessionId.substring(0, 8)} disconnecting metadata ws (isActive=${widget.isActive})');
+        debugLog(
+          '[BELL:2:tv] session=${shortId(widget.sessionId)} disconnecting metadata ws (isActive=${widget.isActive})',
+        );
       }
       _disconnectMetadata();
       return;
@@ -157,7 +167,9 @@ class TerminalViewState extends State<TerminalView> {
     if (_metadataWs != null) {
       return;
     }
-    debugLog('[BELL:2:tv] session=${widget.sessionId.substring(0, 8)} connecting metadata ws');
+    debugLog(
+      '[BELL:2:tv] session=${shortId(widget.sessionId)} connecting metadata ws',
+    );
     _connectMetadata();
   }
 
@@ -178,7 +190,9 @@ class TerminalViewState extends State<TerminalView> {
     _metadataSubscription = ws.messages.listen((message) {
       switch (message) {
         case ForegroundChangedMessage():
-          debugLog('[BELL:2:tv] session=${widget.sessionId.substring(0, 8)} onForegroundChanged process=${message.process} osc=${message.oscTitle} attSeq=${message.attentionSeq} ackSeq=${message.attentionAckSeq} isActive=${widget.isActive}');
+          debugLog(
+            '[BELL:2:tv] session=${shortId(widget.sessionId)} onForegroundChanged process=${message.process} osc=${message.oscTitle} attSeq=${message.attentionSeq} ackSeq=${message.attentionAckSeq} isActive=${widget.isActive}',
+          );
           widget.onForegroundChanged?.call(
             message.process,
             message.oscTitle,
@@ -251,7 +265,9 @@ class TerminalViewState extends State<TerminalView> {
       case 'bell':
         final title = event['title'] as String? ?? '';
         final body = event['body'] as String? ?? '';
-        debugLog('[BELL:2:tv] session=${widget.sessionId.substring(0, 8)} BELL event title=$title body=$body');
+        debugLog(
+          '[BELL:2:tv] session=${shortId(widget.sessionId)} BELL event title=$title body=$body',
+        );
         widget.onBell?.call(title, body);
       case 'clipboard_image':
         final data = event['data'];
@@ -325,7 +341,9 @@ class TerminalViewState extends State<TerminalView> {
 
   @override
   void dispose() {
-    debugLog('[SWITCH:flutter] dispose session=${shortId(widget.sessionId)} viewId=$_viewId');
+    debugLog(
+      '[SWITCH:flutter] dispose session=${shortId(widget.sessionId)} viewId=$_viewId',
+    );
     widget.controller.detach();
     HardwareKeyboard.instance.removeHandler(_handleSearchKey);
     _searchController.dispose();

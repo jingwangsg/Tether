@@ -41,7 +41,9 @@ SessionIndicatorStatus? deriveSessionIndicatorStatus(
   required bool isActive,
 }) {
   if (session.hasAttention && !isActive) {
-    debugLog('[BELL:5:status] session=${session.id.substring(0, 8)} -> ATTENTION (attSeq=${session.attentionSeq} ackSeq=${session.attentionAckSeq} isActive=$isActive)');
+    debugLog(
+      '[BELL:5:status] session=${shortId(session.id)} -> ATTENTION (attSeq=${session.attentionSeq} ackSeq=${session.attentionAckSeq} isActive=$isActive)',
+    );
     return SessionIndicatorStatus.attention;
   }
 
@@ -52,7 +54,9 @@ SessionIndicatorStatus? deriveSessionIndicatorStatus(
     null => null,
   };
   if (result != null) {
-    debugLog('[BELL:5:status] session=${session.id.substring(0, 8)} -> $result (fg=${session.foregroundProcess} osc=${session.oscTitle} attSeq=${session.attentionSeq} ackSeq=${session.attentionAckSeq} isActive=$isActive)');
+    debugLog(
+      '[BELL:5:status] session=${shortId(session.id)} -> $result (fg=${session.foregroundProcess} osc=${session.oscTitle} attSeq=${session.attentionSeq} ackSeq=${session.attentionAckSeq} isActive=$isActive)',
+    );
   }
   return result;
 }

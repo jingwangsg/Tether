@@ -71,10 +71,7 @@ class ServerState {
       api: clearApi ? null : (api ?? this.api),
       isConnected: isConnected ?? this.isConnected,
       isStale: isStale ?? this.isStale,
-      error:
-          identical(error, _noChange)
-              ? this.error
-              : error as String?,
+      error: identical(error, _noChange) ? this.error : error as String?,
       groups: groups ?? this.groups,
       sessions: sessions ?? this.sessions,
       sshHosts: sshHosts ?? this.sshHosts,
@@ -93,11 +90,9 @@ class ServerNotifier extends StateNotifier<ServerState> {
   int _refreshGeneration = 0;
   int _refreshCount = 0;
 
-  ServerNotifier({
-    bool autoConnect = true,
-    ApiServiceFactory? apiFactory,
-  }) : _apiFactory = apiFactory ?? _defaultApiFactory,
-       super(const ServerState()) {
+  ServerNotifier({bool autoConnect = true, ApiServiceFactory? apiFactory})
+    : _apiFactory = apiFactory ?? _defaultApiFactory,
+      super(const ServerState()) {
     if (autoConnect) {
       _tryAutoConnect();
     }
@@ -623,7 +618,9 @@ class ServerNotifier extends StateNotifier<ServerState> {
           current.attentionAckSeq == newAttnAckSeq) {
         return;
       }
-      debugLog('[BELL:4:provider] updateForegroundProcess session=${sessionId.substring(0, 8)} old(fg=${current.foregroundProcess} osc=${current.oscTitle} att=${current.attentionSeq}/${current.attentionAckSeq}) -> new(fg=$newFg osc=$newOsc att=$newAttnSeq/$newAttnAckSeq)');
+      debugLog(
+        '[BELL:4:provider] updateForegroundProcess session=${shortId(sessionId)} old(fg=${current.foregroundProcess} osc=${current.oscTitle} att=${current.attentionSeq}/${current.attentionAckSeq}) -> new(fg=$newFg osc=$newOsc att=$newAttnSeq/$newAttnAckSeq)',
+      );
     }
 
     final sessions =
@@ -646,12 +643,15 @@ class ServerNotifier extends StateNotifier<ServerState> {
   /// This is a client-side only operation — no server call needed since the
   /// bell originated from the local PTY surface.
   void markSessionBell(String sessionId) {
-    final sessions = state.sessions.map((s) {
-      if (s.id != sessionId) return s;
-      return s.copyWith(attentionSeq: s.attentionSeq + 1);
-    }).toList();
+    final sessions =
+        state.sessions.map((s) {
+          if (s.id != sessionId) return s;
+          return s.copyWith(attentionSeq: s.attentionSeq + 1);
+        }).toList();
     _replaceState(sessions: sessions);
-    debugLog('[BELL:4:provider] markSessionBell session=${sessionId.substring(0, 8)} new attSeq=${sessions.firstWhere((s) => s.id == sessionId).attentionSeq}');
+    debugLog(
+      '[BELL:4:provider] markSessionBell session=${shortId(sessionId)} new attSeq=${sessions.firstWhere((s) => s.id == sessionId).attentionSeq}',
+    );
   }
 
   Future<void> ackSessionAttention(String sessionId) async {
@@ -849,11 +849,8 @@ class ServerNotifier extends StateNotifier<ServerState> {
 }
 
 extension on ServerNotifier {
-  Future<({
-    List<Group> groups,
-    List<Session> sessions,
-    List<SshHost> sshHosts,
-  })> _loadSnapshot(ApiService api) async {
+  Future<({List<Group> groups, List<Session> sessions, List<SshHost> sshHosts})>
+  _loadSnapshot(ApiService api) async {
     final results = await Future.wait([
       api.listGroups(),
       api.listSessions(),

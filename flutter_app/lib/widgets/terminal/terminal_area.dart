@@ -83,7 +83,9 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       previous,
       next,
     ) {
-      debugLog('[BELL:3:area] activeSessionId changed: ${previous?.substring(0, 8)} -> ${next?.substring(0, 8)}');
+      debugLog(
+        '[BELL:3:area] activeSessionId changed: ${previous == null ? null : shortId(previous)} -> ${next == null ? null : shortId(next)}',
+      );
       if (previous != null && previous != next) {
         _warmSessionId = previous;
         _touchRetainedSession(previous);
@@ -168,7 +170,9 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
         .whereType<Session>()
         .toList(growable: false);
 
-    debugLog('[SWITCH:area:build] selectedProject=${selectedProjectId?.substring(0, 8)} activeId=${activeId?.substring(0, 8)} projectSessions=${projectSessions.map((s) => s.id.substring(0, 8)).toList()} retainedSessions=${retainedSessions.map((s) => s.id.substring(0, 8)).toList()} interactiveCount=${interactiveSessions.length}');
+    debugLog(
+      '[SWITCH:area:build] selectedProject=${selectedProjectId == null ? null : shortId(selectedProjectId)} activeId=${activeId == null ? null : shortId(activeId)} projectSessions=${projectSessions.map((s) => shortId(s.id)).toList()} retainedSessions=${retainedSessions.map((s) => shortId(s.id)).toList()} interactiveCount=${interactiveSessions.length}',
+    );
 
     Widget content;
     {
@@ -187,21 +191,32 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                   fit: StackFit.expand,
                   children: [
                     // Empty state overlay — shown when no sessions in project
-                    if (projectSessions.isEmpty && retainedSessions.every((s) => s.id != activeId))
+                    if (projectSessions.isEmpty &&
+                        retainedSessions.every((s) => s.id != activeId))
                       const Center(
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.terminal, size: 64, color: Colors.white24),
+                            Icon(
+                              Icons.terminal,
+                              size: 64,
+                              color: Colors.white24,
+                            ),
                             SizedBox(height: 16),
                             Text(
                               'No sessions in this project',
-                              style: TextStyle(color: Colors.white38, fontSize: 16),
+                              style: TextStyle(
+                                color: Colors.white38,
+                                fontSize: 16,
+                              ),
                             ),
                             SizedBox(height: 8),
                             Text(
                               'Select a session from the sidebar or create a new one',
-                              style: TextStyle(color: Colors.white24, fontSize: 13),
+                              style: TextStyle(
+                                color: Colors.white24,
+                                fontSize: 13,
+                              ),
                             ),
                           ],
                         ),
@@ -253,7 +268,9 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
                                 isActive: isActive,
                               ),
                           onBell: (title, body) {
-                            debugLog('[BELL:3:area] BELL from session=${session.id.substring(0, 8)} title=$title');
+                            debugLog(
+                              '[BELL:3:area] BELL from session=${shortId(session.id)} title=$title',
+                            );
                             _handleBell(sessionId: session.id);
                           },
                           onClipboardImage: (data, mimeType) {
@@ -417,7 +434,10 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
       if (!mounted) return;
       final validIds = _pendingInteractiveSessionIds ?? const <String>{};
       _pendingInteractiveSessionIds = null;
-      debugLog('[SWITCH:area:sync] cleanupSessions validIds=${validIds.map((id) => id.substring(0, 8)).toList()} currentActive=${ref.read(sessionProvider).activeSessionId?.substring(0, 8)}');
+      final activeSessionId = ref.read(sessionProvider).activeSessionId;
+      debugLog(
+        '[SWITCH:area:sync] cleanupSessions validIds=${validIds.map(shortId).toList()} currentActive=${activeSessionId == null ? null : shortId(activeSessionId)}',
+      );
       ref.read(sessionProvider.notifier).cleanupSessions(validIds);
     });
   }
@@ -486,7 +506,9 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     required int attentionAckSeq,
     required bool isActive,
   }) {
-    debugLog('[BELL:3:area] _handleSessionStatusUpdate session=${sessionId.substring(0, 8)} process=$process osc=$oscTitle attSeq=$attentionSeq ackSeq=$attentionAckSeq isActive=$isActive');
+    debugLog(
+      '[BELL:3:area] _handleSessionStatusUpdate session=${shortId(sessionId)} process=$process osc=$oscTitle attSeq=$attentionSeq ackSeq=$attentionAckSeq isActive=$isActive',
+    );
     ref
         .read(serverProvider.notifier)
         .updateForegroundProcess(
@@ -497,7 +519,9 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
           attentionAckSeq: attentionAckSeq,
         );
     if (isActive && attentionSeq > attentionAckSeq) {
-      debugLog('[BELL:3:area] auto-ack: active session has unacked attention, acking');
+      debugLog(
+        '[BELL:3:area] auto-ack: active session has unacked attention, acking',
+      );
       _ackAttentionIfNeeded(sessionId);
     }
   }
@@ -509,11 +533,15 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
             .sessions
             .where((item) => item.id == sessionId)
             .firstOrNull;
-    debugLog('[BELL:3:area] _ackAttentionIfNeeded session=${sessionId.substring(0, 8)} found=${session != null} hasAttention=${session?.hasAttention} attSeq=${session?.attentionSeq} ackSeq=${session?.attentionAckSeq}');
+    debugLog(
+      '[BELL:3:area] _ackAttentionIfNeeded session=${shortId(sessionId)} found=${session != null} hasAttention=${session?.hasAttention} attSeq=${session?.attentionSeq} ackSeq=${session?.attentionAckSeq}',
+    );
     if (session == null || !session.hasAttention) {
       return;
     }
-    debugLog('[BELL:3:area] sending ack to server for session=${sessionId.substring(0, 8)}');
+    debugLog(
+      '[BELL:3:area] sending ack to server for session=${shortId(sessionId)}',
+    );
     ref.read(serverProvider.notifier).ackSessionAttention(sessionId).catchError(
       (_) {
         return null;
@@ -528,10 +556,14 @@ class TerminalAreaState extends ConsumerState<TerminalArea> {
     final navState = ref.read(sessionProvider);
     final isActive = navState.activeSessionId == sessionId;
     if (isActive) {
-      debugLog('[BELL:3:area] bell for active session ${sessionId.substring(0, 8)}, ignoring');
+      debugLog(
+        '[BELL:3:area] bell for active session ${shortId(sessionId)}, ignoring',
+      );
       return;
     }
-    debugLog('[BELL:3:area] bell for background session ${sessionId.substring(0, 8)}, marking attention');
+    debugLog(
+      '[BELL:3:area] bell for background session ${shortId(sessionId)}, marking attention',
+    );
     ref.read(serverProvider.notifier).markSessionBell(sessionId);
   }
 }
