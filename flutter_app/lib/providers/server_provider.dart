@@ -459,6 +459,15 @@ class ServerNotifier extends StateNotifier<ServerState> {
     }
   }
 
+  Future<void> deployRemoteHost(String host) async {
+    final api = state.api;
+    if (api == null) {
+      throw StateError('Not connected');
+    }
+    await api.deployRemoteHost(host);
+    await refresh();
+  }
+
   Future<Group> createGroup({
     required String name,
     String? parentId,

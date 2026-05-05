@@ -25,8 +25,7 @@ const SHELL_INTEGRATION_BASH_RC: &str =
 const SHELL_INTEGRATION_BASH_SCRIPT: &str =
     include_str!("../assets/shell-integration/bash/tether-integration.bash");
 const CODEX_HOOKS_JSON: &str = include_str!("../assets/shell-integration/codex/hooks.json");
-const CODEX_CONFIG_TOML: &str =
-    include_str!("../assets/shell-integration/codex/config.toml");
+const CODEX_CONFIG_TOML: &str = include_str!("../assets/shell-integration/codex/config.toml");
 
 pub(crate) fn ghostty_terminfo_asset() -> (&'static str, &'static str, &'static str) {
     (
@@ -76,9 +75,7 @@ pub(crate) fn ssh_terminfo_preamble() -> String {
     ));
     // Fallback: write the pre-compiled binary into both directory conventions
     s.push_str("{ ");
-    s.push_str(
-        "mkdir -p \\$HOME/.terminfo/x \\$HOME/.terminfo/78 2>/dev/null; ",
-    );
+    s.push_str("mkdir -p \\$HOME/.terminfo/x \\$HOME/.terminfo/78 2>/dev/null; ");
     s.push_str(&format!(
         "printf '%s' '{}' | base64 -d > \\$HOME/.terminfo/x/xterm-ghostty 2>/dev/null; ",
         b64_bin
@@ -318,11 +315,7 @@ impl ServerConfig {
             TERMINAL_NOTIFIER_SHIM,
             true,
         )?;
-        write_runtime_text(
-            &self.nested_ssh_wrapper_path(),
-            NESTED_SSH_WRAPPER,
-            true,
-        )?;
+        write_runtime_text(&self.nested_ssh_wrapper_path(), NESTED_SSH_WRAPPER, true)?;
         write_runtime_text(
             &self.shadow_codex_home_dir().join("hooks.json"),
             CODEX_HOOKS_JSON,

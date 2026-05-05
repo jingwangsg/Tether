@@ -29,6 +29,9 @@ class _FakeTerminalBackend implements TerminalBackend {
   bool get isLocalPty => false;
 
   @override
+  int get retainedTerminalViewCap => 6;
+
+  @override
   Widget createTerminalWidget({
     Key? key,
     required String sessionId,

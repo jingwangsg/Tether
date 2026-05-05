@@ -13,6 +13,7 @@ class TerminalSettings {
   final List<MobileKey> customKeys;
   final String? globalHotkey;
   final bool scrollToBottomOnOutput;
+  final String? selectedSshHost;
 
   const TerminalSettings({
     this.fontFamily = 'MesloLGSNF',
@@ -20,6 +21,7 @@ class TerminalSettings {
     this.customKeys = defaultCustomKeys,
     this.globalHotkey,
     this.scrollToBottomOnOutput = false,
+    this.selectedSshHost,
   });
 
   TerminalSettings copyWith({
@@ -29,6 +31,8 @@ class TerminalSettings {
     String? globalHotkey,
     bool clearHotkey = false,
     bool? scrollToBottomOnOutput,
+    String? selectedSshHost,
+    bool clearSelectedSshHost = false,
   }) {
     return TerminalSettings(
       fontFamily: fontFamily ?? this.fontFamily,
@@ -37,6 +41,10 @@ class TerminalSettings {
       globalHotkey: clearHotkey ? null : (globalHotkey ?? this.globalHotkey),
       scrollToBottomOnOutput:
           scrollToBottomOnOutput ?? this.scrollToBottomOnOutput,
+      selectedSshHost:
+          clearSelectedSshHost
+              ? null
+              : (selectedSshHost ?? this.selectedSshHost),
     );
   }
 }
@@ -51,6 +59,7 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
   static const _keyCustomKeys = 'custom_mobile_keys';
   static const _keyGlobalHotkey = 'global_hotkey';
   static const _keyScrollToBottomOnOutput = 'scroll_to_bottom_on_output';
+  static const _keySelectedSshHost = 'selected_ssh_host';
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -59,6 +68,7 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
     final customKeysJson = prefs.getString(_keyCustomKeys);
     final globalHotkey = prefs.getString(_keyGlobalHotkey);
     final scrollToBottomOnOutput = prefs.getBool(_keyScrollToBottomOnOutput);
+    final selectedSshHost = prefs.getString(_keySelectedSshHost);
     List<MobileKey>? customKeys;
     if (customKeysJson != null) {
       final list = jsonDecode(customKeysJson) as List;
@@ -74,6 +84,7 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
       globalHotkey: globalHotkey,
       scrollToBottomOnOutput:
           scrollToBottomOnOutput ?? state.scrollToBottomOnOutput,
+      selectedSshHost: selectedSshHost,
     );
     if (globalHotkey != null) _applyHotkey(globalHotkey);
   }
@@ -127,6 +138,20 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
     state = state.copyWith(scrollToBottomOnOutput: value);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyScrollToBottomOnOutput, value);
+  }
+
+  Future<void> setSelectedSshHost(String? host) async {
+    final normalized = host?.trim();
+    state =
+        normalized != null && normalized.isNotEmpty
+            ? state.copyWith(selectedSshHost: normalized)
+            : state.copyWith(clearSelectedSshHost: true);
+    final prefs = await SharedPreferences.getInstance();
+    if (normalized != null && normalized.isNotEmpty) {
+      await prefs.setString(_keySelectedSshHost, normalized);
+    } else {
+      await prefs.remove(_keySelectedSshHost);
+    }
   }
 
   Future<void> addCustomKey(MobileKey key) async {

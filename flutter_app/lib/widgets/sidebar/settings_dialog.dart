@@ -2,8 +2,10 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../models/ssh_host.dart';
 import '../../models/mobile_key.dart';
 import '../../providers/settings_provider.dart';
+import '../../providers/server_provider.dart';
 
 void showSettingsDialog(BuildContext context, WidgetRef ref) {
   showDialog(context: context, builder: (ctx) => const _SettingsDialog());
@@ -47,6 +49,9 @@ class _SettingsDialog extends ConsumerWidget {
                     .setScrollToBottomOnOutput(value);
               },
             ),
+            const Divider(color: Colors.white12),
+            const SizedBox(height: 8),
+            const _SshHostSettingsSection(),
             if (Platform.isMacOS) ...[
               const Divider(color: Colors.white12),
               const SizedBox(height: 8),
@@ -267,6 +272,133 @@ class _SettingsDialog extends ConsumerWidget {
         );
       },
     );
+  }
+}
+
+class _SshHostSettingsSection extends ConsumerStatefulWidget {
+  const _SshHostSettingsSection();
+
+  @override
+  ConsumerState<_SshHostSettingsSection> createState() =>
+      _SshHostSettingsSectionState();
+}
+
+class _SshHostSettingsSectionState
+    extends ConsumerState<_SshHostSettingsSection> {
+  static const _noneValue = '__none__';
+  bool _deploying = false;
+  String? _deployResult;
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = ref.watch(settingsProvider);
+    final serverState = ref.watch(serverProvider);
+    final hosts = _hostOptions(serverState.sshHosts, settings.selectedSshHost);
+    final selectedValue = settings.selectedSshHost ?? _noneValue;
+    final canDeploy =
+        serverState.isConnected &&
+        !serverState.isStale &&
+        settings.selectedSshHost != null &&
+        !_deploying;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'SSH Host',
+          style: TextStyle(fontSize: 13, color: Colors.white70),
+        ),
+        const SizedBox(height: 4),
+        DropdownButtonFormField<String>(
+          initialValue:
+              hosts.any((host) => host.host == settings.selectedSshHost)
+                  ? selectedValue
+                  : _noneValue,
+          isExpanded: true,
+          items: [
+            const DropdownMenuItem(value: _noneValue, child: Text('None')),
+            for (final host in hosts)
+              DropdownMenuItem(
+                value: host.host,
+                child: Text(host.host, overflow: TextOverflow.ellipsis),
+              ),
+          ],
+          onChanged: (value) {
+            final next = value == _noneValue ? null : value;
+            setState(() => _deployResult = null);
+            ref.read(settingsProvider.notifier).setSelectedSshHost(next);
+          },
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            SizedBox(
+              height: 30,
+              child: TextButton.icon(
+                icon:
+                    _deploying
+                        ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                        : const Icon(Icons.cloud_upload_outlined, size: 16),
+                label: Text(
+                  _deploying ? 'Deploying' : 'Deploy Remote Client',
+                  style: const TextStyle(fontSize: 12),
+                ),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+                onPressed: canDeploy ? _deploySelectedHost : null,
+              ),
+            ),
+            const SizedBox(width: 8),
+            if (_deployResult case final result?)
+              Expanded(
+                child: Text(
+                  result,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: Colors.white38),
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  List<SshHost> _hostOptions(List<SshHost> hosts, String? selectedHost) {
+    final sorted = [...hosts]..sort((a, b) => a.host.compareTo(b.host));
+    if (selectedHost != null &&
+        selectedHost.isNotEmpty &&
+        !sorted.any((host) => host.host == selectedHost)) {
+      sorted.insert(0, SshHost(host: selectedHost));
+    }
+    return sorted;
+  }
+
+  Future<void> _deploySelectedHost() async {
+    final host = ref.read(settingsProvider).selectedSshHost;
+    if (host == null) return;
+
+    setState(() {
+      _deploying = true;
+      _deployResult = null;
+    });
+    try {
+      await ref.read(serverProvider.notifier).deployRemoteHost(host);
+      if (!mounted) return;
+      setState(() => _deployResult = 'Deployed');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _deployResult = 'Failed');
+    } finally {
+      if (mounted) {
+        setState(() => _deploying = false);
+      }
+    }
   }
 }
 

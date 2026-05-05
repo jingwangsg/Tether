@@ -6,6 +6,7 @@ import '../../models/session.dart';
 import '../../models/ssh_host.dart';
 import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
+import '../../providers/settings_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_creation.dart';
 import '../../utils/project_status_summary.dart';
@@ -35,6 +36,9 @@ class Sidebar extends ConsumerWidget {
     final groups = ref.watch(serverProvider.select((s) => s.groups));
     final sessions = ref.watch(serverProvider.select((s) => s.sessions));
     final sshHosts = ref.watch(serverProvider.select((s) => s.sshHosts));
+    final selectedSshHost = ref.watch(
+      settingsProvider.select((s) => s.selectedSshHost),
+    );
     final isConnected = ref.watch(serverProvider.select((s) => s.isConnected));
     final isStale = ref.watch(serverProvider.select((s) => s.isStale));
     final error = ref.watch(serverProvider.select((s) => s.error));
@@ -53,7 +57,9 @@ class Sidebar extends ConsumerWidget {
       activeSessionId: navState.activeSessionId,
     );
     if (projectStatuses.isNotEmpty) {
-      debugLog('[BELL:6:sidebar] projectStatuses=$projectStatuses selected=${navState.selectedProjectId} active=${navState.activeSessionId}');
+      debugLog(
+        '[BELL:6:sidebar] projectStatuses=$projectStatuses selected=${navState.selectedProjectId} active=${navState.activeSessionId}',
+      );
     }
 
     return Container(
@@ -77,6 +83,7 @@ class Sidebar extends ConsumerWidget {
                             groups: groups,
                             sessions: visible,
                             sshHosts: sshHosts,
+                            selectedSshHost: selectedSshHost,
                             navState: navState,
                             projectStatuses: projectStatuses,
                             allowMutations: allowMutations,
@@ -122,7 +129,13 @@ class Sidebar extends ConsumerWidget {
             tooltip: 'Settings',
             onPressed: () => showSettingsDialog(context, ref),
             padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+            visualDensity: VisualDensity.compact,
+            style: IconButton.styleFrom(
+              minimumSize: const Size.square(32),
+              fixedSize: const Size.square(32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
           ),
           if (isConnected) ...[
             IconButton(
@@ -134,7 +147,13 @@ class Sidebar extends ConsumerWidget {
                       ? () => _showCreateGroupDialog(context, ref)
                       : null,
               padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+              visualDensity: VisualDensity.compact,
+              style: IconButton.styleFrom(
+                minimumSize: const Size.square(32),
+                fixedSize: const Size.square(32),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
             ),
             IconButton(
               icon: const Icon(Icons.add, size: 18),
@@ -143,7 +162,13 @@ class Sidebar extends ConsumerWidget {
               onPressed:
                   allowMutations ? () => _createSession(context, ref) : null,
               padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+              visualDensity: VisualDensity.compact,
+              style: IconButton.styleFrom(
+                minimumSize: const Size.square(32),
+                fixedSize: const Size.square(32),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
             ),
           ],
         ],
@@ -186,20 +211,18 @@ class Sidebar extends ConsumerWidget {
     required List<Group> groups,
     required List<Session> sessions,
     required List<SshHost> sshHosts,
+    required String? selectedSshHost,
     required SessionState navState,
     required Map<String, SessionIndicatorStatus> projectStatuses,
     required bool allowMutations,
   }) {
     final projects = _projects(groups);
+    final sidebarHost = _selectedSidebarHost(selectedSshHost, sshHosts);
 
     return CustomScrollView(
       slivers: [
-        if (sshHosts.any((h) => h.reachable == true)) ...[
-          SliverToBoxAdapter(
-            child: SshHostList(
-              hosts: sshHosts.where((h) => h.reachable == true).toList(),
-            ),
-          ),
+        if (sidebarHost != null) ...[
+          SliverToBoxAdapter(child: SshHostList(hosts: [sidebarHost])),
           const SliverToBoxAdapter(
             child: Divider(height: 1, color: Colors.white12),
           ),
@@ -238,6 +261,19 @@ class Sidebar extends ConsumerWidget {
         ),
       ],
     );
+  }
+
+  SshHost? _selectedSidebarHost(String? selectedHost, List<SshHost> hosts) {
+    final host = selectedHost?.trim();
+    if (host == null || host.isEmpty) {
+      return null;
+    }
+    for (final candidate in hosts) {
+      if (candidate.host == host) {
+        return candidate;
+      }
+    }
+    return SshHost(host: host);
   }
 
   Widget _buildProjectTile(

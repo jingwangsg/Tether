@@ -90,6 +90,10 @@ fn test_router(state: AppState) -> Router {
             get(api::completions::complete_remote_path),
         )
         .route("/api/ssh/hosts", get(api::ssh::list_ssh_hosts))
+        .route(
+            "/api/remote/hosts/{host}/deploy",
+            post(api::remote::deploy_remote_host),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,

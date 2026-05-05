@@ -10,8 +10,7 @@ use tokio::time::timeout;
 use super::client::SshClient;
 use super::deploy::{
     ensure_deployed, ensure_remote_agent_bundle, ensure_remote_ghostty_terminfo,
-    ensure_started_without_restart,
-    remote_binary_version,
+    ensure_started_without_restart, remote_binary_version,
 };
 use super::tunnel::Tunnel;
 use crate::ssh_config::{parse_ssh_config, SshHost};
@@ -51,6 +50,13 @@ pub struct RemoteManager {
 enum ConnectError {
     UpgradeRequired,
     Other(anyhow::Error),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum DeployHostError {
+    NotConfigured,
+    UpgradeRequired,
+    Failed(String),
 }
 
 impl From<anyhow::Error> for ConnectError {
@@ -117,6 +123,60 @@ impl RemoteManager {
                 }
             })
             .collect()
+    }
+
+    pub async fn deploy_host(&self, host_alias: &str) -> Result<RemoteHostStatus, DeployHostError> {
+        let host_alias = host_alias.trim();
+        if host_alias.is_empty() {
+            return Err(DeployHostError::NotConfigured);
+        }
+
+        let ssh_host = self
+            .hosts
+            .get(host_alias)
+            .map(|entry| entry.ssh_host.clone())
+            .or_else(|| {
+                parse_ssh_config("~/.ssh/config")
+                    .into_iter()
+                    .find(|host| host.host == host_alias)
+            })
+            .ok_or(DeployHostError::NotConfigured)?;
+
+        self.hosts
+            .entry(host_alias.to_string())
+            .or_insert_with(|| RemoteHostState {
+                ssh_host: ssh_host.clone(),
+                status: RemoteStatus::Unreachable,
+                client: None,
+                tunnel: None,
+            });
+        self.set_status(host_alias, RemoteStatus::Connecting);
+
+        match connect_remote(&ssh_host, true).await {
+            Ok((client, tunnel)) => {
+                let tunnel_port = tunnel.local_port;
+                if let Some(mut entry) = self.hosts.get_mut(host_alias) {
+                    entry.status = RemoteStatus::Ready;
+                    entry.client = Some(client);
+                    entry.tunnel = Some(tunnel);
+                }
+                let _ = self.ready_tx.send((host_alias.to_string(), tunnel_port));
+                Ok(RemoteHostStatus {
+                    host: host_alias.to_string(),
+                    status: RemoteStatus::Ready,
+                    tunnel_port: Some(tunnel_port),
+                })
+            }
+            Err(ConnectError::UpgradeRequired) => {
+                self.set_status(host_alias, RemoteStatus::UpgradeRequired);
+                Err(DeployHostError::UpgradeRequired)
+            }
+            Err(ConnectError::Other(error)) => {
+                let message = error.to_string();
+                self.set_status(host_alias, RemoteStatus::Failed(message.clone()));
+                Err(DeployHostError::Failed(message))
+            }
+        }
     }
 
     fn set_status(&self, host_alias: &str, status: RemoteStatus) {
@@ -512,6 +572,14 @@ mod tests {
         let statuses = manager.list_statuses();
         assert!(matches!(statuses[0].status, RemoteStatus::Unreachable));
         assert!(statuses[0].tunnel_port.is_none());
+    }
+
+    #[tokio::test]
+    async fn deploy_host_reports_unknown_ssh_config_alias() {
+        let manager = RemoteManager::new();
+        let result = manager.deploy_host("__missing_tether_test_host__").await;
+
+        assert!(matches!(result, Err(DeployHostError::NotConfigured)));
     }
 
     #[test]

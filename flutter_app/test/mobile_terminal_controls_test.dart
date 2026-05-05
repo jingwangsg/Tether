@@ -371,6 +371,9 @@ class _FakeTerminalBackend implements TerminalBackend {
   String get platformId => 'fake';
 
   @override
+  int get retainedTerminalViewCap => 6;
+
+  @override
   Widget createTerminalWidget({
     Key? key,
     required String sessionId,

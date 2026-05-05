@@ -12,8 +12,7 @@ const CLAUDE_WRAPPER_SCRIPT: &str = include_str!("../../assets/shell-integration
 const TERMINAL_NOTIFIER_SHIM: &str =
     include_str!("../../assets/shell-integration/bin/terminal-notifier");
 const CODEX_HOOKS_JSON: &str = include_str!("../../assets/shell-integration/codex/hooks.json");
-const CODEX_CONFIG_TOML: &str =
-    include_str!("../../assets/shell-integration/codex/config.toml");
+const CODEX_CONFIG_TOML: &str = include_str!("../../assets/shell-integration/codex/config.toml");
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
@@ -142,7 +141,10 @@ pub async fn ensure_remote_agent_bundle(client: &SshClient) -> anyhow::Result<()
         )
         .await?;
     client
-        .upload(CLAUDE_WRAPPER_SCRIPT.as_bytes(), "~/.tether/runtime/agent/bin/claude")
+        .upload(
+            CLAUDE_WRAPPER_SCRIPT.as_bytes(),
+            "~/.tether/runtime/agent/bin/claude",
+        )
         .await?;
     client
         .upload(
@@ -580,7 +582,9 @@ mod tests {
         ensure_remote_agent_bundle(&client).await.unwrap();
 
         let log = std::fs::read_to_string(&log_path).unwrap();
-        assert!(log.contains("mkdir -p ~/.tether/runtime/agent/bin ~/.tether/runtime/agent/codex-home"));
+        assert!(
+            log.contains("mkdir -p ~/.tether/runtime/agent/bin ~/.tether/runtime/agent/codex-home")
+        );
         assert!(log.contains("cat > ~/.tether/runtime/agent/bin/tether-agent-notify"));
         assert!(log.contains("cat > ~/.tether/runtime/agent/bin/claude"));
         assert!(log.contains("cat > ~/.tether/runtime/agent/bin/terminal-notifier"));

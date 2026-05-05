@@ -229,6 +229,14 @@ class ApiService {
         .toList();
   }
 
+  Future<void> deployRemoteHost(String host) async {
+    final response = await _client.post(
+      _uri('/api/remote/hosts/$host/deploy'),
+      headers: _headers,
+    );
+    _checkResponse(response);
+  }
+
   void _checkResponse(http.Response response) {
     if (response.statusCode >= 400) {
       throw ApiException(response.statusCode, response.body);

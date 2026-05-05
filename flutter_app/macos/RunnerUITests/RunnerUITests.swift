@@ -138,7 +138,7 @@ final class RunnerUITests: XCTestCase {
             named: attentionSessionName,
             groupId: groupId,
             command:
-                "sleep 1; printf '\\033]0;✱ Codex\\007'; sleep 8; printf '\\033]0;· Codex\\007'; while :; do sleep 1; done"
+                "sleep 1; printf '\\033]0;⠋ Codex\\007'; sleep 8; printf '\\033]0;· Codex\\007'; while :; do sleep 1; done"
         )
 
         let app = XCUIApplication()
@@ -183,7 +183,7 @@ final class RunnerUITests: XCTestCase {
             named: attentionSessionName,
             groupId: groupId,
             command:
-                "sleep 1; printf '\\033]0;✱ Codex\\007'; sleep 8; printf '\\033]0;· Codex\\007'; while :; do sleep 1; done"
+                "sleep 1; printf '\\033]0;⠋ Codex\\007'; sleep 8; printf '\\033]0;· Codex\\007'; while :; do sleep 1; done"
         )
 
         let app = XCUIApplication()

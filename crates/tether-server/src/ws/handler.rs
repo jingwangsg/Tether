@@ -730,9 +730,7 @@ mod tests {
         // Simulate 100 concurrent guards
         let num_guards = 100usize;
         for _ in 0..num_guards {
-            map.entry(session_id)
-                .and_modify(|c| *c += 1)
-                .or_insert(1);
+            map.entry(session_id).and_modify(|c| *c += 1).or_insert(1);
         }
         assert_eq!(*map.get(&session_id).unwrap(), num_guards);
 

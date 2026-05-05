@@ -50,7 +50,9 @@ fn ssh_with_home_cwd_skips_cd() {
 
     // When cwd is ~, no cd is needed but terminfo preamble + exec $SHELL -l are still injected.
     assert!(
-        shell.starts_with("ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox -t"),
+        shell.starts_with(
+            "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox -t"
+        ),
         "should be ssh command with keepalive and -t, got: {}",
         &shell[..shell.len().min(120)]
     );
@@ -75,7 +77,9 @@ fn ssh_with_empty_cwd_skips_cd() {
     let (shell, cwd) = resolve_ssh_command(Some("devbox"), "ssh devbox", "");
 
     assert!(
-        shell.starts_with("ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox -t"),
+        shell.starts_with(
+            "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay devbox -t"
+        ),
         "empty cwd should use -t with terminfo preamble, got: {}",
         &shell[..shell.len().min(120)]
     );
@@ -241,7 +245,9 @@ fn full_command_format_with_absolute_path() {
     let (shell, _) = resolve_ssh_command(Some("prod"), "ssh prod", "/var/app");
 
     assert!(
-        shell.starts_with(r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay prod -t ""#),
+        shell.starts_with(
+            r#"ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o IPQoS=lowdelay prod -t ""#
+        ),
         "should start with correct ssh command"
     );
     assert!(

@@ -262,6 +262,9 @@ impl PtySession {
                                         title = %title,
                                         "[BELL] OSC title parsed"
                                     );
+                                    if Self::is_agent_notify_command_title(&title) {
+                                        continue;
+                                    }
                                     if let Ok(mut t) = session.osc_title.lock() {
                                         let new_val = if title.is_empty() {
                                             None
@@ -484,25 +487,12 @@ impl PtySession {
             .output()
             .ok()?;
         let args = String::from_utf8_lossy(&output.stdout);
-        let args_lower = args.to_lowercase();
-
-        for tool in &["claude", "codex"] {
-            if args_lower.contains(tool) {
-                return Some(tool.to_string());
-            }
-        }
-        None
+        Self::tool_from_process_args(&args).map(str::to_string)
     }
 
     fn detect_foreground_from_osc_title(&self) -> Option<String> {
         let title = self.osc_title.lock().ok()?;
-        let title_lower = title.as_ref()?.to_lowercase();
-        for tool in &["claude", "codex"] {
-            if title_lower.contains(tool) {
-                return Some(tool.to_string());
-            }
-        }
-        None
+        Self::tool_from_osc_title(title.as_ref()?).map(str::to_string)
     }
 
     fn detect_foreground_from_alt_screen_cache(&self) -> Option<String> {
@@ -538,19 +528,44 @@ impl PtySession {
 
     const KNOWN_TOOLS: [&str; 2] = ["claude", "codex"];
 
+    fn is_agent_notify_command_title(title: &str) -> bool {
+        title.to_lowercase().contains("tether-agent-notify")
+    }
+
+    fn tool_from_osc_title(title: &str) -> Option<&'static str> {
+        if Self::is_agent_notify_command_title(title) {
+            return None;
+        }
+
+        let title_lower = title.to_lowercase();
+        Self::KNOWN_TOOLS
+            .iter()
+            .copied()
+            .find(|tool| title_lower.contains(tool))
+    }
+
+    fn tool_from_process_args(args: &str) -> Option<&'static str> {
+        let args_lower = args.to_lowercase();
+        if args_lower.contains("tether-agent-notify") {
+            return None;
+        }
+
+        Self::KNOWN_TOOLS
+            .iter()
+            .copied()
+            .find(|tool| args_lower.contains(tool))
+    }
+
     /// Update sticky_osc_tool based on the latest OSC title.
     /// - Title contains a tool name -> set sticky
     /// - Title non-empty, no tool -> clear sticky (shell reclaimed the title)
     /// - Title empty -> keep sticky (tool likely cleared its own title)
     fn update_sticky_osc_tool(session: &Arc<PtySession>, title: &str) {
-        let title_lower = title.to_lowercase();
-        for tool in &Self::KNOWN_TOOLS {
-            if title_lower.contains(tool) {
-                if let Ok(mut sticky) = session.sticky_osc_tool.lock() {
-                    *sticky = Some(tool.to_string());
-                }
-                return;
+        if let Some(tool) = Self::tool_from_osc_title(title) {
+            if let Ok(mut sticky) = session.sticky_osc_tool.lock() {
+                *sticky = Some(tool.to_string());
             }
+            return;
         }
         if !title.is_empty() {
             if let Ok(mut sticky) = session.sticky_osc_tool.lock() {
@@ -747,6 +762,22 @@ mod tests {
         assert!(
             json.get("osc_title").is_none(),
             "osc_title should be omitted when None"
+        );
+    }
+
+    #[test]
+    fn agent_notify_command_titles_are_not_agent_titles() {
+        assert_eq!(
+            super::PtySession::tool_from_osc_title("tether-agent-notify codex-running"),
+            None
+        );
+        assert_eq!(
+            super::PtySession::tool_from_process_args("tether-agent-notify codex-running"),
+            None
+        );
+        assert_eq!(
+            super::PtySession::tool_from_osc_title("⠋ Codex"),
+            Some("codex")
         );
     }
 }

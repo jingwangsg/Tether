@@ -522,7 +522,11 @@ async fn local_session_agent_notify_osc777_marks_attention_without_runtime_thres
             b"tether-agent-notify codex-running; printf '{\"last_assistant_message\":\"needs input\"}' | tether-agent-notify codex-waiting\n",
         )
         .unwrap();
-    wait_for_scrollback_contains(&session, "]777;notify;Codex;needs input").await;
+    let output = wait_for_scrollback_contains(&session, "]777;notify;Codex;needs input").await;
+    assert!(
+        !output.contains("]2;✱ Codex") && !output.contains("]2;· Codex"),
+        "agent notify should not override the agent's own OSC title: {output:?}"
+    );
     let attention_result = attention_eventually(&session).await;
 
     monitor.abort();

@@ -235,10 +235,7 @@ async fn scrollback_info_with_zero_history() {
         .unwrap();
 
     let port = start_ws_server(state.clone()).await;
-    let url = format!(
-        "ws://127.0.0.1:{}/ws/session/{}",
-        port, session.id
-    );
+    let url = format!("ws://127.0.0.1:{}/ws/session/{}", port, session.id);
     let (ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
     let (_, mut read) = ws.split();
 
@@ -341,11 +338,7 @@ async fn concurrent_clients_get_independent_replay() {
         )
         .unwrap();
 
-    session
-        .scrollback
-        .lock()
-        .unwrap()
-        .append(&vec![b'Z'; 1000]);
+    session.scrollback.lock().unwrap().append(&vec![b'Z'; 1000]);
     session.scrollback.lock().unwrap().flush();
 
     let port = start_ws_server(state.clone()).await;

@@ -57,6 +57,11 @@ class _SshHostListState extends State<SshHostList> {
   }
 
   Widget _buildHostTile(BuildContext context, SshHost host) {
+    final statusColor = switch (host.reachable) {
+      true => Colors.green,
+      false => Colors.orange,
+      null => Colors.white24,
+    };
     return Padding(
       padding: const EdgeInsets.only(left: 28, right: 8, top: 5, bottom: 5),
       child: Row(
@@ -69,10 +74,7 @@ class _SshHostListState extends State<SshHostList> {
               children: [
                 Text(
                   host.host,
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 13,
-                  ),
+                  style: const TextStyle(color: Colors.white70, fontSize: 13),
                 ),
                 if (host.hostname != null)
                   Text(
@@ -86,8 +88,8 @@ class _SshHostListState extends State<SshHostList> {
           Container(
             width: 8,
             height: 8,
-            decoration: const BoxDecoration(
-              color: Colors.green,
+            decoration: BoxDecoration(
+              color: statusColor,
               shape: BoxShape.circle,
             ),
           ),

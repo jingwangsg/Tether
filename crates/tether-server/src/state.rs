@@ -86,4 +86,3 @@ impl AppState {
         let _ = self.inner.status_tx.send((session_id, foreground));
     }
 }
-

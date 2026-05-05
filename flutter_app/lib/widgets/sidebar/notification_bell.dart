@@ -12,8 +12,9 @@ class NotificationBell extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final sessions = ref.watch(serverProvider.select((s) => s.sessions));
     final groups = ref.watch(serverProvider.select((s) => s.groups));
-    final attentionSessions =
-        sessions.where((s) => s.hasAttention).toList(growable: false);
+    final attentionSessions = sessions
+        .where((s) => s.hasAttention)
+        .toList(growable: false);
     final count = attentionSessions.length;
 
     return Stack(
@@ -36,7 +37,13 @@ class NotificationBell extends ConsumerWidget {
                   )
                   : null,
           padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+          visualDensity: VisualDensity.compact,
+          style: IconButton.styleFrom(
+            minimumSize: const Size.square(32),
+            fixedSize: const Size.square(32),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
         ),
         if (count > 0)
           Positioned(
@@ -72,14 +79,10 @@ class NotificationBell extends ConsumerWidget {
   ) {
     final groupMap = {for (final g in groups) g.id: g};
     final button = context.findRenderObject() as RenderBox;
-    final overlay =
-        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
     final position = RelativeRect.fromRect(
       Rect.fromPoints(
-        button.localToGlobal(
-          Offset(0, button.size.height),
-          ancestor: overlay,
-        ),
+        button.localToGlobal(Offset(0, button.size.height), ancestor: overlay),
         button.localToGlobal(
           button.size.bottomRight(Offset.zero),
           ancestor: overlay,

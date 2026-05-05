@@ -73,6 +73,10 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
         )
         .route("/api/ssh/hosts", get(api::ssh::list_ssh_hosts))
         .route("/api/remote/hosts", get(api::remote::list_remote_hosts))
+        .route(
+            "/api/remote/hosts/{host}/deploy",
+            post(api::remote::deploy_remote_host),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,

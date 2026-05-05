@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tether/models/group.dart';
 import 'package:tether/models/session.dart';
+import 'package:tether/models/ssh_host.dart';
+import 'package:tether/providers/settings_provider.dart';
 import 'package:tether/providers/server_provider.dart';
 import 'package:tether/providers/session_provider.dart';
 import 'package:tether/providers/ui_provider.dart';
@@ -36,6 +39,10 @@ Session _session(
 );
 
 void main() {
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   testWidgets('sidebar renders only top-level projects and no session labels', (
     tester,
   ) async {
@@ -222,6 +229,42 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('osmo_9000'), findsOneWidget);
+  });
+
+  testWidgets('sidebar shows only the ssh host selected in settings', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({'selected_ssh_host': 'devbox'});
+    final container = ProviderContainer(
+      overrides: [
+        settingsProvider.overrideWith((ref) => SettingsNotifier()),
+        serverProvider.overrideWith(
+          (ref) => ServerNotifier.test(
+            ServerState(
+              isConnected: true,
+              sshHosts: [
+                SshHost(host: 'devbox', reachable: true),
+                SshHost(host: 'osmo_9000', reachable: true),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: Scaffold(body: SizedBox(width: 280, child: Sidebar())),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('devbox'), findsOneWidget);
+    expect(find.text('osmo_9000'), findsNothing);
   });
 
   testWidgets('sidebar keeps ssh host badge visible in narrow layout', (

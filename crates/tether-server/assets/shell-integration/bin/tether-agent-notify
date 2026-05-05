@@ -6,11 +6,6 @@ _tether_json_field() {
   sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | head -n 1
 }
 
-_tether_emit_title() {
-  local value="$1"
-  printf '\033]2;%s\007' "$value"
-}
-
 _tether_emit_notify() {
   local title="$1"
   local body="$2"
@@ -19,23 +14,19 @@ _tether_emit_notify() {
 
 case "${1:-}" in
   claude-running)
-    _tether_emit_title "✱ Claude Code"
     ;;
   claude-waiting)
     payload="$(cat)"
     message="$(printf '%s' "$payload" | _tether_json_field message)"
     [ -n "$message" ] || message="Claude Code needs your attention"
-    _tether_emit_title "· Claude Code"
     _tether_emit_notify "Claude Code" "$message"
     ;;
   codex-running)
-    _tether_emit_title "✱ Codex"
     ;;
   codex-waiting)
     payload="$(cat)"
     message="$(printf '%s' "$payload" | _tether_json_field last_assistant_message)"
     [ -n "$message" ] || message="Codex needs your attention"
-    _tether_emit_title "· Codex"
     _tether_emit_notify "Codex" "$message"
     ;;
   terminal-notifier)
