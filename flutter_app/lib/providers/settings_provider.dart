@@ -14,6 +14,7 @@ class TerminalSettings {
   final String? globalHotkey;
   final bool scrollToBottomOnOutput;
   final String? selectedSshHost;
+  final bool restartRemoteOnConnect;
 
   const TerminalSettings({
     this.fontFamily = 'MesloLGSNF',
@@ -22,6 +23,7 @@ class TerminalSettings {
     this.globalHotkey,
     this.scrollToBottomOnOutput = false,
     this.selectedSshHost,
+    this.restartRemoteOnConnect = false,
   });
 
   TerminalSettings copyWith({
@@ -33,6 +35,7 @@ class TerminalSettings {
     bool? scrollToBottomOnOutput,
     String? selectedSshHost,
     bool clearSelectedSshHost = false,
+    bool? restartRemoteOnConnect,
   }) {
     return TerminalSettings(
       fontFamily: fontFamily ?? this.fontFamily,
@@ -45,6 +48,8 @@ class TerminalSettings {
           clearSelectedSshHost
               ? null
               : (selectedSshHost ?? this.selectedSshHost),
+      restartRemoteOnConnect:
+          restartRemoteOnConnect ?? this.restartRemoteOnConnect,
     );
   }
 }
@@ -60,6 +65,7 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
   static const _keyGlobalHotkey = 'global_hotkey';
   static const _keyScrollToBottomOnOutput = 'scroll_to_bottom_on_output';
   static const _keySelectedSshHost = 'selected_ssh_host';
+  static const _keyRestartRemoteOnConnect = 'restart_remote_on_connect';
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -69,6 +75,7 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
     final globalHotkey = prefs.getString(_keyGlobalHotkey);
     final scrollToBottomOnOutput = prefs.getBool(_keyScrollToBottomOnOutput);
     final selectedSshHost = prefs.getString(_keySelectedSshHost);
+    final restartRemoteOnConnect = prefs.getBool(_keyRestartRemoteOnConnect);
     List<MobileKey>? customKeys;
     if (customKeysJson != null) {
       final list = jsonDecode(customKeysJson) as List;
@@ -85,6 +92,8 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
       scrollToBottomOnOutput:
           scrollToBottomOnOutput ?? state.scrollToBottomOnOutput,
       selectedSshHost: selectedSshHost,
+      restartRemoteOnConnect:
+          restartRemoteOnConnect ?? state.restartRemoteOnConnect,
     );
     if (globalHotkey != null) _applyHotkey(globalHotkey);
   }
@@ -152,6 +161,12 @@ class SettingsNotifier extends StateNotifier<TerminalSettings> {
     } else {
       await prefs.remove(_keySelectedSshHost);
     }
+  }
+
+  Future<void> setRestartRemoteOnConnect(bool value) async {
+    state = state.copyWith(restartRemoteOnConnect: value);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyRestartRemoteOnConnect, value);
   }
 
   Future<void> addCustomKey(MobileKey key) async {

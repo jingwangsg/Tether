@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tether/models/group.dart';
+import 'package:tether/models/remote_host_status.dart';
 import 'package:tether/models/session.dart';
 import 'package:tether/models/ssh_host.dart';
 import 'package:tether/providers/server_provider.dart';
@@ -27,100 +28,101 @@ class _FailingDeleteApiService extends ApiService {
   @override
   Future<List<SshHost>> listSshHosts() async => [];
   @override
+  Future<List<RemoteHostStatus>> listRemoteHosts() async => [];
+  @override
   void dispose() {}
 }
 
 void main() {
-  test(
-    'cleanupSessions is NOT called when deleteSession throws',
-    () async {
-      final api = _FailingDeleteApiService();
-      final serverNotifier = ServerNotifier.test(
-        ServerState(
-          config: ServerConfig(host: 'localhost', port: 7680),
-          api: api,
-          isConnected: true,
-          sessions: [
-            Session(
-              id: 's1',
-              groupId: 'g1',
-              name: 'test-session',
-              shell: 'bash',
-              cols: 80,
-              rows: 24,
-              cwd: '/tmp',
-              isAlive: true,
-              createdAt: '',
-              lastActive: '',
-            ),
-          ],
-          groups: [Group(id: 'g1', name: 'TestGroup')],
-        ),
-      );
+  test('cleanupSessions is NOT called when deleteSession throws', () async {
+    final api = _FailingDeleteApiService();
+    final serverNotifier = ServerNotifier.test(
+      ServerState(
+        config: ServerConfig(host: 'localhost', port: 7680),
+        api: api,
+        isConnected: true,
+        sessions: [
+          Session(
+            id: 's1',
+            groupId: 'g1',
+            name: 'test-session',
+            shell: 'bash',
+            cols: 80,
+            rows: 24,
+            cwd: '/tmp',
+            isAlive: true,
+            createdAt: '',
+            lastActive: '',
+          ),
+        ],
+        groups: [Group(id: 'g1', name: 'TestGroup')],
+      ),
+    );
 
-      final sessionNotifier = SessionNotifier()
-        ..selectProject('g1')
-        ..setActiveSession(projectId: 'g1', sessionId: 's1');
+    final sessionNotifier =
+        SessionNotifier()
+          ..selectProject('g1')
+          ..setActiveSession(projectId: 'g1', sessionId: 's1');
 
-      expect(sessionNotifier.state.selectedProjectId, 'g1');
-      expect(sessionNotifier.state.activeSessionId, 's1');
+    expect(sessionNotifier.state.selectedProjectId, 'g1');
+    expect(sessionNotifier.state.activeSessionId, 's1');
 
-      try {
-        await serverNotifier.deleteSession('s1');
-        sessionNotifier.cleanupSessions({});
-      } catch (_) {
-        // Delete failed — selection must stay intact.
-      }
+    try {
+      await serverNotifier.deleteSession('s1');
+      sessionNotifier.cleanupSessions({});
+    } catch (_) {
+      // Delete failed — selection must stay intact.
+    }
 
-      expect(sessionNotifier.state.selectedProjectId, 'g1');
-      expect(sessionNotifier.state.activeSessionId, 's1');
-    },
-  );
+    expect(sessionNotifier.state.selectedProjectId, 'g1');
+    expect(sessionNotifier.state.activeSessionId, 's1');
+  });
 
-  test(
-    'cleanupSessions IS called when deleteSession succeeds',
-    () async {
-      final api = _SuccessDeleteApiService();
-      final serverNotifier = ServerNotifier.test(
-        ServerState(
-          config: ServerConfig(host: 'localhost', port: 7680),
-          api: api,
-          isConnected: true,
-          sessions: [
-            Session(
-              id: 's1',
-              groupId: 'g1',
-              name: 'test-session',
-              shell: 'bash',
-              cols: 80,
-              rows: 24,
-              cwd: '/tmp',
-              isAlive: true,
-              createdAt: '',
-              lastActive: '',
-            ),
-          ],
-          groups: [Group(id: 'g1', name: 'TestGroup')],
-        ),
-      );
+  test('cleanupSessions IS called when deleteSession succeeds', () async {
+    final api = _SuccessDeleteApiService();
+    final serverNotifier = ServerNotifier.test(
+      ServerState(
+        config: ServerConfig(host: 'localhost', port: 7680),
+        api: api,
+        isConnected: true,
+        sessions: [
+          Session(
+            id: 's1',
+            groupId: 'g1',
+            name: 'test-session',
+            shell: 'bash',
+            cols: 80,
+            rows: 24,
+            cwd: '/tmp',
+            isAlive: true,
+            createdAt: '',
+            lastActive: '',
+          ),
+        ],
+        groups: [Group(id: 'g1', name: 'TestGroup')],
+      ),
+    );
 
-      final sessionNotifier = SessionNotifier()
-        ..selectProject('g1')
-        ..setActiveSession(projectId: 'g1', sessionId: 's1');
+    final sessionNotifier =
+        SessionNotifier()
+          ..selectProject('g1')
+          ..setActiveSession(projectId: 'g1', sessionId: 's1');
 
-      expect(sessionNotifier.state.activeSessionId, 's1');
+    expect(sessionNotifier.state.activeSessionId, 's1');
 
-      try {
-        await serverNotifier.deleteSession('s1');
-        sessionNotifier.cleanupSessions({});
-      } catch (_) {
-        // Should not happen
-      }
+    try {
+      await serverNotifier.deleteSession('s1');
+      sessionNotifier.cleanupSessions({});
+    } catch (_) {
+      // Should not happen
+    }
 
-      expect(sessionNotifier.state.activeSessionId, isNull,
-          reason: 'Active session should be cleared on successful delete');
-    },
-  );
+    expect(
+      sessionNotifier.state.activeSessionId,
+      isNull,
+      reason: 'Active session should be cleared on successful delete',
+    );
+  });
 }
 
 class _SuccessDeleteApiService extends ApiService {
@@ -136,6 +138,8 @@ class _SuccessDeleteApiService extends ApiService {
   Future<List<Session>> listSessions() async => [];
   @override
   Future<List<SshHost>> listSshHosts() async => [];
+  @override
+  Future<List<RemoteHostStatus>> listRemoteHosts() async => [];
   @override
   void dispose() {}
 }

@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/group.dart';
+import '../models/remote_host_status.dart';
 import '../models/session.dart';
 import '../models/ssh_host.dart';
 import '../services/api_service.dart';
@@ -40,6 +41,7 @@ class ServerState {
   final List<Group> groups;
   final List<Session> sessions;
   final List<SshHost> sshHosts;
+  final List<RemoteHostStatus> remoteHosts;
 
   const ServerState({
     this.config,
@@ -50,6 +52,7 @@ class ServerState {
     this.groups = const [],
     this.sessions = const [],
     this.sshHosts = const [],
+    this.remoteHosts = const [],
   });
 
   static const _noChange = Object();
@@ -65,6 +68,7 @@ class ServerState {
     List<Group>? groups,
     List<Session>? sessions,
     List<SshHost>? sshHosts,
+    List<RemoteHostStatus>? remoteHosts,
   }) {
     return ServerState(
       config: clearConfig ? null : (config ?? this.config),
@@ -75,6 +79,7 @@ class ServerState {
       groups: groups ?? this.groups,
       sessions: sessions ?? this.sessions,
       sshHosts: sshHosts ?? this.sshHosts,
+      remoteHosts: remoteHosts ?? this.remoteHosts,
     );
   }
 }
@@ -117,7 +122,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
   Future<void> _tryAutoConnect() async {
     try {
       final config =
-          _testOverrideConfig() ?? ServerConfig(host: 'localhost', port: 7680);
+          _testOverrideConfig() ?? ServerConfig(host: '127.0.0.1', port: 7680);
       final probe = _apiFactory(config);
       try {
         await probe.getInfo().timeout(const Duration(seconds: 2));
@@ -173,6 +178,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
         groups: snapshot.groups,
         sessions: snapshot.sessions,
         sshHosts: snapshot.sshHosts,
+        remoteHosts: snapshot.remoteHosts,
       );
       TestEventLogger.instance.log('server_connected', {
         'host': config.host,
@@ -222,12 +228,14 @@ class ServerNotifier extends StateNotifier<ServerState> {
       final List<Group> groups;
       final List<Session> sessions;
       final List<SshHost> sshHosts;
+      final List<RemoteHostStatus> remoteHosts;
 
       if (includeSsh) {
         final snapshot = await _loadSnapshot(api);
         groups = snapshot.groups;
         sessions = snapshot.sessions;
         sshHosts = snapshot.sshHosts;
+        remoteHosts = snapshot.remoteHosts;
       } else {
         final results = await Future.wait([
           api.listGroups(),
@@ -236,6 +244,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
         groups = results[0] as List<Group>;
         sessions = results[1] as List<Session>;
         sshHosts = state.sshHosts;
+        remoteHosts = state.remoteHosts;
       }
 
       _logRefreshEvent(
@@ -275,8 +284,13 @@ class ServerNotifier extends StateNotifier<ServerState> {
         refreshedSessions: sessions,
         refreshedSshHosts: sshHosts,
       );
+      final remoteHostsChanged =
+          !_remoteHostsEqual(state.remoteHosts, remoteHosts);
 
-      if (!diff.hasChanges && !state.isStale && state.error == null) {
+      if (!diff.hasChanges &&
+          !remoteHostsChanged &&
+          !state.isStale &&
+          state.error == null) {
         return;
       }
 
@@ -286,6 +300,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
         sessions: diff.mergedSessions,
         sessionsStructureChanged: diff.sessionsStructureChanged,
         sshHosts: diff.sshHosts,
+        remoteHosts: remoteHosts,
         isStale: false,
         error: null,
       );
@@ -459,13 +474,76 @@ class ServerNotifier extends StateNotifier<ServerState> {
     }
   }
 
-  Future<void> deployRemoteHost(String host) async {
+  Future<RemoteHostStatus> connectRemoteHost(String host) async {
     final api = state.api;
     if (api == null) {
       throw StateError('Not connected');
     }
-    await api.deployRemoteHost(host);
+    final status = await api.connectRemoteHost(host);
+    _replaceRemoteHostStatus(status);
     await refresh();
+    return status;
+  }
+
+  Future<RemoteHostStatus> deployRemoteHost(String host) async {
+    final api = state.api;
+    if (api == null) {
+      throw StateError('Not connected');
+    }
+    final status = await api.deployRemoteHost(host);
+    _replaceRemoteHostStatus(status);
+    await refresh();
+    return status;
+  }
+
+  Future<RemoteHostStatus> restartRemoteHost(String host) async {
+    final api = state.api;
+    if (api == null) {
+      throw StateError('Not connected');
+    }
+    final status = await api.restartRemoteHost(host);
+    _replaceRemoteHostStatus(status);
+    await refresh();
+    return status;
+  }
+
+  Future<void> ensureConfiguredRemoteHost(
+    String host, {
+    required bool restart,
+  }) async {
+    final normalized = host.trim();
+    if (normalized.isEmpty) {
+      return;
+    }
+    final existing = _remoteHostStatus(normalized);
+    if (existing?.isConnectingOrReady == true) {
+      return;
+    }
+    if (restart) {
+      await restartRemoteHost(normalized);
+    } else {
+      await connectRemoteHost(normalized);
+    }
+  }
+
+  RemoteHostStatus? _remoteHostStatus(String host) {
+    for (final status in state.remoteHosts) {
+      if (status.host == host) {
+        return status;
+      }
+    }
+    return null;
+  }
+
+  void _replaceRemoteHostStatus(RemoteHostStatus status) {
+    final next = [...state.remoteHosts];
+    final index = next.indexWhere((candidate) => candidate.host == status.host);
+    if (index == -1) {
+      next.add(status);
+    } else {
+      next[index] = status;
+    }
+    state = state.copyWith(remoteHosts: next);
   }
 
   Future<Group> createGroup({
@@ -708,6 +786,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
     List<Session>? sessions,
     bool sessionsStructureChanged = false,
     List<SshHost>? sshHosts,
+    List<RemoteHostStatus>? remoteHosts,
     bool? isStale,
     Object? error = ServerState._noChange,
   }) {
@@ -721,6 +800,7 @@ class ServerNotifier extends StateNotifier<ServerState> {
       groups: groups,
       sessions: sessions,
       sshHosts: sshHosts,
+      remoteHosts: remoteHosts,
       isStale: isStale,
       error: error,
     );
@@ -858,18 +938,27 @@ class ServerNotifier extends StateNotifier<ServerState> {
 }
 
 extension on ServerNotifier {
-  Future<({List<Group> groups, List<Session> sessions, List<SshHost> sshHosts})>
+  Future<
+    ({
+      List<Group> groups,
+      List<Session> sessions,
+      List<SshHost> sshHosts,
+      List<RemoteHostStatus> remoteHosts,
+    })
+  >
   _loadSnapshot(ApiService api) async {
     final results = await Future.wait([
       api.listGroups(),
       api.listSessions(),
       api.listSshHosts(),
+      api.listRemoteHosts(),
     ]);
 
     return (
       groups: results[0] as List<Group>,
       sessions: results[1] as List<Session>,
       sshHosts: results[2] as List<SshHost>,
+      remoteHosts: results[3] as List<RemoteHostStatus>,
     );
   }
 }
@@ -929,6 +1018,27 @@ List<Session> _applySessionReorder(
       groupId: update.groupId ?? session.groupId,
     );
   }).toList();
+}
+
+bool _remoteHostsEqual(List<RemoteHostStatus> a, List<RemoteHostStatus> b) {
+  if (a.length != b.length) {
+    return false;
+  }
+  final leftSorted = [...a]
+    ..sort((left, right) => left.host.compareTo(right.host));
+  final rightSorted = [...b]
+    ..sort((left, right) => left.host.compareTo(right.host));
+  for (var i = 0; i < a.length; i++) {
+    final left = leftSorted[i];
+    final right = rightSorted[i];
+    if (left.host != right.host ||
+        left.status != right.status ||
+        left.tunnelPort != right.tunnelPort ||
+        left.failureMessage != right.failureMessage) {
+      return false;
+    }
+  }
+  return true;
 }
 
 class _SessionReorderUpdate {

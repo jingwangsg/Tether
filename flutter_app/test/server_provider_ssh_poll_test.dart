@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tether/models/group.dart';
+import 'package:tether/models/remote_host_status.dart';
 import 'package:tether/models/session.dart';
 import 'package:tether/models/ssh_host.dart';
 import 'package:tether/providers/server_provider.dart';
@@ -15,30 +16,34 @@ class _CountingApiService extends ApiService {
   Future<Map<String, dynamic>> getInfo() async => {'version': '0.0.0'};
 
   @override
-  Future<List<Group>> listGroups() async =>
-      [Group(id: 'g1', name: 'TestGroup')];
+  Future<List<Group>> listGroups() async => [
+    Group(id: 'g1', name: 'TestGroup'),
+  ];
 
   @override
   Future<List<Session>> listSessions() async => [
-        Session(
-          id: 's1',
-          groupId: 'g1',
-          name: 'test',
-          shell: 'bash',
-          cols: 80,
-          rows: 24,
-          cwd: '/tmp',
-          isAlive: true,
-          createdAt: '',
-          lastActive: '',
-        ),
-      ];
+    Session(
+      id: 's1',
+      groupId: 'g1',
+      name: 'test',
+      shell: 'bash',
+      cols: 80,
+      rows: 24,
+      cwd: '/tmp',
+      isAlive: true,
+      createdAt: '',
+      lastActive: '',
+    ),
+  ];
 
   @override
   Future<List<SshHost>> listSshHosts() async {
     sshCallCount++;
     return [SshHost(host: 'devbox', reachable: true)];
   }
+
+  @override
+  Future<List<RemoteHostStatus>> listRemoteHosts() async => [];
 
   @override
   void dispose() {}
@@ -62,8 +67,11 @@ void main() {
       await notifier.refresh();
     }
 
-    expect(api.sshCallCount, 1,
-        reason: 'SSH hosts should be fetched once per 6 refresh cycles');
+    expect(
+      api.sshCallCount,
+      1,
+      reason: 'SSH hosts should be fetched once per 6 refresh cycles',
+    );
   });
 
   test('SSH state is preserved during non-SSH refresh cycles', () async {
@@ -85,7 +93,10 @@ void main() {
 
     expect(notifier.state.sshHosts.length, 1);
     expect(notifier.state.sshHosts.first.host, 'devbox');
-    expect(api.sshCallCount, 0,
-        reason: 'Non-SSH refresh should not call listSshHosts');
+    expect(
+      api.sshCallCount,
+      0,
+      reason: 'Non-SSH refresh should not call listSshHosts',
+    );
   });
 }

@@ -19,9 +19,39 @@ pub async fn deploy_remote_host(
         .deploy_host(&host)
         .await
         .map(Json)
-        .map_err(|error| match error {
-            DeployHostError::NotConfigured => StatusCode::NOT_FOUND,
-            DeployHostError::UpgradeRequired => StatusCode::CONFLICT,
-            DeployHostError::Failed(_) => StatusCode::BAD_GATEWAY,
-        })
+        .map_err(remote_host_error_status)
+}
+
+pub async fn connect_remote_host(
+    State(state): State<AppState>,
+    Path(host): Path<String>,
+) -> Result<Json<RemoteHostStatus>, StatusCode> {
+    state
+        .inner
+        .remote_manager
+        .connect_host(&host)
+        .await
+        .map(Json)
+        .map_err(remote_host_error_status)
+}
+
+pub async fn restart_remote_host(
+    State(state): State<AppState>,
+    Path(host): Path<String>,
+) -> Result<Json<RemoteHostStatus>, StatusCode> {
+    state
+        .inner
+        .remote_manager
+        .restart_host(&host)
+        .await
+        .map(Json)
+        .map_err(remote_host_error_status)
+}
+
+fn remote_host_error_status(error: DeployHostError) -> StatusCode {
+    match error {
+        DeployHostError::NotConfigured => StatusCode::NOT_FOUND,
+        DeployHostError::UpgradeRequired => StatusCode::CONFLICT,
+        DeployHostError::Failed(_) => StatusCode::BAD_GATEWAY,
+    }
 }

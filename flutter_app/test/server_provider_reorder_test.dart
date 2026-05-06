@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tether/models/group.dart';
+import 'package:tether/models/remote_host_status.dart';
 import 'package:tether/models/session.dart';
 import 'package:tether/models/ssh_host.dart';
 import 'package:tether/providers/server_provider.dart';
@@ -57,6 +58,9 @@ class FakeApiService extends ApiService {
     }
     return <SshHost>[];
   }
+
+  @override
+  Future<List<RemoteHostStatus>> listRemoteHosts() async => [];
 }
 
 Group _group(String id, String name, int sortOrder) =>

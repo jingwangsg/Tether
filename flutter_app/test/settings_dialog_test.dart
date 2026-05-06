@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tether/models/remote_host_status.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tether/models/ssh_host.dart';
 import 'package:tether/providers/server_provider.dart';
@@ -77,7 +78,34 @@ void main() {
     expect(prefs.getString('selected_ssh_host'), 'osmo_9000');
   });
 
-  testWidgets('settings dialog deploy button uses the selected ssh host', (
+  testWidgets('settings dialog persists restart before connect', (
+    tester,
+  ) async {
+    final container = ProviderContainer(
+      overrides: [
+        settingsProvider.overrideWith((ref) => SettingsNotifier()),
+        serverProvider.overrideWith((ref) => ServerNotifier.test()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const _SettingsHarness(),
+      ),
+    );
+
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Restart before connect'));
+    await tester.pumpAndSettle();
+
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getBool('restart_remote_on_connect'), isTrue);
+  });
+
+  testWidgets('settings dialog shows remote status and host actions', (
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({'selected_ssh_host': 'osmo_9000'});
@@ -85,6 +113,13 @@ void main() {
       ServerState(
         isConnected: true,
         sshHosts: [SshHost(host: 'osmo_9000', reachable: true)],
+        remoteHosts: const [
+          RemoteHostStatus(
+            host: 'osmo_9000',
+            status: RemoteHostConnectionStatus.ready,
+            tunnelPort: 49152,
+          ),
+        ],
       ),
     );
     final container = ProviderContainer(
@@ -104,11 +139,17 @@ void main() {
 
     await tester.tap(find.text('Open'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Deploy Remote Client'));
+    expect(find.text('Ready'), findsOneWidget);
+    expect(find.text('Restart'), findsOneWidget);
+
+    await tester.tap(find.text('Deploy'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Restart'));
     await tester.pumpAndSettle();
 
     expect(notifier.deployedHosts, ['osmo_9000']);
-    expect(find.text('Deployed'), findsOneWidget);
+    expect(notifier.restartedHosts, ['osmo_9000']);
+    expect(find.text('Restarted'), findsOneWidget);
   });
 }
 
@@ -136,9 +177,25 @@ class _DeployRecordingServerNotifier extends ServerNotifier {
   _DeployRecordingServerNotifier(super.state) : super.test();
 
   final List<String> deployedHosts = [];
+  final List<String> restartedHosts = [];
 
   @override
-  Future<void> deployRemoteHost(String host) async {
+  Future<RemoteHostStatus> deployRemoteHost(String host) async {
     deployedHosts.add(host);
+    return RemoteHostStatus(
+      host: host,
+      status: RemoteHostConnectionStatus.ready,
+      tunnelPort: 49152,
+    );
+  }
+
+  @override
+  Future<RemoteHostStatus> restartRemoteHost(String host) async {
+    restartedHosts.add(host);
+    return RemoteHostStatus(
+      host: host,
+      status: RemoteHostConnectionStatus.ready,
+      tunnelPort: 49152,
+    );
   }
 }

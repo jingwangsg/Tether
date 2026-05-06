@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tether/models/group.dart';
+import 'package:tether/models/remote_host_status.dart';
 import 'package:tether/models/session.dart';
 import 'package:tether/models/ssh_host.dart';
 import 'package:tether/providers/server_provider.dart';
@@ -49,6 +50,12 @@ class _DelayedApiService extends ApiService {
   }
 
   @override
+  Future<List<RemoteHostStatus>> listRemoteHosts() async {
+    await refreshGate?.future;
+    return [];
+  }
+
+  @override
   void dispose() {}
 }
 
@@ -86,12 +93,21 @@ void main() {
       await refreshFuture;
 
       // State MUST still be empty — the stale refresh data should be discarded
-      expect(notifier.state.isConnected, isFalse,
-          reason: 'Stale refresh must not re-connect');
-      expect(notifier.state.sessions, isEmpty,
-          reason: 'Stale refresh must not inject sessions');
-      expect(notifier.state.groups, isEmpty,
-          reason: 'Stale refresh must not inject groups');
+      expect(
+        notifier.state.isConnected,
+        isFalse,
+        reason: 'Stale refresh must not re-connect',
+      );
+      expect(
+        notifier.state.sessions,
+        isEmpty,
+        reason: 'Stale refresh must not inject sessions',
+      );
+      expect(
+        notifier.state.groups,
+        isEmpty,
+        reason: 'Stale refresh must not inject groups',
+      );
     },
   );
 }

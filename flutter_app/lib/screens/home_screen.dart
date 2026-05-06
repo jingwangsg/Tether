@@ -9,8 +9,10 @@ import '../models/session.dart';
 import '../providers/server_provider.dart';
 import '../providers/session_provider.dart';
 import '../providers/sidebar_width_provider.dart';
+import '../providers/settings_provider.dart';
 import '../providers/ui_provider.dart';
 import '../platform/terminal_backend.dart';
+import '../utils/debug_log.dart';
 import '../utils/session_close.dart';
 import '../utils/session_creation.dart';
 import '../utils/shell_dialogs.dart';
@@ -60,6 +62,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   bool _autoOpenedTestSession = false;
   List<String>? _pendingProjectIds;
   bool _projectSyncScheduled = false;
+  String? _ensuredRemoteHostKey;
 
   bool get _usesNativeShellShortcuts => widget.backend.platformId == 'native';
 
@@ -347,6 +350,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     ref.read(uiProvider.notifier).setSidebarOpen(false);
   }
 
+  void _scheduleConfiguredRemoteHostEnsure() {
+    final settings = ref.watch(settingsProvider);
+    final serverState = ref.watch(serverProvider);
+    if (!serverState.isConnected || serverState.isStale) {
+      if (!serverState.isConnected) {
+        _ensuredRemoteHostKey = null;
+      }
+      return;
+    }
+
+    final host = settings.selectedSshHost?.trim();
+    if (host == null || host.isEmpty) {
+      _ensuredRemoteHostKey = null;
+      return;
+    }
+
+    final key = '$host:${settings.restartRemoteOnConnect}';
+    if (_ensuredRemoteHostKey == key) {
+      return;
+    }
+    _ensuredRemoteHostKey = key;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) {
+        return;
+      }
+      try {
+        await ref
+            .read(serverProvider.notifier)
+            .ensureConfiguredRemoteHost(
+              host,
+              restart: settings.restartRemoteOnConnect,
+            );
+      } catch (error) {
+        debugLog('[remote] ensure configured host failed: $error');
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final groups = ref.watch(serverProvider.select((s) => s.groups));
@@ -356,6 +398,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final sidebarW = _sidebarWidth(context);
     _scheduleProjectSync(groups);
     _maybeAutoOpenTestSession(groups, sessions, sessionState);
+    _scheduleConfiguredRemoteHostEnsure();
 
     return PopScope<void>(
       canPop: !uiState.isMobile,

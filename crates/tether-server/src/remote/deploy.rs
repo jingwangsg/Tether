@@ -299,7 +299,7 @@ pub async fn remote_binary_version(client: &SshClient) -> anyhow::Result<Option<
 }
 
 /// Kill any running tether-server processes and delete `~/.tether` on the remote host.
-/// Called when `--restart-remote` is set; a clean re-deploy follows via the normal scanner.
+/// Called by the explicit restart action; a clean re-deploy follows.
 pub async fn restart_remote(client: &SshClient) -> anyhow::Result<()> {
     tracing::info!("Restarting remote tether-server on {}", client.host_alias);
 

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::{routing::get, Json, Router};
@@ -10,6 +10,8 @@ use tether_server::remote::manager::RemoteManager;
 use tether_server::remote::sync::sync_remote_host;
 use tether_server::server;
 use tether_server::state::{AppState, AppStateInner};
+
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 fn test_state() -> AppState {
     let data_dir = std::env::temp_dir()
@@ -95,6 +97,43 @@ async fn start_mock_remote(groups: Vec<GroupRow>, sessions: Vec<SessionRow>) -> 
     });
     tokio::time::sleep(Duration::from_millis(10)).await;
     port
+}
+
+#[tokio::test]
+async fn server_startup_does_not_probe_ssh_config_hosts() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let old_home = std::env::var_os("HOME");
+    let home = tempfile::tempdir().unwrap();
+    let ssh_dir = home.path().join(".ssh");
+    std::fs::create_dir_all(&ssh_dir).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let probe_port = listener.local_addr().unwrap().port();
+    std::fs::write(
+        ssh_dir.join("config"),
+        format!("Host startup-no-probe\n  HostName 127.0.0.1\n  Port {probe_port}\n"),
+    )
+    .unwrap();
+    std::env::set_var("HOME", home.path());
+
+    let state = test_state();
+    let server_task = tokio::spawn(server::run(state.clone(), false));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let accepted = tokio::time::timeout(Duration::from_millis(100), listener.accept()).await;
+
+    server_task.abort();
+    let _ = server_task.await;
+    cleanup_state(&state);
+    if let Some(home) = old_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
+
+    assert!(
+        accepted.is_err(),
+        "server startup must not probe SSH config hosts"
+    );
 }
 
 #[tokio::test]

@@ -39,13 +39,6 @@ pub struct AppStateInner {
 impl AppState {
     #[allow(dead_code)]
     pub async fn new(config: ServerConfig) -> anyhow::Result<Self> {
-        Self::new_with_remote_policy(config, false).await
-    }
-
-    pub async fn new_with_remote_policy(
-        config: ServerConfig,
-        allow_remote_mutation: bool,
-    ) -> anyhow::Result<Self> {
         let data_dir = config.data_dir();
         std::fs::create_dir_all(&data_dir)?;
         config.materialize_terminal_runtime()?;
@@ -65,7 +58,7 @@ impl AppState {
                 db,
                 shutdown_tx,
                 status_tx,
-                remote_manager: RemoteManager::new_with_deploy(allow_remote_mutation),
+                remote_manager: RemoteManager::new(),
                 ssh_fg: DashMap::new(),
                 ssh_live_sessions: DashMap::new(),
                 semantic_event_tx,

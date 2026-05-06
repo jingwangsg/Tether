@@ -76,7 +76,7 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
 
   List<SshHost> _hostOptions(ServerState serverState) {
     final reachableHosts =
-        serverState.sshHosts.where((host) => host.reachable == true).toList();
+        serverState.sshHosts.where((host) => host.reachable != false).toList();
     if (!_isEdit) return reachableHosts;
 
     final selectedHost = _selectedHostState(serverState);
@@ -404,9 +404,9 @@ class _GroupDialogState extends ConsumerState<GroupDialog> {
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
     final recentPaths =
         ref.watch(recentPathsProvider)[Group.localityKeyFor(
-              _selectedSshHost,
-            )] ??
-            const <String>[];
+          _selectedSshHost,
+        )] ??
+        const <String>[];
 
     return AlertDialog(
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),

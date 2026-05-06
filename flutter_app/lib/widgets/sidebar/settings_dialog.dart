@@ -2,6 +2,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../models/remote_host_status.dart';
 import '../../models/ssh_host.dart';
 import '../../models/mobile_key.dart';
 import '../../providers/settings_provider.dart';
@@ -286,8 +287,8 @@ class _SshHostSettingsSection extends ConsumerStatefulWidget {
 class _SshHostSettingsSectionState
     extends ConsumerState<_SshHostSettingsSection> {
   static const _noneValue = '__none__';
-  bool _deploying = false;
-  String? _deployResult;
+  bool _runningAction = false;
+  String? _actionResult;
 
   @override
   Widget build(BuildContext context) {
@@ -295,11 +296,15 @@ class _SshHostSettingsSectionState
     final serverState = ref.watch(serverProvider);
     final hosts = _hostOptions(serverState.sshHosts, settings.selectedSshHost);
     final selectedValue = settings.selectedSshHost ?? _noneValue;
-    final canDeploy =
+    final selectedRemoteStatus = _remoteStatus(
+      serverState.remoteHosts,
+      settings.selectedSshHost,
+    );
+    final canRunAction =
         serverState.isConnected &&
         !serverState.isStale &&
         settings.selectedSshHost != null &&
-        !_deploying;
+        !_runningAction;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -325,8 +330,28 @@ class _SshHostSettingsSectionState
           ],
           onChanged: (value) {
             final next = value == _noneValue ? null : value;
-            setState(() => _deployResult = null);
+            setState(() => _actionResult = null);
             ref.read(settingsProvider.notifier).setSelectedSshHost(next);
+          },
+        ),
+        const SizedBox(height: 8),
+        _RemoteStatusRow(status: selectedRemoteStatus),
+        SwitchListTile(
+          title: const Text(
+            'Restart before connect',
+            style: TextStyle(fontSize: 13),
+          ),
+          subtitle: const Text(
+            'Clean remote runtime before the configured host connects',
+            style: TextStyle(fontSize: 11, color: Colors.white38),
+          ),
+          value: settings.restartRemoteOnConnect,
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          onChanged: (value) {
+            ref
+                .read(settingsProvider.notifier)
+                .setRestartRemoteOnConnect(value);
           },
         ),
         const SizedBox(height: 8),
@@ -336,7 +361,7 @@ class _SshHostSettingsSectionState
               height: 30,
               child: TextButton.icon(
                 icon:
-                    _deploying
+                    _runningAction
                         ? const SizedBox(
                           width: 14,
                           height: 14,
@@ -344,17 +369,29 @@ class _SshHostSettingsSectionState
                         )
                         : const Icon(Icons.cloud_upload_outlined, size: 16),
                 label: Text(
-                  _deploying ? 'Deploying' : 'Deploy Remote Client',
+                  _runningAction ? 'Working' : 'Deploy',
                   style: const TextStyle(fontSize: 12),
                 ),
                 style: TextButton.styleFrom(
                   padding: const EdgeInsets.symmetric(horizontal: 8),
                 ),
-                onPressed: canDeploy ? _deploySelectedHost : null,
+                onPressed: canRunAction ? _deploySelectedHost : null,
               ),
             ),
             const SizedBox(width: 8),
-            if (_deployResult case final result?)
+            SizedBox(
+              height: 30,
+              child: TextButton.icon(
+                icon: const Icon(Icons.restart_alt, size: 16),
+                label: const Text('Restart', style: TextStyle(fontSize: 12)),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+                onPressed: canRunAction ? _restartSelectedHost : null,
+              ),
+            ),
+            const SizedBox(width: 8),
+            if (_actionResult case final result?)
               Expanded(
                 child: Text(
                   result,
@@ -379,26 +416,113 @@ class _SshHostSettingsSectionState
     return sorted;
   }
 
+  RemoteHostStatus? _remoteStatus(
+    List<RemoteHostStatus> statuses,
+    String? selectedHost,
+  ) {
+    final host = selectedHost?.trim();
+    if (host == null || host.isEmpty) {
+      return null;
+    }
+    for (final status in statuses) {
+      if (status.host == host) {
+        return status;
+      }
+    }
+    return null;
+  }
+
   Future<void> _deploySelectedHost() async {
     final host = ref.read(settingsProvider).selectedSshHost;
     if (host == null) return;
 
     setState(() {
-      _deploying = true;
-      _deployResult = null;
+      _runningAction = true;
+      _actionResult = null;
     });
     try {
       await ref.read(serverProvider.notifier).deployRemoteHost(host);
       if (!mounted) return;
-      setState(() => _deployResult = 'Deployed');
+      setState(() => _actionResult = 'Deployed');
     } catch (error) {
       if (!mounted) return;
-      setState(() => _deployResult = 'Failed');
+      setState(() => _actionResult = 'Failed');
     } finally {
       if (mounted) {
-        setState(() => _deploying = false);
+        setState(() => _runningAction = false);
       }
     }
+  }
+
+  Future<void> _restartSelectedHost() async {
+    final host = ref.read(settingsProvider).selectedSshHost;
+    if (host == null) return;
+
+    setState(() {
+      _runningAction = true;
+      _actionResult = null;
+    });
+    try {
+      await ref.read(serverProvider.notifier).restartRemoteHost(host);
+      if (!mounted) return;
+      setState(() => _actionResult = 'Restarted');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _actionResult = 'Failed');
+    } finally {
+      if (mounted) {
+        setState(() => _runningAction = false);
+      }
+    }
+  }
+}
+
+class _RemoteStatusRow extends StatelessWidget {
+  final RemoteHostStatus? status;
+
+  const _RemoteStatusRow({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final current = status;
+    final label = current?.label ?? 'Not connected';
+    final detail =
+        current?.failureMessage ??
+        (current?.tunnelPort == null ? null : 'Port ${current!.tunnelPort}');
+    final color = switch (current?.status) {
+      RemoteHostConnectionStatus.ready => Colors.green,
+      RemoteHostConnectionStatus.connecting => Colors.blue,
+      RemoteHostConnectionStatus.upgradeRequired => Colors.orange,
+      RemoteHostConnectionStatus.failed => Colors.redAccent,
+      RemoteHostConnectionStatus.unreachable => Colors.white38,
+      null => Colors.white38,
+    };
+
+    return Row(
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: const TextStyle(fontSize: 12, color: Colors.white70),
+        ),
+        if (detail != null) ...[
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              detail,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11, color: Colors.white38),
+            ),
+          ),
+        ],
+      ],
+    );
   }
 }
 

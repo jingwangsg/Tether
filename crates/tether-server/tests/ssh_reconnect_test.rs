@@ -13,7 +13,7 @@
 //!   3. WS proxy recovers once the dead tunnel is replaced with a new live one
 //!   4. ws_handler returns HTTP 503 (no upgrade) when tunnel dead → prevents Flutter 1s tight loop
 //!   5. POST /api/sessions returns 503 (not 502) when tunnel dead, then 201 after recovery
-//!   6. clear_dead_tunnel marks host Unreachable so scanner can reconnect
+//!   6. clear_dead_tunnel marks host Unreachable so explicit reconnect can recover
 
 use axum::middleware;
 use axum::routing::{delete, get, patch, post};
@@ -521,7 +521,7 @@ async fn ws_proxy_fails_fast_when_tunnel_port_dead() {
     cleanup(&state);
 }
 
-/// After the dead tunnel is replaced with a new live one (scanner reconnected),
+/// After the dead tunnel is replaced with a new live one (remote reconnected),
 /// a fresh WS client should successfully proxy to the new remote.
 #[tokio::test]
 async fn ws_proxy_recovers_after_ssh_reconnect() {
@@ -568,9 +568,7 @@ async fn ws_proxy_recovers_after_ssh_reconnect() {
     shutdown_tx.send(()).ok();
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    // ── Simulate scanner detecting dead tunnel and re-establishing connection ──
-    // In production the scanner would run, detect is_port_alive() = false,
-    // reconnect via SSH, and call inject_ready_for_testing with a new port.
+    // ── Simulate reconnect replacing the dead tunnel with a new live one ──────
     let (new_mock_port, _new_shutdown) = start_mock_remote().await;
     state
         .inner

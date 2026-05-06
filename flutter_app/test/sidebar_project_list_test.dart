@@ -231,41 +231,42 @@ void main() {
     expect(find.text('osmo_9000'), findsOneWidget);
   });
 
-  testWidgets('sidebar shows only the ssh host selected in settings', (
-    tester,
-  ) async {
-    SharedPreferences.setMockInitialValues({'selected_ssh_host': 'devbox'});
-    final container = ProviderContainer(
-      overrides: [
-        settingsProvider.overrideWith((ref) => SettingsNotifier()),
-        serverProvider.overrideWith(
-          (ref) => ServerNotifier.test(
-            ServerState(
-              isConnected: true,
-              sshHosts: [
-                SshHost(host: 'devbox', reachable: true),
-                SshHost(host: 'osmo_9000', reachable: true),
-              ],
+  testWidgets(
+    'sidebar does not show selected ssh host as a standalone section',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({'selected_ssh_host': 'devbox'});
+      final container = ProviderContainer(
+        overrides: [
+          settingsProvider.overrideWith((ref) => SettingsNotifier()),
+          serverProvider.overrideWith(
+            (ref) => ServerNotifier.test(
+              ServerState(
+                isConnected: true,
+                sshHosts: [
+                  SshHost(host: 'devbox', reachable: true),
+                  SshHost(host: 'osmo_9000', reachable: true),
+                ],
+              ),
             ),
           ),
-        ),
-      ],
-    );
-    addTearDown(container.dispose);
+        ],
+      );
+      addTearDown(container.dispose);
 
-    await tester.pumpWidget(
-      UncontrolledProviderScope(
-        container: container,
-        child: const MaterialApp(
-          home: Scaffold(body: SizedBox(width: 280, child: Sidebar())),
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(
+            home: Scaffold(body: SizedBox(width: 280, child: Sidebar())),
+          ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    expect(find.text('devbox'), findsOneWidget);
-    expect(find.text('osmo_9000'), findsNothing);
-  });
+      expect(find.text('devbox'), findsNothing);
+      expect(find.text('osmo_9000'), findsNothing);
+    },
+  );
 
   testWidgets('sidebar keeps ssh host badge visible in narrow layout', (
     tester,

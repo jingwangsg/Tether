@@ -10,7 +10,7 @@ use tokio::time::timeout;
 use super::client::SshClient;
 use super::deploy::{
     ensure_deployed, ensure_remote_agent_bundle, ensure_remote_ghostty_terminfo,
-    ensure_started_without_restart, remote_binary_version,
+    ensure_started_without_restart, remote_binary_version, restart_remote,
 };
 use super::tunnel::Tunnel;
 use crate::ssh_config::{parse_ssh_config, SshHost};
@@ -42,7 +42,6 @@ struct RemoteHostState {
 #[derive(Clone)]
 pub struct RemoteManager {
     hosts: Arc<DashMap<String, RemoteHostState>>,
-    allow_deploy: bool,
     /// Fires `(host_alias, tunnel_port)` whenever a host becomes Ready.
     pub ready_tx: broadcast::Sender<(String, u16)>,
 }
@@ -68,14 +67,9 @@ impl From<anyhow::Error> for ConnectError {
 impl RemoteManager {
     #[allow(dead_code)]
     pub fn new() -> Self {
-        Self::new_with_deploy(false)
-    }
-
-    pub fn new_with_deploy(allow_deploy: bool) -> Self {
         let (ready_tx, _) = broadcast::channel(16);
         Self {
             hosts: Arc::new(DashMap::new()),
-            allow_deploy,
             ready_tx,
         }
     }
@@ -125,48 +119,68 @@ impl RemoteManager {
             .collect()
     }
 
+    pub async fn connect_host(
+        &self,
+        host_alias: &str,
+    ) -> Result<RemoteHostStatus, DeployHostError> {
+        self.connect_host_with_policy(host_alias, false).await
+    }
+
     pub async fn deploy_host(&self, host_alias: &str) -> Result<RemoteHostStatus, DeployHostError> {
+        self.connect_host_with_policy(host_alias, true).await
+    }
+
+    pub async fn restart_host(
+        &self,
+        host_alias: &str,
+    ) -> Result<RemoteHostStatus, DeployHostError> {
         let host_alias = host_alias.trim();
         if host_alias.is_empty() {
             return Err(DeployHostError::NotConfigured);
         }
 
         let ssh_host = self
-            .hosts
-            .get(host_alias)
-            .map(|entry| entry.ssh_host.clone())
-            .or_else(|| {
-                parse_ssh_config("~/.ssh/config")
-                    .into_iter()
-                    .find(|host| host.host == host_alias)
-            })
+            .configured_host(host_alias)
             .ok_or(DeployHostError::NotConfigured)?;
-
-        self.hosts
-            .entry(host_alias.to_string())
-            .or_insert_with(|| RemoteHostState {
-                ssh_host: ssh_host.clone(),
-                status: RemoteStatus::Unreachable,
-                client: None,
-                tunnel: None,
-            });
+        self.ensure_host_entry(host_alias, &ssh_host);
         self.set_status(host_alias, RemoteStatus::Connecting);
 
-        match connect_remote(&ssh_host, true).await {
-            Ok((client, tunnel)) => {
-                let tunnel_port = tunnel.local_port;
-                if let Some(mut entry) = self.hosts.get_mut(host_alias) {
-                    entry.status = RemoteStatus::Ready;
-                    entry.client = Some(client);
-                    entry.tunnel = Some(tunnel);
+        match SshClient::connect(&ssh_host).await {
+            Ok(client) => {
+                if let Err(error) = restart_remote(&client).await {
+                    let message = error.to_string();
+                    self.set_status(host_alias, RemoteStatus::Failed(message.clone()));
+                    return Err(DeployHostError::Failed(message));
                 }
-                let _ = self.ready_tx.send((host_alias.to_string(), tunnel_port));
-                Ok(RemoteHostStatus {
-                    host: host_alias.to_string(),
-                    status: RemoteStatus::Ready,
-                    tunnel_port: Some(tunnel_port),
-                })
             }
+            Err(error) => {
+                let message = error.to_string();
+                self.set_status(host_alias, RemoteStatus::Failed(message.clone()));
+                return Err(DeployHostError::Failed(message));
+            }
+        }
+
+        self.connect_host_with_policy(host_alias, true).await
+    }
+
+    async fn connect_host_with_policy(
+        &self,
+        host_alias: &str,
+        allow_deploy: bool,
+    ) -> Result<RemoteHostStatus, DeployHostError> {
+        let host_alias = host_alias.trim();
+        if host_alias.is_empty() {
+            return Err(DeployHostError::NotConfigured);
+        }
+
+        let ssh_host = self
+            .configured_host(host_alias)
+            .ok_or(DeployHostError::NotConfigured)?;
+        self.ensure_host_entry(host_alias, &ssh_host);
+        self.set_status(host_alias, RemoteStatus::Connecting);
+
+        match connect_remote(&ssh_host, allow_deploy).await {
+            Ok((client, tunnel)) => Ok(self.mark_ready(host_alias, client, tunnel)),
             Err(ConnectError::UpgradeRequired) => {
                 self.set_status(host_alias, RemoteStatus::UpgradeRequired);
                 Err(DeployHostError::UpgradeRequired)
@@ -176,6 +190,43 @@ impl RemoteManager {
                 self.set_status(host_alias, RemoteStatus::Failed(message.clone()));
                 Err(DeployHostError::Failed(message))
             }
+        }
+    }
+
+    fn configured_host(&self, host_alias: &str) -> Option<SshHost> {
+        self.hosts
+            .get(host_alias)
+            .map(|entry| entry.ssh_host.clone())
+            .or_else(|| {
+                parse_ssh_config("~/.ssh/config")
+                    .into_iter()
+                    .find(|host| host.host == host_alias)
+            })
+    }
+
+    fn ensure_host_entry(&self, host_alias: &str, ssh_host: &SshHost) {
+        self.hosts
+            .entry(host_alias.to_string())
+            .or_insert_with(|| RemoteHostState {
+                ssh_host: ssh_host.clone(),
+                status: RemoteStatus::Unreachable,
+                client: None,
+                tunnel: None,
+            });
+    }
+
+    fn mark_ready(&self, host_alias: &str, client: SshClient, tunnel: Tunnel) -> RemoteHostStatus {
+        let tunnel_port = tunnel.local_port;
+        if let Some(mut entry) = self.hosts.get_mut(host_alias) {
+            entry.status = RemoteStatus::Ready;
+            entry.client = Some(client);
+            entry.tunnel = Some(tunnel);
+        }
+        let _ = self.ready_tx.send((host_alias.to_string(), tunnel_port));
+        RemoteHostStatus {
+            host: host_alias.to_string(),
+            status: RemoteStatus::Ready,
+            tunnel_port: Some(tunnel_port),
         }
     }
 
@@ -251,7 +302,7 @@ impl RemoteManager {
                 return;
             }
 
-            match connect_remote(&ssh_host, manager.allow_deploy).await {
+            match connect_remote(&ssh_host, false).await {
                 Ok((client, tunnel)) => {
                     let tunnel_port = tunnel.local_port;
                     if let Some(mut entry) = manager.hosts.get_mut(&alias) {
@@ -281,12 +332,6 @@ impl RemoteManager {
             }
         });
     }
-}
-
-async fn is_port_alive(port: u16) -> bool {
-    tokio::net::TcpStream::connect(("127.0.0.1", port))
-        .await
-        .is_ok()
 }
 
 async fn is_host_reachable(host: &SshHost) -> bool {
@@ -340,22 +385,22 @@ async fn connect_remote(
     allow_deploy: bool,
 ) -> Result<(SshClient, Tunnel), ConnectError> {
     let client = SshClient::connect(host).await?;
-    if let Err(error) = ensure_remote_ghostty_terminfo(&client).await {
-        tracing::warn!(
-            "Failed to sync Ghostty terminfo to {}: {}",
-            client.host_alias,
-            error
-        );
-    }
-    if let Err(error) = ensure_remote_agent_bundle(&client).await {
-        tracing::warn!(
-            "Failed to sync agent reminder bundle to {}: {}",
-            client.host_alias,
-            error
-        );
-    }
 
     if allow_deploy {
+        if let Err(error) = ensure_remote_ghostty_terminfo(&client).await {
+            tracing::warn!(
+                "Failed to sync Ghostty terminfo to {}: {}",
+                client.host_alias,
+                error
+            );
+        }
+        if let Err(error) = ensure_remote_agent_bundle(&client).await {
+            tracing::warn!(
+                "Failed to sync agent reminder bundle to {}: {}",
+                client.host_alias,
+                error
+            );
+        }
         ensure_deployed(&client).await?;
         let tunnel = Tunnel::start(&client.host_alias, 7680).await?;
         return Ok((client, tunnel));
@@ -405,7 +450,7 @@ async fn validate_existing_remote_tunnel(
         .unwrap_or(false)
     {
         return Err(ConnectError::Other(anyhow::anyhow!(
-            "remote daemon is not running and automatic bootstrap failed; use --restart-remote for a forced cleanup"
+            "remote daemon is not running and automatic bootstrap failed; use Restart in Settings for a forced cleanup"
         )));
     }
 
@@ -414,86 +459,6 @@ async fn validate_existing_remote_tunnel(
         None => Err(ConnectError::Other(anyhow::anyhow!(
             "remote daemon is not installed and automatic bootstrap failed"
         ))),
-    }
-}
-
-pub async fn run_scanner(manager: RemoteManager) {
-    scan_hosts(&manager).await;
-
-    let mut interval = tokio::time::interval(Duration::from_secs(60));
-    interval.tick().await;
-    loop {
-        interval.tick().await;
-        scan_hosts(&manager).await;
-    }
-}
-
-async fn scan_hosts(manager: &RemoteManager) {
-    let hosts = parse_ssh_config("~/.ssh/config");
-    if hosts.is_empty() {
-        return;
-    }
-
-    for host in &hosts {
-        manager
-            .hosts
-            .entry(host.host.clone())
-            .or_insert_with(|| RemoteHostState {
-                ssh_host: host.clone(),
-                status: RemoteStatus::Unreachable,
-                client: None,
-                tunnel: None,
-            });
-    }
-
-    let mut tasks = Vec::new();
-    for host in hosts {
-        let manager = manager.clone();
-        tasks.push(tokio::spawn(async move {
-            let alias = host.host.clone();
-
-            if let Some(entry) = manager.hosts.get(&alias) {
-                if entry.status == RemoteStatus::Connecting {
-                    return;
-                }
-                if entry.status == RemoteStatus::Ready {
-                    if let Some(tunnel) = entry.tunnel.as_ref() {
-                        if is_port_alive(tunnel.local_port).await {
-                            return;
-                        }
-                    }
-                }
-            }
-
-            if !is_host_reachable(&host).await {
-                manager.set_status(&alias, RemoteStatus::Unreachable);
-                return;
-            }
-
-            manager.set_status(&alias, RemoteStatus::Connecting);
-            match connect_remote(&host, manager.allow_deploy).await {
-                Ok((client, tunnel)) => {
-                    let tunnel_port = tunnel.local_port;
-                    if let Some(mut entry) = manager.hosts.get_mut(&alias) {
-                        entry.status = RemoteStatus::Ready;
-                        entry.client = Some(client);
-                        entry.tunnel = Some(tunnel);
-                    }
-                    let _ = manager.ready_tx.send((alias, tunnel_port));
-                }
-                Err(ConnectError::UpgradeRequired) => {
-                    manager.set_status(&alias, RemoteStatus::UpgradeRequired);
-                }
-                Err(ConnectError::Other(error)) => {
-                    tracing::warn!("Failed to connect to {}: {}", alias, error);
-                    manager.set_status(&alias, RemoteStatus::Failed(error.to_string()));
-                }
-            }
-        }));
-    }
-
-    for task in tasks {
-        let _ = task.await;
     }
 }
 
@@ -562,6 +527,7 @@ mod tests {
         let manager = RemoteManager::new();
         manager.inject_ready_for_testing("myhost", 6000);
         assert_eq!(manager.get_tunnel_port("myhost"), Some(6000));
+        assert_eq!(manager.list_statuses().len(), 1);
     }
 
     #[tokio::test]
@@ -580,12 +546,6 @@ mod tests {
         let result = manager.deploy_host("__missing_tether_test_host__").await;
 
         assert!(matches!(result, Err(DeployHostError::NotConfigured)));
-    }
-
-    #[test]
-    fn new_with_deploy_sets_flag() {
-        let manager = RemoteManager::new_with_deploy(true);
-        assert!(manager.allow_deploy);
     }
 
     async fn start_info_server(version: &str) -> u16 {

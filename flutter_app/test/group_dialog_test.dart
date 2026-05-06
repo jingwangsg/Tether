@@ -161,7 +161,9 @@ void main() {
     },
   );
 
-  testWidgets('new group only lists reachable ssh hosts', (tester) async {
+  testWidgets('new group excludes only explicitly unreachable ssh hosts', (
+    tester,
+  ) async {
     await pumpDialog(
       tester,
       state: ServerState(
@@ -178,7 +180,7 @@ void main() {
     final dropdownButton = hostDropdownButton(tester);
     expect(
       dropdownButton.items!.map((item) => item.value).toList(),
-      equals([null, 'up-host']),
+      equals([null, 'up-host', 'unknown-host']),
     );
     expect(dropdown.initialValue, isNull);
   });

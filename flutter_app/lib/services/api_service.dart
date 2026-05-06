@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import '../models/group.dart';
+import '../models/remote_host_status.dart';
 import '../models/session.dart';
 import '../models/ssh_host.dart';
 
@@ -229,12 +230,43 @@ class ApiService {
         .toList();
   }
 
-  Future<void> deployRemoteHost(String host) async {
-    final response = await _client.post(
-      _uri('/api/remote/hosts/$host/deploy'),
+  Future<List<RemoteHostStatus>> listRemoteHosts() async {
+    final response = await _client.get(
+      _uri('/api/remote/hosts'),
       headers: _headers,
     );
     _checkResponse(response);
+    final list = jsonDecode(response.body) as List;
+    return list
+        .map((j) => RemoteHostStatus.fromJson(j as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<RemoteHostStatus> connectRemoteHost(String host) {
+    return _postRemoteHostAction(host, 'connect');
+  }
+
+  Future<RemoteHostStatus> deployRemoteHost(String host) {
+    return _postRemoteHostAction(host, 'deploy');
+  }
+
+  Future<RemoteHostStatus> restartRemoteHost(String host) {
+    return _postRemoteHostAction(host, 'restart');
+  }
+
+  Future<RemoteHostStatus> _postRemoteHostAction(
+    String host,
+    String action,
+  ) async {
+    final encodedHost = Uri.encodeComponent(host);
+    final response = await _client.post(
+      _uri('/api/remote/hosts/$encodedHost/$action'),
+      headers: _headers,
+    );
+    _checkResponse(response);
+    return RemoteHostStatus.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
   }
 
   void _checkResponse(http.Response response) {

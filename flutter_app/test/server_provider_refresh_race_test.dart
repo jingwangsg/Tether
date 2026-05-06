@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tether/models/group.dart';
+import 'package:tether/models/remote_host_status.dart';
 import 'package:tether/models/session.dart';
 import 'package:tether/models/ssh_host.dart';
 import 'package:tether/providers/server_provider.dart';
@@ -71,6 +72,9 @@ class _RaceApiService extends ApiService {
   }
 
   @override
+  Future<List<RemoteHostStatus>> listRemoteHosts() async => [];
+
+  @override
   Future<Session> createSession({
     required String groupId,
     String? name,
@@ -137,6 +141,9 @@ class _FailingStaleRefreshApiService extends ApiService {
 
   @override
   Future<List<SshHost>> listSshHosts() async => [];
+
+  @override
+  Future<List<RemoteHostStatus>> listRemoteHosts() async => [];
 
   @override
   Future<Session> createSession({

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tether/models/group.dart';
+import 'package:tether/models/remote_host_status.dart';
 import 'package:tether/models/session.dart';
 import 'package:tether/models/ssh_host.dart';
 import 'package:tether/providers/server_provider.dart';
@@ -32,6 +33,9 @@ class _StableApiService extends ApiService {
 
   @override
   Future<List<SshHost>> listSshHosts() async => [];
+
+  @override
+  Future<List<RemoteHostStatus>> listRemoteHosts() async => [];
 
   @override
   void dispose() {}
@@ -67,10 +71,32 @@ class _RefreshFailingApiService extends ApiService {
   Future<List<SshHost>> listSshHosts() async => const [];
 
   @override
+  Future<List<RemoteHostStatus>> listRemoteHosts() async => const [];
+
+  @override
   void dispose() {}
 }
 
 void main() {
+  test('auto-connect uses IPv4 loopback by default', () async {
+    final configs = <ServerConfig>[];
+    final notifier = ServerNotifier(
+      autoConnect: true,
+      apiFactory: (config) {
+        configs.add(config);
+        return _StableApiService();
+      },
+    );
+    addTearDown(notifier.dispose);
+
+    for (var i = 0; i < 20 && !notifier.state.isConnected; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+
+    expect(notifier.state.isConnected, isTrue);
+    expect(configs.first.host, '127.0.0.1');
+  });
+
   test('connect failure preserves the existing working connection', () async {
     final oldConfig = ServerConfig(host: 'old-host', port: 7680);
     final oldApi = _StableApiService();

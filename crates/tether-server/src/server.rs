@@ -74,8 +74,16 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
         .route("/api/ssh/hosts", get(api::ssh::list_ssh_hosts))
         .route("/api/remote/hosts", get(api::remote::list_remote_hosts))
         .route(
+            "/api/remote/hosts/{host}/connect",
+            post(api::remote::connect_remote_host),
+        )
+        .route(
             "/api/remote/hosts/{host}/deploy",
             post(api::remote::deploy_remote_host),
+        )
+        .route(
+            "/api/remote/hosts/{host}/restart",
+            post(api::remote::restart_remote_host),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -119,9 +127,9 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
         state.clone(),
         semantic_event_rx,
     ));
-    // Start remote SSH host scanner (disabled when running as a remote daemon)
+    // Start remote SSH sync tasks (disabled for deployed remote daemons).
     if !no_ssh_scan {
-        // Subscribe before spawning scanner so no Ready events are missed.
+        // Subscribe before any explicit host action can publish Ready.
         let mut ready_rx = state.inner.remote_manager.ready_tx.subscribe();
         let inner_for_sync = state.inner.clone();
         let state_for_sync = state.clone();
@@ -232,10 +240,6 @@ pub async fn run(state: AppState, no_ssh_scan: bool) -> anyhow::Result<()> {
                 }
             }
         });
-
-        tokio::spawn(crate::remote::manager::run_scanner(
-            state.inner.remote_manager.clone(),
-        ));
     }
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;

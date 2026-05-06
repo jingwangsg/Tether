@@ -101,6 +101,18 @@ fn test_router(state: AppState) -> Router {
             post(api::sessions::batch_reorder_sessions),
         )
         .route("/api/remote/hosts", get(api::remote::list_remote_hosts))
+        .route(
+            "/api/remote/hosts/{host}/connect",
+            post(api::remote::connect_remote_host),
+        )
+        .route(
+            "/api/remote/hosts/{host}/deploy",
+            post(api::remote::deploy_remote_host),
+        )
+        .route(
+            "/api/remote/hosts/{host}/restart",
+            post(api::remote::restart_remote_host),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
@@ -287,6 +299,30 @@ async fn remote_hosts_returns_json_array() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     // Must parse as a JSON array
     let _: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+
+    cleanup(&state);
+}
+
+#[tokio::test]
+async fn remote_host_actions_return_404_for_unknown_alias() {
+    let state = test_state();
+    let app = test_router(state.clone());
+
+    for action in ["connect", "deploy", "restart"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/remote/hosts/__missing__/{action}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{action}");
+    }
 
     cleanup(&state);
 }

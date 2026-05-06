@@ -3,10 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../models/group.dart';
 import '../../models/session.dart';
-import '../../models/ssh_host.dart';
 import '../../providers/server_provider.dart';
 import '../../providers/session_provider.dart';
-import '../../providers/settings_provider.dart';
 import '../../providers/ui_provider.dart';
 import '../../utils/session_creation.dart';
 import '../../utils/project_status_summary.dart';
@@ -20,7 +18,6 @@ import '../reorderable/platform_reorder_drag_start_listener.dart';
 import '../shell_shortcut_hint_badge.dart';
 import '../terminal/session_status_dot.dart';
 import 'settings_dialog.dart';
-import 'ssh_host_list.dart';
 
 List<Group> _projects(List<Group> groups) =>
     groups.where((group) => group.parentId == null).toList()
@@ -35,10 +32,6 @@ class Sidebar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final groups = ref.watch(serverProvider.select((s) => s.groups));
     final sessions = ref.watch(serverProvider.select((s) => s.sessions));
-    final sshHosts = ref.watch(serverProvider.select((s) => s.sshHosts));
-    final selectedSshHost = ref.watch(
-      settingsProvider.select((s) => s.selectedSshHost),
-    );
     final isConnected = ref.watch(serverProvider.select((s) => s.isConnected));
     final isStale = ref.watch(serverProvider.select((s) => s.isStale));
     final error = ref.watch(serverProvider.select((s) => s.error));
@@ -82,8 +75,6 @@ class Sidebar extends ConsumerWidget {
                             ref,
                             groups: groups,
                             sessions: visible,
-                            sshHosts: sshHosts,
-                            selectedSshHost: selectedSshHost,
                             navState: navState,
                             projectStatuses: projectStatuses,
                             allowMutations: allowMutations,
@@ -210,23 +201,14 @@ class Sidebar extends ConsumerWidget {
     WidgetRef ref, {
     required List<Group> groups,
     required List<Session> sessions,
-    required List<SshHost> sshHosts,
-    required String? selectedSshHost,
     required SessionState navState,
     required Map<String, SessionIndicatorStatus> projectStatuses,
     required bool allowMutations,
   }) {
     final projects = _projects(groups);
-    final sidebarHost = _selectedSidebarHost(selectedSshHost, sshHosts);
 
     return CustomScrollView(
       slivers: [
-        if (sidebarHost != null) ...[
-          SliverToBoxAdapter(child: SshHostList(hosts: [sidebarHost])),
-          const SliverToBoxAdapter(
-            child: Divider(height: 1, color: Colors.white12),
-          ),
-        ],
         SliverReorderableList(
           itemCount: projects.length,
           onReorder: (oldIndex, newIndex) async {
@@ -261,19 +243,6 @@ class Sidebar extends ConsumerWidget {
         ),
       ],
     );
-  }
-
-  SshHost? _selectedSidebarHost(String? selectedHost, List<SshHost> hosts) {
-    final host = selectedHost?.trim();
-    if (host == null || host.isEmpty) {
-      return null;
-    }
-    for (final candidate in hosts) {
-      if (candidate.host == host) {
-        return candidate;
-      }
-    }
-    return SshHost(host: host);
   }
 
   Widget _buildProjectTile(
@@ -429,7 +398,7 @@ class Sidebar extends ConsumerWidget {
   }
 
   void _showConnectDialog(BuildContext context, WidgetRef ref) {
-    final hostController = TextEditingController(text: 'localhost');
+    final hostController = TextEditingController(text: '127.0.0.1');
     final portController = TextEditingController(text: '7680');
     final tokenController = TextEditingController();
 

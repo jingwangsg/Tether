@@ -15,7 +15,12 @@ use tether_server::persistence::Store;
 use tether_server::state::{AppState, AppStateInner};
 
 use dashmap::DashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 /// Build an AppState backed by an in-memory SQLite DB and a unique temp data dir.
 fn test_state() -> AppState {
@@ -477,6 +482,58 @@ async fn test_get_ssh_hosts() {
     let hosts: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
     // Just check it deserialized as a valid array; contents depend on the system
     let _ = hosts;
+
+    cleanup_state(&state);
+}
+
+#[tokio::test]
+async fn ssh_hosts_lists_aliases_without_reachability_probe() {
+    let _guard = env_lock().lock().unwrap();
+    let old_home = std::env::var_os("HOME");
+    let home = tempfile::tempdir().unwrap();
+    let ssh_dir = home.path().join(".ssh");
+    std::fs::create_dir_all(&ssh_dir).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let probe_port = listener.local_addr().unwrap().port();
+    std::fs::write(
+        ssh_dir.join("config"),
+        format!("Host no-probe-host\n  HostName 127.0.0.1\n  Port {probe_port}\n"),
+    )
+    .unwrap();
+    std::env::set_var("HOME", home.path());
+
+    let state = test_state();
+    let app = test_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/ssh/hosts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    if let Some(home) = old_home {
+        std::env::set_var("HOME", home);
+    } else {
+        std::env::remove_var("HOME");
+    }
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let hosts: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    let host = hosts
+        .iter()
+        .find(|host| host["host"] == "no-probe-host")
+        .expect("expected test SSH host");
+    assert!(host.get("reachable").is_none() || host["reachable"].is_null());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+            .await
+            .is_err(),
+        "/api/ssh/hosts must list aliases without probing TCP reachability"
+    );
 
     cleanup_state(&state);
 }

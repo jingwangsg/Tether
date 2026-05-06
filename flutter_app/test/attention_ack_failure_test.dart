@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tether/models/group.dart';
+import 'package:tether/models/remote_host_status.dart';
 import 'package:tether/models/session.dart';
 import 'package:tether/models/ssh_host.dart';
 import 'package:tether/providers/server_provider.dart';
@@ -51,48 +52,51 @@ class _FailingAckApiService extends ApiService {
   Future<List<SshHost>> listSshHosts() async => [];
 
   @override
+  Future<List<RemoteHostStatus>> listRemoteHosts() async => [];
+
+  @override
   void dispose() {}
 }
 
 void main() {
-  test(
-    'ackSessionAttention schedules refresh on failure',
-    () async {
-      final api = _FailingAckApiService();
-      final notifier = ServerNotifier.test(
-        ServerState(
-          config: ServerConfig(host: 'localhost', port: 7680),
-          api: api,
-          isConnected: true,
-          sessions: [
-            Session(
-              id: 's1',
-              groupId: 'g1',
-              name: 'test-session',
-              shell: 'bash',
-              cols: 80,
-              rows: 24,
-              cwd: '/tmp',
-              isAlive: true,
-              createdAt: '',
-              lastActive: '',
-              attentionSeq: 2,
-              attentionAckSeq: 1,
-            ),
-          ],
-          groups: [Group(id: 'g1', name: 'TestGroup')],
-        ),
-      );
+  test('ackSessionAttention schedules refresh on failure', () async {
+    final api = _FailingAckApiService();
+    final notifier = ServerNotifier.test(
+      ServerState(
+        config: ServerConfig(host: 'localhost', port: 7680),
+        api: api,
+        isConnected: true,
+        sessions: [
+          Session(
+            id: 's1',
+            groupId: 'g1',
+            name: 'test-session',
+            shell: 'bash',
+            cols: 80,
+            rows: 24,
+            cwd: '/tmp',
+            isAlive: true,
+            createdAt: '',
+            lastActive: '',
+            attentionSeq: 2,
+            attentionAckSeq: 1,
+          ),
+        ],
+        groups: [Group(id: 'g1', name: 'TestGroup')],
+      ),
+    );
 
-      final refreshCountBefore = api.refreshCallCount;
+    final refreshCountBefore = api.refreshCallCount;
 
-      // ackSessionAttention should catch the error internally and schedule
-      // a refresh to resync state. It should NOT throw to the caller.
-      await notifier.ackSessionAttention('s1');
+    // ackSessionAttention should catch the error internally and schedule
+    // a refresh to resync state. It should NOT throw to the caller.
+    await notifier.ackSessionAttention('s1');
 
-      // refresh() should have been called as a result of the ack failure
-      expect(api.refreshCallCount, greaterThan(refreshCountBefore),
-          reason: 'refresh() should be called after ack failure to resync');
-    },
-  );
+    // refresh() should have been called as a result of the ack failure
+    expect(
+      api.refreshCallCount,
+      greaterThan(refreshCountBefore),
+      reason: 'refresh() should be called after ack failure to resync',
+    );
+  });
 }
